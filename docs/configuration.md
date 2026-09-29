@@ -48,7 +48,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `count` | `6` | 1 to 16 terminals. |
 | `monitor` | `"portrait"` | See below. |
 | `shape` | automatic | `{ "columns": 3, "rows": 2 }` to force a grid. A shape too small for `count` grows rows. |
-| `directory` | your profile folder | Where every terminal starts. |
+| `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree. |
 | `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | Windows Terminal's default | A Windows Terminal profile, by name. |
 | `admin` | `true` | Open the terminals as administrator. |
