@@ -4,9 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
-  # No timer while the repository is private: Windows runners bill double
-  # minutes there. The six-hourly run that catches a new Rust, a new runner
-  # image or a yanked dependency comes back the day the repository goes public.
+  # Every six hours on top of every push: a new stable Rust, a new runner image
+  # or a yanked dependency breaks a build that was green, and on a quiet week
+  # nobody would find out until the next push.
+  schedule:
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
