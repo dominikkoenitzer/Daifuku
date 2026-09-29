@@ -171,6 +171,8 @@ pub struct Fleet {
     pub profile: Option<String>,
     /// Open the terminals as administrator.
     pub admin: bool,
+    /// Start PowerShell without the user's profile script.
+    pub no_profile: bool,
     /// The key that opens this fleet, or brings it back if it is open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotkey: Option<HotkeyText>,
@@ -187,15 +189,17 @@ impl Default for Fleet {
             command: Some("claude".to_owned()),
             profile: None,
             admin: true,
+            no_profile: false,
             hotkey: Some(HotkeyText::new("ctrl + alt + return")),
         }
     }
 }
 
 /// Which monitor a fleet goes on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum MonitorPick {
     /// The first monitor taller than wide, else the primary one.
+    #[default]
     Portrait,
     /// The first monitor wider than tall, preferring the primary one.
     Landscape,

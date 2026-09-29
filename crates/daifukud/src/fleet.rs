@@ -93,6 +93,7 @@ pub fn open(
                 profile: fleet.profile.clone(),
                 command: fleet.command.clone(),
                 title: Some(format!("{} {}", fleet.name, started + i + 1)),
+                clean: fleet.no_profile,
             };
             let r = if fleet.admin || !elevated {
                 terminal::open(&wt, &launch)

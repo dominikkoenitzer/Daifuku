@@ -55,6 +55,7 @@
           "monitor": "portrait",
           "command": "claude",
           "admin": true,
+          "no_profile": false,
           "hotkey": "ctrl + alt + return"
         }
       ]
@@ -240,6 +241,11 @@
           "description": "Open the terminals as administrator.",
           "type": "boolean",
           "default": true
+        },
+        "no_profile": {
+          "description": "Start PowerShell without the user's profile script.",
+          "type": "boolean",
+          "default": false
         },
         "hotkey": {
           "description": "The key that opens this fleet, or brings it back if it is open.",

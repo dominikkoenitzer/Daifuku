@@ -130,6 +130,9 @@ pub struct Launch {
     pub command: Option<String>,
     /// The tab title until the program inside sets its own.
     pub title: Option<String>,
+    /// Skip the PowerShell profile: a faster start, and nothing from the
+    /// user's own setup on screen.
+    pub clean: bool,
 }
 
 impl Launch {
@@ -154,6 +157,9 @@ impl Launch {
         }
         if let (Some(cmd), Some(shell)) = (&self.command, shell) {
             a.push(shell.as_os_str().to_owned());
+            if self.clean {
+                a.push("-NoProfile".into());
+            }
             for s in ["-NoLogo", "-NoExit", "-Command"] {
                 a.push(s.into());
             }
@@ -312,6 +318,7 @@ mod tests {
             command: Some("claude".into()),
             title: Some("agents 1".into()),
             profile: None,
+            clean: false,
         };
         assert_eq!(
             strs(&l.args(Some(Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe")))),
