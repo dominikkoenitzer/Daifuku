@@ -10,17 +10,18 @@
 //! 3. Lock `%ProgramData%\Daifuku` to administrators, for the same reason,
 //!    and write a starter config there if there is none.
 //! 4. Register the logon task that starts the daemon elevated, and start it.
-//! 5. Add the hooks to Claude Code's settings, leaving everything else in
-//!    the file as it was.
+//! 5. Add the hooks to Claude Code's settings and, if Codex is installed,
+//!    to Codex's, leaving everything else in each file as it was.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
+use daifuku_core::agents::{self, Agent, CLAUDE, CODEX};
+use daifuku_core::config;
 use daifuku_core::config::Config;
 use daifuku_core::protocol::{Request, to_line};
 use daifuku_core::task::{TASK_NAME, xml};
-use daifuku_core::{claude, config};
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{paths, process, setup, terminal};
 
@@ -80,13 +81,17 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     }
 
     if !options.no_hooks {
-        let exe = to.join("daifuku.exe");
-        match edit_claude_settings(|s| {
-            claude::add_hooks(s, &exe.to_string_lossy()).map_err(|e| anyhow!(e))
-        }) {
-            Ok((path, 0)) => println!("hooks        already in {}", path.display()),
-            Ok((path, n)) => println!("hooks        added {n} to {}", path.display()),
-            Err(e) => println!("hooks        not added: {e:#}"),
+        let exe = to.join("daifuku.exe").to_string_lossy().into_owned();
+        for (agent, file) in hook_files() {
+            // Codex only if it is installed: its folder exists.
+            if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
+                continue;
+            }
+            match edit_json(&file, |s| agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))) {
+                Ok(0) => println!("hooks        {} already has them", agent.name),
+                Ok(n) => println!("hooks        added {n} to {}", file.display()),
+                Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
+            }
         }
     }
 
@@ -106,10 +111,15 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
     stop_daemon();
     setup::delete_task(TASK_NAME).context("could not remove the logon task")?;
     println!("removed      logon task");
-    match edit_claude_settings(|s| Ok(claude::remove_hooks(s))) {
-        Ok((path, n)) if n > 0 => println!("removed      {n} hooks from {}", path.display()),
-        Ok(_) => {}
-        Err(e) => println!("hooks        not removed: {e:#}"),
+    for (agent, file) in hook_files() {
+        if !file.is_file() {
+            continue;
+        }
+        match edit_json(&file, |s| Ok(agents::remove_hooks(s))) {
+            Ok(0) => {}
+            Ok(n) => println!("removed      {n} hooks from {}", file.display()),
+            Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
+        }
     }
     if let Some(dir) = paths::install_dir() {
         let me = std::env::current_exe().ok();
@@ -184,15 +194,20 @@ pub fn doctor() -> bool {
         None => check(false, "config valid", "no ProgramData folder"),
     }
 
-    let hooks = paths::claude_settings()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .is_some_and(|mut s| claude::add_hooks(&mut s, "daifuku.exe") == Ok(0));
-    check(
-        hooks,
-        "Claude Code hooks present",
-        "run `daifuku install`, or add them by hand (see the README)",
-    );
+    for (agent, file) in hook_files() {
+        if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
+            continue;
+        }
+        let present = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .is_some_and(|mut s| agent.add_hooks(&mut s, "daifuku.exe") == Ok(0));
+        check(
+            present,
+            &format!("{} hooks present", agent.name),
+            "run `daifuku install`, or add them by hand (see the README)",
+        );
+    }
 
     let running = send(Pipe::Hook, "{}\n", Duration::from_millis(200)).is_ok();
     check(
@@ -282,13 +297,26 @@ fn copy_retrying(from: &Path, to: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// Reads Claude Code's settings, applies `edit`, and writes the file back
-/// only if something changed. Returns the path and what `edit` returned.
-fn edit_claude_settings(
+/// Every agent and the file its hooks live in.
+fn hook_files() -> Vec<(&'static Agent, PathBuf)> {
+    let mut out = Vec::new();
+    if let Some(p) = paths::claude_settings() {
+        out.push((&CLAUDE, p));
+    }
+    if let Some(p) = paths::codex_hooks() {
+        out.push((&CODEX, p));
+    }
+    out
+}
+
+/// Reads a JSON settings file, applies `edit`, and writes the file back only
+/// if something changed. A missing file counts as `{}`. Returns what `edit`
+/// returned.
+fn edit_json(
+    path: &Path,
     edit: impl FnOnce(&mut serde_json::Value) -> anyhow::Result<usize>,
-) -> anyhow::Result<(PathBuf, usize)> {
-    let path = paths::claude_settings().context("no user profile folder")?;
-    let text = match std::fs::read_to_string(&path) {
+) -> anyhow::Result<usize> {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_owned(),
         Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
@@ -302,9 +330,9 @@ fn edit_claude_settings(
         }
         let mut out = serde_json::to_string_pretty(&settings)?;
         out.push('\n');
-        std::fs::write(&path, out)?;
+        std::fs::write(path, out)?;
     }
-    Ok((path, changed))
+    Ok(changed)
 }
 
 /// The config a fresh install starts with: the defaults, spelled out, with

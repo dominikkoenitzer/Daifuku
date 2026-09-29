@@ -110,7 +110,9 @@ impl HookEvent {
                 ) => Transition::To(AgentState::Waiting),
                 _ => Transition::Ignore,
             },
-            "SessionStart" | "Stop" => Transition::To(AgentState::Done),
+            // Codex reports a turn the user interrupted as an event of its
+            // own; the agent is idle either way.
+            "SessionStart" | "Stop" | "Interrupt" => Transition::To(AgentState::Done),
             "StopFailure" => Transition::To(AgentState::Failed),
             "SessionEnd" => Transition::End,
             _ => Transition::Ignore,
