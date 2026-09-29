@@ -11,7 +11,13 @@
 //! daifuku hook           read a hook event on stdin and report it (for agents)
 //! daifuku schema         print the config file's JSON schema
 //! daifuku config         print where the config file is
+//! daifuku install        install for this user (administrator terminal)
+//! daifuku uninstall      remove it again
+//! daifuku doctor         check the setup
 //! ```
+
+#[cfg(windows)]
+mod install;
 
 use std::io::Read;
 use std::process::ExitCode;
@@ -65,6 +71,24 @@ enum Command {
     Schema,
     /// Print where the config file is.
     Config,
+    /// Install for this user: Program Files, the logon task, Claude Code's
+    /// hooks. Needs an administrator terminal.
+    Install {
+        /// Leave Claude Code's settings alone.
+        #[arg(long)]
+        no_hooks: bool,
+        /// Do not start the daemon now; it starts at the next logon.
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove everything `install` added. Needs an administrator terminal.
+    Uninstall {
+        /// Also delete the config and the logs.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Check the setup and say how to fix anything wrong.
+    Doctor,
 }
 
 fn main() -> ExitCode {
@@ -79,6 +103,15 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Config => config_path(),
+        Command::Install { no_hooks, no_start } => setup_result(install_cmd(no_hooks, no_start)),
+        Command::Uninstall { purge } => setup_result(uninstall_cmd(purge)),
+        Command::Doctor => {
+            if doctor_cmd() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
         Command::Open { fleet } => control(&Request::Open { fleet }, false),
         Command::Snap => control(&Request::Snap, false),
         Command::Close { fleet } => control(&Request::Close { fleet }, false),
@@ -87,6 +120,46 @@ fn main() -> ExitCode {
         Command::Reload => control(&Request::Reload, false),
         Command::Stop => control(&Request::Stop, false),
     }
+}
+
+fn setup_result(r: anyhow::Result<()>) -> ExitCode {
+    match r {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("daifuku: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(windows)]
+fn install_cmd(no_hooks: bool, no_start: bool) -> anyhow::Result<()> {
+    install::install(&install::Options { no_hooks, no_start })
+}
+
+#[cfg(windows)]
+fn uninstall_cmd(purge: bool) -> anyhow::Result<()> {
+    install::uninstall(purge)
+}
+
+#[cfg(windows)]
+fn doctor_cmd() -> bool {
+    install::doctor()
+}
+
+#[cfg(not(windows))]
+fn install_cmd(_: bool, _: bool) -> anyhow::Result<()> {
+    anyhow::bail!("daifuku runs on Windows only")
+}
+
+#[cfg(not(windows))]
+fn uninstall_cmd(_: bool) -> anyhow::Result<()> {
+    anyhow::bail!("daifuku runs on Windows only")
+}
+
+#[cfg(not(windows))]
+fn doctor_cmd() -> bool {
+    false
 }
 
 /// The most a hook reads from standard input. Claude Code's events are a
