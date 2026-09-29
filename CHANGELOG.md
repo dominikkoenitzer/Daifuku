@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1, unreleased
+## 0.1.1, 2026-09-30
 
 - The daemon reloads the config by itself within two seconds of a save.
 - When a monitor is plugged in, unplugged or changes resolution, open fleets
