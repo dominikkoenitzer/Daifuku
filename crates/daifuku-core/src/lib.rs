@@ -7,6 +7,7 @@
 //! - [`hotkey`] parses `ctrl + alt + return`.
 //! - [`protocol`] is what travels over the daemon's pipes.
 //! - [`claude`] adds and removes Daifuku's hooks in Claude Code's settings.
+//! - [`task`] is the scheduled task that starts the daemon at logon.
 
 pub mod claude;
 pub mod config;
@@ -16,5 +17,6 @@ pub mod hotkey;
 pub mod monitor;
 pub mod protocol;
 pub mod state;
+pub mod task;
 
 pub use geometry::Rect;
