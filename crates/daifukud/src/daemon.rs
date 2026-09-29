@@ -9,8 +9,8 @@ use daifuku_core::state::Agents;
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
 use daifuku_win::{dpi, paths, process, window};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GA_ROOT, GetAncestor, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer,
-    TranslateMessage, WM_HOTKEY, WM_TIMER,
+    DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
+    WM_HOTKEY, WM_TIMER,
 };
 
 use crate::events::{self, Event};
@@ -193,14 +193,28 @@ impl Daemon {
     }
 
     fn hook(&mut self, message: &HookMessage) {
-        let w = message.window;
-        // Only a live top-level window: anything else in a hook message is a
-        // stale handle or a made-up one, and must not get a frame.
-        // SAFETY: GetAncestor accepts any handle.
-        let is_top = window::exists(w)
-            && daifuku_win::raw(unsafe { GetAncestor(daifuku_win::hwnd(w), GA_ROOT) }) == w;
-        if !is_top {
+        // Only a live, visible top-level window gets a frame. A pseudo console
+        // window, which a hook names when its terminal was not ready yet, is
+        // followed to the terminal window now; anything else is a stale handle
+        // or a made-up one.
+        let Some(w) = daifuku_win::console::visible_window(message.window) else {
+            tracing::debug!(
+                window = format!("{:#x}", message.window),
+                "hook named no window to draw around"
+            );
             return;
+        };
+        if self.agents.window_state(w).is_none() {
+            // The first report from a window says which window the hook
+            // resolved to, which is the one thing a hook can get wrong.
+            tracing::debug!(
+                window = format!("{w:#x}"),
+                class = %window::class(w),
+                title = %window::title(w),
+                shown = window::is_shown(w),
+                frame = ?window::frame(w),
+                "first report from a window"
+            );
         }
         if self.agents.len() >= MAX_SESSIONS && self.agents.window_state(w).is_none() {
             return;
