@@ -99,12 +99,15 @@ impl HookEvent {
         match self.hook_event_name.as_str() {
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
             | "PostToolBatch" | "PermissionDenied" | "SubagentStart" | "PreCompact"
-            | "PostCompact" => Transition::To(AgentState::Working),
+            | "PostCompact" | "ElicitationResult" => Transition::To(AgentState::Working),
             "PermissionRequest" | "Elicitation" => Transition::To(AgentState::Waiting),
             "Notification" => match self.notification_type.as_deref() {
-                Some("permission_prompt" | "elicitation_dialog") => {
-                    Transition::To(AgentState::Waiting)
-                }
+                Some(
+                    "permission_prompt"
+                    | "elicitation_dialog"
+                    | "elicitation_url_dialog"
+                    | "agent_needs_input",
+                ) => Transition::To(AgentState::Waiting),
                 _ => Transition::Ignore,
             },
             "SessionStart" | "Stop" => Transition::To(AgentState::Done),
@@ -328,6 +331,28 @@ mod tests {
         assert_eq!(a.window_state(1), Some(AgentState::Done));
         a.apply(1, &note("s", "permission_prompt"));
         assert_eq!(a.window_state(1), Some(AgentState::Waiting));
+    }
+
+    #[test]
+    fn every_documented_kind_of_question_means_waiting() {
+        for kind in [
+            "elicitation_dialog",
+            "elicitation_url_dialog",
+            "agent_needs_input",
+        ] {
+            let mut a = Agents::new();
+            a.apply(1, &ev("s", "PreToolUse"));
+            a.apply(1, &note("s", kind));
+            assert_eq!(a.window_state(1), Some(AgentState::Waiting), "{kind}");
+        }
+    }
+
+    #[test]
+    fn an_answered_question_puts_the_agent_back_to_work() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "Elicitation"));
+        a.apply(1, &ev("s", "ElicitationResult"));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
     }
 
     #[test]
