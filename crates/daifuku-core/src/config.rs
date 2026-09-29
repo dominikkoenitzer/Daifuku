@@ -235,6 +235,7 @@ pub struct Fleet {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shape: Option<Shape>,
     /// The folder every terminal starts in. Defaults to your profile folder.
+    /// `{n}` is replaced by the terminal's number, for one folder per agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directory: Option<PathBuf>,
     /// What each terminal runs, `claude` by default. `null` opens a shell.
