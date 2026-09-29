@@ -68,14 +68,42 @@ fn follow(console: windows::Win32::Foundation::HWND) -> Option<u64> {
             && !owner.is_invalid()
             && IsWindowVisible(owner).as_bool()
         {
-            return Some(raw(GetAncestor(owner, GA_ROOT)));
-        }
-        // The classic console host: its console window is the window.
-        if IsWindowVisible(console).as_bool() {
-            return Some(raw(console));
+            let root = raw(GetAncestor(owner, GA_ROOT));
+            if has_area(root) {
+                return Some(root);
+            }
         }
     }
-    None
+    // The classic console host: its console window is the window. Never the
+    // pseudo console window: it reports itself visible, at zero size, while a
+    // new terminal is still being set up. Measured on the first demo, where
+    // every agent started before its window was ready and all six named it.
+    let c = raw(console);
+    (window::class(c) != PSEUDO_CONSOLE && window::is_shown(c) && has_area(c)).then_some(c)
+}
+
+/// The class of the hidden window a ConPTY console has.
+pub const PSEUDO_CONSOLE: &str = "PseudoConsoleWindow";
+
+fn has_area(w: u64) -> bool {
+    window::frame(w).is_some_and(|f| !f.is_empty())
+}
+
+/// The window a person sees for a window a hook named: the window itself if
+/// it is a real, visible top-level window; for a pseudo console window, the
+/// terminal window that owns it, which may not have existed yet when the
+/// hook looked. `None` when there is nothing to draw around.
+#[must_use]
+pub fn visible_window(w: u64) -> Option<u64> {
+    if !window::exists(w) {
+        return None;
+    }
+    if window::class(w) == PSEUDO_CONSOLE {
+        return follow(crate::hwnd(w));
+    }
+    // SAFETY: GetAncestor accepts any handle.
+    let root = raw(unsafe { GetAncestor(crate::hwnd(w), GA_ROOT) });
+    (root == w && has_area(w)).then_some(w)
 }
 
 /// Borrows `pid`'s console and follows it to a window.
