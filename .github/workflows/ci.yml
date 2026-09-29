@@ -279,8 +279,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item target/release/daifuku.exe, target/release/daifukud.exe, LICENSE $stage
           foreach ($exe in 'daifuku.exe', 'daifukud.exe') {
-              $out = (& "$stage/$exe" --version 2>&1) -join ' '
-              if ($LASTEXITCODE -ne 0) { throw "$exe --version exited with $LASTEXITCODE" }
+              # Waited for and compared, as the release does: daifukud is
+              # windowless, so the call operator would not wait for its output.
+              $capture = New-TemporaryFile
+              $p = Start-Process -FilePath "$stage/$exe" -ArgumentList '--version' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $capture
+              $out = (Get-Content -Raw $capture).Trim()
+              Remove-Item $capture
+              if ($p.ExitCode -ne 0) { throw "$exe --version exited with $($p.ExitCode)" }
+              $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+              if ($out -notmatch [regex]::Escape($version)) { throw "$exe reports '$out', the workspace is $version" }
               Write-Output "$exe -> $out"
           }
           & "$stage/daifuku.exe" schema | Out-File -Encoding utf8 "$stage/daifuku.schema.json"

@@ -120,8 +120,15 @@ jobs:
 
           foreach ($exe in @('daifuku.exe', 'daifukud.exe')) {
               $path = Join-Path $env:STAGE_DIR $exe
-              $output = (& $path --version 2>&1) -join ' '
-              if ($LASTEXITCODE -ne 0) { throw "$exe --version exited with $LASTEXITCODE" }
+              # Start-Process with -Wait, not the call operator: daifukud is a
+              # windowless program, and PowerShell does not wait for one, so
+              # `& daifukud --version` returned before it printed anything and
+              # the check below read an empty string.
+              $capture = New-TemporaryFile
+              $p = Start-Process -FilePath $path -ArgumentList '--version' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $capture
+              $output = (Get-Content -Raw $capture).Trim()
+              Remove-Item $capture
+              if ($p.ExitCode -ne 0) { throw "$exe --version exited with $($p.ExitCode)" }
               Write-Output "$exe -> $output"
 
               # Running is not the same as being the thing the tag says. Without
