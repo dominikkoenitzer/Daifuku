@@ -16,14 +16,15 @@ use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_MENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
-    SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow,
-    WM_CLOSE,
+    BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
+    PostMessageW, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
+    ShowWindow, WM_CLOSE,
 };
 
 use crate::monitor::rect;
@@ -219,26 +220,50 @@ pub fn foreground() -> u64 {
     raw(unsafe { GetForegroundWindow() })
 }
 
-/// Brings a window to the front and gives it the keyboard.
+/// Brings a window to the front and gives it the keyboard, and says whether
+/// it really is in front afterwards.
 ///
-/// Windows refuses `SetForegroundWindow` to a process that did not receive the
-/// last input. A hotkey handler did, so from there it works; for the other
-/// paths a single Alt tap counts as input and unlocks it, which is the
-/// technique the shell's own task switcher relies on. The tap is a key up and
-/// down of Alt alone, which no program treats as a shortcut.
+/// Windows guards the foreground: `SetForegroundWindow` from a process that
+/// did not receive the last input can report success and still only flash
+/// the taskbar button. Measured on the first run, from a request over the
+/// control pipe: the call returned true and the old window kept the focus.
+/// So this does what reliably works and then checks:
+///
+/// 1. Joins the input queue of the thread that owns the foreground window
+///    for the duration of the call (`AttachThreadInput`), which makes the
+///    switch look like it came from the foreground's own input.
+/// 2. If the window is still not in front, taps Alt once (a key up and down
+///    of Alt alone, which no program treats as a shortcut) so this process has
+///    the last input, and tries again.
 pub fn focus(w: u64) -> bool {
     let h = hwnd(w);
-    // SAFETY: plain calls on a handle.
+    // SAFETY: plain calls on handles and thread ids; the attachment is
+    // always undone before returning.
     unsafe {
         if IsIconic(h).as_bool() {
             let _ = ShowWindow(h, SW_RESTORE);
         }
-        if SetForegroundWindow(h).as_bool() {
+        if foreground() == w {
+            return true;
+        }
+        let front = GetForegroundWindow();
+        let front_thread = GetWindowThreadProcessId(front, None);
+        let me = GetCurrentThreadId();
+        let attached = front_thread != 0
+            && front_thread != me
+            && AttachThreadInput(me, front_thread, true).as_bool();
+        let _ = BringWindowToTop(h);
+        let _ = SetForegroundWindow(h);
+        if attached {
+            let _ = AttachThreadInput(me, front_thread, false);
+        }
+        if foreground() == w {
             return true;
         }
         tap_alt();
-        SetForegroundWindow(h).as_bool()
+        let _ = SetForegroundWindow(h);
     }
+    foreground() == w
 }
 
 fn tap_alt() {
