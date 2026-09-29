@@ -5,11 +5,13 @@
 //! - [`state`] turns a stream of agent hook events into a state per window.
 //! - [`config`] is the config file and its schema.
 //! - [`hotkey`] parses `ctrl + alt + return`.
+//! - [`protocol`] is what travels over the daemon's pipes.
 
 pub mod config;
 pub mod geometry;
 pub mod grid;
 pub mod hotkey;
+pub mod protocol;
 pub mod state;
 
 pub use geometry::Rect;
