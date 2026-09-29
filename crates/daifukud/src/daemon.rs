@@ -53,6 +53,8 @@ struct Daemon {
     config_stamp: Option<std::time::SystemTime>,
     /// The monitors as last seen, to put fleets back when they change.
     monitors: Vec<daifuku_core::monitor::MonitorInfo>,
+    /// Since when each window has shown its state, for `daifuku status`.
+    shown_since: std::collections::HashMap<u64, (AgentState, std::time::Instant)>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -88,6 +90,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         started: std::time::Instant::now(),
         config_stamp: None,
         monitors: daifuku_win::monitor::monitors(),
+        shown_since: std::collections::HashMap::new(),
     };
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
@@ -252,6 +255,16 @@ impl Daemon {
         let before = self.agents.window_state(w);
         if self.agents.apply(w, &message.event) {
             let now = self.agents.window_state(w);
+            match now {
+                Some(state) if self.shown_since.get(&w).map(|&(s, _)| s) != Some(state) => {
+                    self.shown_since
+                        .insert(w, (state, std::time::Instant::now()));
+                }
+                None => {
+                    self.shown_since.remove(&w);
+                }
+                _ => {}
+            }
             if self.config.sound && now == Some(AgentState::Waiting) && before != now {
                 access::chime();
             }
@@ -422,6 +435,10 @@ impl Daemon {
                 window: w,
                 title: window::title(w),
                 state,
+                for_seconds: self
+                    .shown_since
+                    .get(&w)
+                    .map_or(0, |&(_, t)| t.elapsed().as_secs()),
             })
             .collect();
         let fleets = self
@@ -464,6 +481,7 @@ impl Daemon {
             match e {
                 Event::Destroyed(w) => {
                     let forgot = self.agents.forget_window(w);
+                    self.shown_since.remove(&w);
                     for f in &mut self.fleets {
                         f.windows.retain(|&x| x != w);
                     }
@@ -519,6 +537,7 @@ impl Daemon {
             .collect();
         for w in &dead {
             self.agents.forget_window(*w);
+            self.shown_since.remove(w);
         }
         for f in &mut self.fleets {
             f.prune();

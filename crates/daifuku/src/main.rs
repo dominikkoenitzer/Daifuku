@@ -338,7 +338,23 @@ fn print_status(s: &daifuku_core::protocol::Status) {
         println!("  none reporting");
     }
     for a in &s.agents {
-        println!("  {:<8} {:#010x}  {}", a.state.name(), a.window, a.title);
+        println!(
+            "  {:<8} {:>8}  {:#010x}  {}",
+            a.state.name(),
+            since(a.for_seconds),
+            a.window,
+            a.title
+        );
+    }
+}
+
+/// `41s`, `3m 12s`, `2h 5m`: how long an agent has been in its state.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn since(seconds: u64) -> String {
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m {}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
     }
 }
 
@@ -350,6 +366,14 @@ mod tests {
     #[test]
     fn the_command_line_is_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn durations_read_like_a_person_would_say_them() {
+        assert_eq!(since(0), "0s");
+        assert_eq!(since(59), "59s");
+        assert_eq!(since(192), "3m 12s");
+        assert_eq!(since(7500), "2h 5m");
     }
 
     #[test]
