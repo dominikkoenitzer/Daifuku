@@ -6,6 +6,7 @@
 //! travel over the pipes and how the pure logic in `daifuku-core` keys its
 //! maps, and it keeps the `windows` crate out of every other signature.
 //!
+//! - [`access`]: high contrast, reduced motion and the notification sound.
 //! - [`dpi`]: per-monitor DPI awareness, which every other call depends on.
 //! - [`monitor`]: the attached monitors in physical pixels.
 //! - [`window`]: reading windows and placing them by their visible frame.
@@ -18,6 +19,7 @@
 
 #![cfg(windows)]
 
+pub mod access;
 pub mod console;
 pub mod dpi;
 pub mod monitor;
