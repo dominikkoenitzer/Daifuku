@@ -97,6 +97,12 @@ pub struct Status {
     pub version: String,
     /// Where the config was read from.
     pub config: String,
+    /// Whether the daemon runs elevated, which administrator fleets need.
+    #[serde(default)]
+    pub elevated: bool,
+    /// Every hotkey and what it does, refused ones included.
+    #[serde(default)]
+    pub hotkeys: Vec<String>,
     /// Every open fleet.
     pub fleets: Vec<FleetStatus>,
     /// Every window an agent has reported from.
@@ -188,6 +194,8 @@ mod tests {
         let status = Status {
             version: "0.1.0".into(),
             config: "C:\\ProgramData\\Daifuku\\daifuku.json".into(),
+            elevated: true,
+            hotkeys: vec!["ctrl + alt + return: open agents".into()],
             fleets: vec![FleetStatus {
                 name: "agents".into(),
                 monitor: "portrait".into(),
