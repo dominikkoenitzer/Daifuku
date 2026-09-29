@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::time::Duration;
 
 use daifuku_core::protocol::{HookMessage, Request, Response, from_line, to_line};
-use daifuku_win::pipe::{Pipe, Server};
+use daifuku_win::pipe::{Instance, Pipe, instances};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 
@@ -36,39 +36,45 @@ pub struct Inbox {
 /// Claims both pipe names and starts both threads. Fails if either name is
 /// taken, which means another daemon runs in this session.
 pub fn start(main_thread: u32) -> anyhow::Result<Inbox> {
-    let hook = Server::new(Pipe::Hook).map_err(|e| anyhow::anyhow!("hook pipe: {e}"))?;
-    let control = Server::new(Pipe::Control).map_err(|e| anyhow::anyhow!("control pipe: {e}"))?;
+    // Four hook instances: several agents finishing a tool call in the same
+    // instant each find a free one instead of queueing on a single pipe.
+    let hooks = instances(Pipe::Hook, 4).map_err(|e| anyhow::anyhow!("hook pipe: {e}"))?;
+    let controls = instances(Pipe::Control, 1).map_err(|e| anyhow::anyhow!("control pipe: {e}"))?;
     let (sender, receiver) = channel();
-    spawn(
-        "daifuku-hook",
-        hook,
-        sender.clone(),
-        main_thread,
-        serve_hook,
-    );
-    spawn(
-        "daifuku-control",
-        control,
-        sender,
-        main_thread,
-        serve_control,
-    );
+    for (i, hook) in hooks.into_iter().enumerate() {
+        spawn(
+            &format!("daifuku-hook-{i}"),
+            hook,
+            sender.clone(),
+            main_thread,
+            serve_hook,
+        );
+    }
+    for control in controls {
+        spawn(
+            "daifuku-control",
+            control,
+            sender.clone(),
+            main_thread,
+            serve_control,
+        );
+    }
     Ok(Inbox { receiver })
 }
 
 fn spawn(
     name: &str,
-    server: Server,
+    instance: Instance,
     sender: Sender<Inbound>,
     main_thread: u32,
-    serve: fn(&mut daifuku_win::pipe::Connection, &Sender<Inbound>, u32),
+    serve: fn(&mut daifuku_win::pipe::Connection<'_>, &Sender<Inbound>, u32),
 ) {
     let _ = std::thread::Builder::new()
         .name(name.to_owned())
         .spawn(move || {
-            let mut server = server;
+            let mut instance = instance;
             loop {
-                match server.accept() {
+                match instance.accept() {
                     Ok(mut connection) => serve(&mut connection, &sender, main_thread),
                     Err(error) => {
                         tracing::warn!(%error, "pipe accept failed");
@@ -85,7 +91,7 @@ fn wake(main_thread: u32) {
 }
 
 fn serve_hook(
-    connection: &mut daifuku_win::pipe::Connection,
+    connection: &mut daifuku_win::pipe::Connection<'_>,
     sender: &Sender<Inbound>,
     main_thread: u32,
 ) {
@@ -105,7 +111,7 @@ fn serve_hook(
 }
 
 fn serve_control(
-    connection: &mut daifuku_win::pipe::Connection,
+    connection: &mut daifuku_win::pipe::Connection<'_>,
     sender: &Sender<Inbound>,
     main_thread: u32,
 ) {
