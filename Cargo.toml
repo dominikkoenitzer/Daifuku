@@ -4,6 +4,8 @@ members = [
     "crates/daifuku-core",
     "crates/daifuku-win",
     "crates/daifuku-render",
+    "crates/daifukud",
+    "crates/daifuku",
 ]
 
 [workspace.package]
@@ -23,6 +25,10 @@ serde_json = "1.0"
 schemars = "1.2"
 thiserror = "2.0"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
 windows = "0.62"
 windows-core = "0.62"
 
