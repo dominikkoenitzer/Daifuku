@@ -26,12 +26,9 @@
         "enabled": true,
         "width": 4,
         "offset": 0,
-        "colours": {
-          "working": "#89b4fa",
-          "waiting": "#f9e2af",
-          "done": "#a6e3a1",
-          "failed": "#f38ba8"
-        }
+        "palette": "catppuccin",
+        "state_widths": true,
+        "pulse": true
       }
     },
     "hotkeys": {
@@ -59,6 +56,11 @@
           "hotkey": "ctrl + alt + return"
         }
       ]
+    },
+    "sound": {
+      "description": "Play the system notification sound when an agent starts waiting for\nyou, for when you are not looking at the screen.",
+      "type": "boolean",
+      "default": false
     }
   },
   "additionalProperties": false,
@@ -103,18 +105,49 @@
           "format": "int32",
           "default": 0
         },
+        "palette": {
+          "description": "The colours, as a set. `catppuccin` by default; `colorblind` is the\nOkabe-Ito palette, which stays distinct for every common kind of\ncolour blindness.",
+          "$ref": "#/$defs/Palette",
+          "default": "catppuccin"
+        },
         "colours": {
-          "description": "Colour per state.",
-          "$ref": "#/$defs/StateColours",
-          "default": {
-            "working": "#89b4fa",
-            "waiting": "#f9e2af",
-            "done": "#a6e3a1",
-            "failed": "#f38ba8"
-          }
+          "description": "Colours of your own, one per state, instead of the palette's.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateColours"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state_widths": {
+          "description": "Draw each state at its own width, so a state reads without its\ncolour: at a width of 4, done is 2, working 4, failed 6 and waiting 8.",
+          "type": "boolean",
+          "default": true
+        },
+        "pulse": {
+          "description": "Let a waiting border breathe slowly, the one thing on screen that\nmoves. Off whenever Windows is set to show no animations.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false
+    },
+    "Palette": {
+      "description": "A named set of state colours.",
+      "oneOf": [
+        {
+          "description": "Catppuccin Mocha: blue, yellow, green and red.",
+          "type": "string",
+          "const": "catppuccin"
+        },
+        {
+          "description": "Okabe-Ito: sky blue, orange, bluish green and vermilion, chosen to stay\ndistinct for deuteranopia, protanopia and tritanopia.",
+          "type": "string",
+          "const": "colorblind"
+        }
+      ]
     },
     "StateColours": {
       "description": "A colour for each agent state. The defaults are Catppuccin Mocha.",
