@@ -152,8 +152,8 @@ pub fn corner_radius(rounded: bool, width: i32, offset: i32, dpi: u32) -> f32 {
 
 /// Works out where and how to draw one frame.
 ///
-/// `rounded` picks between a rounded and a square frame; the caller resolves
-/// [`crate::BorderStyle::System`] first. `dpi` is the DPI of the monitor the
+/// `rounded` picks between a rounded and a square frame, which
+/// [`crate::BorderConfig`] takes from the operating system. `dpi` is the DPI of the monitor the
 /// target sits on, which only affects the corner radius: the stroke width is
 /// given in physical pixels and stays there.
 #[must_use]

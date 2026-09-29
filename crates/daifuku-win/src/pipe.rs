@@ -197,7 +197,7 @@ fn create(pipe: Pipe, first: bool) -> io::Result<OwnedHandle> {
 }
 
 impl Connection<'_> {
-    /// Reads one line, at most [`MAX_LINE`] bytes.
+    /// Reads one line, at most 256 KiB.
     ///
     /// # Errors
     ///
