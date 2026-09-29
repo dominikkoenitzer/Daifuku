@@ -5,6 +5,7 @@
 //! daifuku snap           put every fleet terminal back in its cell
 //! daifuku close [fleet]  close a fleet's terminals
 //! daifuku next           focus the agent that has waited longest
+//! daifuku demo           open six scripted demo agents
 //! daifuku status         what the daemon knows
 //! daifuku reload         re-read the config
 //! daifuku stop           stop the daemon
@@ -16,6 +17,8 @@
 //! daifuku doctor         check the setup
 //! ```
 
+#[cfg(windows)]
+mod demo;
 #[cfg(windows)]
 mod install;
 
@@ -54,6 +57,11 @@ enum Command {
     },
     /// Focus the agent that has waited longest for you.
     Next,
+    /// Open six scripted demo agents: Daifuku without a real agent.
+    Demo,
+    /// One scripted demo agent. `daifuku demo` starts these.
+    #[command(hide = true)]
+    DemoAgent,
     /// Show fleets, agents, hotkeys and the config in use.
     Status {
         /// Print the raw JSON reply.
@@ -116,11 +124,24 @@ fn main() -> ExitCode {
         Command::Snap => control(&Request::Snap, false),
         Command::Close { fleet } => control(&Request::Close { fleet }, false),
         Command::Next => control(&Request::Next, false),
+        Command::Demo => control(&Request::Demo, false),
+        Command::DemoAgent => {
+            demo_agent();
+            ExitCode::SUCCESS
+        }
         Command::Status { json } => control(&Request::Status, json),
         Command::Reload => control(&Request::Reload, false),
         Command::Stop => control(&Request::Stop, false),
     }
 }
+
+#[cfg(windows)]
+fn demo_agent() {
+    demo::run();
+}
+
+#[cfg(not(windows))]
+fn demo_agent() {}
 
 fn setup_result(r: anyhow::Result<()>) -> ExitCode {
     match r {
