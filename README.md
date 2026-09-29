@@ -40,8 +40,9 @@ To see it work without a real agent, `daifuku demo` opens six scripted ones.
 
 ## Configure
 
-`C:\ProgramData\Daifuku\daifuku.json`, then `daifuku reload`. Every key is
-optional; an editor that reads the linked schema completes and checks them.
+`C:\ProgramData\Daifuku\daifuku.json`. Changes apply within two seconds.
+Every key is optional; an editor that reads the linked schema completes and
+checks them. [docs/configuration.md](docs/configuration.md) has every key.
 
 ```json
 {
