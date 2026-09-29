@@ -137,7 +137,7 @@ pub fn run(number: Option<usize>) {
         |n| n.saturating_sub(1),
     );
     let reporter = Reporter {
-        window: console::terminal_window(me),
+        window: console::own_terminal_window(),
         session: format!("demo-{me}"),
     };
     say("\x1b[2mdaifuku demo agent: scripted, not a real one. Ctrl+C to stop.\x1b[0m");

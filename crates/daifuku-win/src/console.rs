@@ -41,18 +41,28 @@ pub fn terminal_window(pid: u32) -> Option<u64> {
     via_owning_process(&chain)
 }
 
-/// Borrows `pid`'s console and follows it to a window.
-fn via_console(pid: u32) -> Option<u64> {
-    // SAFETY: FreeConsole and AttachConsole only change which console this
-    // process is attached to; the window handles are only read.
+/// The terminal window of the console this process is attached to, without
+/// letting go of it.
+///
+/// For a program that keeps writing to its console, like the demo agent.
+/// [`terminal_window`] detaches the caller from its own console to borrow
+/// others', which is right for a hook that is about to exit and wrong for
+/// anything that prints afterwards: its output would go nowhere and it would
+/// outlive its window. Measured: that is exactly what the first demo did.
+#[must_use]
+pub fn own_terminal_window() -> Option<u64> {
+    // SAFETY: only reads the handle of the console already attached.
+    let console = unsafe { GetConsoleWindow() };
+    if console.is_invalid() {
+        return None;
+    }
+    follow(console)
+}
+
+/// From a console window to the top-level window a person sees.
+fn follow(console: windows::Win32::Foundation::HWND) -> Option<u64> {
+    // SAFETY: the handles are only read.
     unsafe {
-        let _ = FreeConsole();
-        AttachConsole(pid).ok()?;
-        let console = GetConsoleWindow();
-        let _ = FreeConsole();
-        if console.is_invalid() {
-            return None;
-        }
         // Windows Terminal and other ConPTY hosts: the owner is the window.
         if let Ok(owner) = GetWindow(console, GW_OWNER)
             && !owner.is_invalid()
@@ -66,6 +76,22 @@ fn via_console(pid: u32) -> Option<u64> {
         }
     }
     None
+}
+
+/// Borrows `pid`'s console and follows it to a window.
+fn via_console(pid: u32) -> Option<u64> {
+    // SAFETY: FreeConsole and AttachConsole only change which console this
+    // process is attached to; the window handles are only read.
+    unsafe {
+        let _ = FreeConsole();
+        AttachConsole(pid).ok()?;
+        let console = GetConsoleWindow();
+        let _ = FreeConsole();
+        if console.is_invalid() {
+            return None;
+        }
+        follow(console)
+    }
 }
 
 /// The fallback for terminals whose pseudo console has no owner, such as an
