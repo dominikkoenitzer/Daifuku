@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use anyhow::Context;
 use daifuku_core::config::Config;
 use daifuku_core::protocol::{AgentWindow, FleetStatus, HookMessage, Request, Response, Status};
-use daifuku_core::state::Agents;
+use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
-use daifuku_win::{dpi, paths, process, window};
+use daifuku_win::{access, dpi, paths, process, window};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
     WM_HOTKEY, WM_TIMER,
@@ -27,6 +27,13 @@ const MAX_SESSIONS: usize = 512;
 /// of the work; this catches the ones Windows did not deliver.
 const SWEEP_MS: u32 = 2000;
 
+/// How often a waiting border's pulse repaints: twenty times a second, which
+/// is smooth for a slow breath and nothing for the compositor.
+const PULSE_MS: u32 = 50;
+
+/// One breath of the pulse, in seconds.
+const PULSE_PERIOD: f64 = 1.6;
+
 struct Daemon {
     config: Config,
     config_path: PathBuf,
@@ -36,6 +43,12 @@ struct Daemon {
     borders: Option<BorderManager>,
     hotkeys: Hotkeys,
     elevated: bool,
+    /// Windows' own settings, read at start and on every sweep.
+    high_contrast: bool,
+    animations: bool,
+    /// The pulse timer, running only while an agent waits.
+    pulse_timer: Option<usize>,
+    started: std::time::Instant,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -65,6 +78,10 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         borders: None,
         hotkeys: Hotkeys::default(),
         elevated,
+        high_contrast: access::high_contrast(),
+        animations: access::animations(),
+        pulse_timer: None,
+        started: std::time::Instant::now(),
     };
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
@@ -92,7 +109,13 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
             WM_INBOX => d.inbox(&inbox),
             // Nothing to do here: window_events() below drains the queue.
             events::WM_EVENTS => {}
-            WM_TIMER if msg.hwnd.is_invalid() => d.sweep(),
+            WM_TIMER if msg.hwnd.is_invalid() => {
+                if Some(msg.wParam.0) == d.pulse_timer {
+                    d.refresh_borders();
+                } else {
+                    d.sweep();
+                }
+            }
             _ => {
                 // SAFETY: standard dispatch of a message this thread received.
                 unsafe {
@@ -219,7 +242,12 @@ impl Daemon {
         if self.agents.len() >= MAX_SESSIONS && self.agents.window_state(w).is_none() {
             return;
         }
+        let before = self.agents.window_state(w);
         if self.agents.apply(w, &message.event) {
+            let now = self.agents.window_state(w);
+            if self.config.sound && now == Some(AgentState::Waiting) && before != now {
+                access::chime();
+            }
             tracing::debug!(window = format!("{w:#x}"), event = %message.event.hook_event_name, state = ?self.agents.window_state(w), "agent state");
             self.refresh_borders();
         }
@@ -445,6 +473,17 @@ impl Daemon {
     }
 
     fn sweep(&mut self) {
+        let (hc, anim) = (access::high_contrast(), access::animations());
+        if (hc, anim) != (self.high_contrast, self.animations) {
+            tracing::info!(
+                high_contrast = hc,
+                animations = anim,
+                "Windows accessibility settings changed"
+            );
+            self.high_contrast = hc;
+            self.animations = anim;
+            self.refresh_borders();
+        }
         let dead: Vec<u64> = self
             .agents
             .windows()
@@ -464,21 +503,111 @@ impl Daemon {
 
     /// Sends the borders their end state: one frame per agent window that is
     /// on screen, in its state's colour.
-    fn refresh_borders(&self) {
+    /// Sends the borders their end state: one frame per agent window that is
+    /// on screen, in its state's colour and at its state's width. Starts or
+    /// stops the pulse to match: it runs only while an agent waits.
+    fn refresh_borders(&mut self) {
+        self.update_pulse();
         let Some(borders) = &self.borders else { return };
-        let colours = self.config.border.colours;
+        let border = &self.config.border;
+        let colours = if self.high_contrast {
+            access::high_contrast_colours()
+        } else {
+            border.colours()
+        };
+        let breath = self
+            .pulse_timer
+            .map(|_| breath(self.started.elapsed().as_secs_f64()));
         let specs: Vec<BorderSpec> = self
             .agents
             .windows()
             .into_iter()
             .filter(|&(w, _)| window::is_shown(w) && !window::is_minimised(w))
             .filter_map(|(w, state)| {
-                window::frame(w)
-                    .map(|rect| BorderSpec::new(WindowHandle::from_raw(w), rect, colours.of(state)))
+                let mut colour = colours.of(state);
+                if state == AgentState::Waiting
+                    && let Some(k) = breath
+                {
+                    colour = dim(colour, k);
+                }
+                window::frame(w).map(|rect| {
+                    BorderSpec::new(WindowHandle::from_raw(w), rect, colour)
+                        .with_width(border.width_for(state))
+                })
             })
             .collect();
         if let Err(e) = borders.update(None, specs) {
             tracing::warn!(error = %e, "could not update borders");
         }
+    }
+
+    /// Starts the pulse timer when an agent waits and the pulse is wanted and
+    /// allowed, and stops it otherwise.
+    fn update_pulse(&mut self) {
+        let b = &self.config.border;
+        let wanted = b.enabled
+            && b.pulse
+            && self.animations
+            && self
+                .agents
+                .windows()
+                .values()
+                .any(|&s| s == AgentState::Waiting);
+        match (wanted, self.pulse_timer) {
+            (true, None) => {
+                // SAFETY: a thread timer, killed below or at exit.
+                let id = unsafe { SetTimer(None, 0, PULSE_MS, None) };
+                self.pulse_timer = (id != 0).then_some(id);
+            }
+            (false, Some(id)) => {
+                // SAFETY: the timer this thread set.
+                unsafe {
+                    let _ = KillTimer(None, id);
+                }
+                self.pulse_timer = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// How bright a waiting border is at `t` seconds: a slow breath between 45 %
+/// and full, never off, so the state stays readable at every moment.
+fn breath(t: f64) -> f64 {
+    let phase = (t / PULSE_PERIOD) * std::f64::consts::TAU;
+    0.45 + 0.55 * (0.5 + 0.5 * phase.cos())
+}
+
+/// A colour at `k` of its brightness.
+fn dim(c: daifuku_core::config::Colour, k: f64) -> daifuku_core::config::Colour {
+    let f = |v: u8| {
+        // In range: v is at most 255 and k at most 1.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let out = (f64::from(v) * k).round().clamp(0.0, 255.0) as u8;
+        out
+    };
+    daifuku_core::config::Colour::new(f(c.r), f(c.g), f(c.b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_breath_never_goes_dark() {
+        for i in 0..1000 {
+            let k = breath(f64::from(i) * 0.013);
+            assert!((0.45..=1.0).contains(&k), "{k}");
+        }
+        assert!(
+            (breath(0.0) - 1.0).abs() < 1e-9,
+            "starts at full brightness"
+        );
+    }
+
+    #[test]
+    fn dimming_keeps_the_hue() {
+        let c = dim(daifuku_core::config::Colour::new(200, 100, 0), 0.5);
+        assert_eq!((c.r, c.g, c.b), (100, 50, 0));
     }
 }
