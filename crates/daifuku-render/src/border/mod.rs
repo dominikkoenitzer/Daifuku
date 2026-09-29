@@ -87,6 +87,10 @@ pub struct BorderSpec {
     pub rect: Rect,
     /// What to paint it.
     pub colour: Colour,
+    /// Its thickness in physical pixels, when it differs from the configured
+    /// one: Daifuku draws each state at its own width, so a state reads
+    /// without its colour.
+    pub width: Option<i32>,
 }
 
 impl BorderSpec {
@@ -97,7 +101,15 @@ impl BorderSpec {
             target,
             rect,
             colour,
+            width: None,
         }
+    }
+
+    /// The same spec at its own thickness.
+    #[must_use]
+    pub const fn with_width(mut self, width: i32) -> Self {
+        self.width = Some(width);
+        self
     }
 }
 

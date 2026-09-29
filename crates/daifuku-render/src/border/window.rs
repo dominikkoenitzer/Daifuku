@@ -127,7 +127,13 @@ impl BorderWindow {
     ///
     /// When Direct2D or the window manager refuses. The caller logs and carries
     /// on: a missing border must never take the daemon down.
-    pub fn track(&mut self, target: HWND, rect: Rect, colour: Colour) -> Result<()> {
+    pub fn track(
+        &mut self,
+        target: HWND,
+        rect: Rect,
+        colour: Colour,
+        width: Option<i32>,
+    ) -> Result<()> {
         if !self.config.enabled || rect.is_empty() {
             self.hide();
             return Ok(());
@@ -144,7 +150,7 @@ impl BorderWindow {
         let dpi = dpi_for_rect(rect);
         let geometry = frame_geometry(
             rect,
-            self.config.width,
+            width.unwrap_or(self.config.width),
             self.config.offset,
             self.config.rounded,
             dpi,
