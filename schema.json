@@ -249,7 +249,7 @@
           ]
         },
         "directory": {
-          "description": "The folder every terminal starts in. Defaults to your profile folder.",
+          "description": "The folder every terminal starts in. Defaults to your profile folder.\n`{n}` is replaced by the terminal's number, for one folder per agent.",
           "type": [
             "string",
             "null"

@@ -89,7 +89,7 @@ pub fn open(
         let started = record.windows.len();
         for i in 0..missing {
             let launch = Launch {
-                directory: Some(directory(fleet)),
+                directory: Some(directory(fleet, started + i + 1)),
                 profile: fleet.profile.clone(),
                 command: fleet
                     .command
@@ -180,11 +180,48 @@ pub fn snap(fleet: &Fleet, config: &Config, record: &mut OpenFleet) -> anyhow::R
 }
 
 /// The folder a fleet starts in: its configured one, else the user's profile.
-fn directory(fleet: &Fleet) -> PathBuf {
+///
+/// `{n}` in it becomes the terminal's number, so each agent can work in a
+/// folder of its own: `C:\src\site-{n}` for one git worktree per agent. A
+/// folder that does not exist falls back to the profile folder rather than
+/// failing the whole fleet.
+fn directory(fleet: &Fleet, n: usize) -> PathBuf {
     fleet
         .directory
-        .clone()
+        .as_ref()
+        .map(|d| numbered(d, n))
         .filter(|d| d.is_dir())
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
         .unwrap_or_else(|| Path::new(r"C:\").to_path_buf())
+}
+
+/// A path with `{n}` replaced by `n`.
+fn numbered(path: &Path, n: usize) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().replace("{n}", &n.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_numbered_directory_gives_each_terminal_its_own_folder() {
+        assert_eq!(
+            numbered(Path::new(r"C:\src\site-{n}"), 3),
+            PathBuf::from(r"C:\src\site-3")
+        );
+        assert_eq!(
+            numbered(Path::new(r"C:\src\site"), 3),
+            PathBuf::from(r"C:\src\site")
+        );
+    }
+
+    #[test]
+    fn a_missing_numbered_folder_falls_back_instead_of_failing() {
+        let fleet = Fleet {
+            directory: Some(r"C:\no\such\place-{n}".into()),
+            ..Fleet::default()
+        };
+        assert!(directory(&fleet, 1).is_dir());
+    }
 }
