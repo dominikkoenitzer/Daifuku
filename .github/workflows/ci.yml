@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Every six hours on top of every push: a new stable Rust, a new runner image
+  # or a yanked dependency breaks a build that was green, and on a quiet week
+  # nobody would find out until the next push.
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  # One group per commit for a push, so no push on main can cancel another
+  # before it ran; one per branch for a pull request, where dropping a
+  # superseded run costs nothing.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    # Two Windows versions and both profiles. Daifuku is mostly Win32 and DWM
+    # behaviour, which differs between releases, and a release-only difference
+    # is invisible to a debug-only run.
+    name: test (${{ matrix.os }}, ${{ matrix.profile }})
+    timeout-minutes: 30
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-latest]
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.os }}-${{ matrix.profile }}
+      - name: Run the suite
+        shell: pwsh
+        run: |
+          $flags = if ('${{ matrix.profile }}' -eq 'release') { '--release' } else { '' }
+          cargo test --locked --workspace --all-features $flags
+
+  doc:
+    name: doc
+    timeout-minutes: 30
+    runs-on: windows-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: doc
+      - run: cargo doc --locked --workspace --all-features --no-deps
+
+  build:
+    name: build release
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      # Thin LTO with one codegen unit breaks in ways a debug build does not.
+      - run: cargo build --locked --release --workspace
+
+  # Only on the timer: it compiles against the Rust that is coming, so a
+  # failure here is weeks of warning rather than a broken build.
+  beta:
+    name: next rust
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@beta
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: beta
+      - run: cargo test --locked --workspace --all-features
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+  # Only on the timer: cargo-mutants flips one comparison or drops one call at
+  # a time and reports every change no test noticed. daifuku-core is the pure
+  # logic, so a surviving mutant there is a real hole in the suite.
+  mutants:
+    name: mutation testing
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mutants
+      - run: cargo install cargo-mutants --locked
+      - run: cargo mutants --package daifuku-core --no-shuffle --timeout 120
+        continue-on-error: true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants
+          path: mutants.out/
+          retention-days: 14
+
+  deny:
+    name: cargo-deny
+    timeout-minutes: 30
+    # cargo-deny-action is a container action and only runs on Linux. It reads
+    # Cargo.lock and the advisory database; deny.toml pins the graph to the
+    # Windows target, so it audits the same set the other jobs build.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
