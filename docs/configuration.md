@@ -1,8 +1,8 @@
 # Configuration
 
 Daifuku reads `C:\ProgramData\Daifuku\daifuku.json`. `daifuku config` prints
-that path, and the daemon picks up every change to the file within two
-seconds; `daifuku reload` does it at once.
+that path. `daifuku reload` applies a change at once; from version 0.1.1 on,
+the daemon also picks up every saved change by itself within two seconds.
 
 The folder is writable by administrators only, on purpose: the daemon runs
 elevated and the config says what it starts. Edit the file from an
@@ -70,8 +70,8 @@ closed are opened again, and every terminal goes back to its cell.
 | `"\\\\.\\DISPLAY2"` | A monitor by its device name. |
 
 Every pick falls back to the primary monitor, so a fleet always opens
-somewhere. When monitors change, open fleets move into the grid of the
-monitor they belong on now.
+somewhere. From version 0.1.1 on, when monitors change, open fleets move into the
+grid of the monitor they belong on now.
 
 ### The grid
 
