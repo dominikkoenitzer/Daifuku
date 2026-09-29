@@ -1,0 +1,10 @@
+# Words that are right: names and deliberate spellings.
+[default.extend-words]
+# British spellings the codebase uses on purpose.
+colour = "colour"
+colours = "colours"
+centre = "centre"
+licence = "licence"
+
+[files]
+extend-exclude = ["docs/demo.gif", "Cargo.lock", "schema.json"]
