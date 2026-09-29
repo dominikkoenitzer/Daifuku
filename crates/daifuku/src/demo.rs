@@ -97,13 +97,20 @@ fn ending(agent: usize, task: usize) -> Ending {
 }
 
 struct Reporter {
-    window: Option<u64>,
+    window: std::cell::Cell<Option<u64>>,
     session: String,
 }
 
 impl Reporter {
     fn report(&self, event: &str) {
-        let Some(window) = self.window else { return };
+        // Looked up again until found: the agent can start before its
+        // terminal window exists.
+        if self.window.get().is_none() {
+            self.window.set(console::own_terminal_window());
+        }
+        let Some(window) = self.window.get() else {
+            return;
+        };
         let message = HookMessage {
             window,
             event: HookEvent {
@@ -137,7 +144,7 @@ pub fn run(number: Option<usize>) {
         |n| n.saturating_sub(1),
     );
     let reporter = Reporter {
-        window: console::own_terminal_window(),
+        window: std::cell::Cell::new(console::own_terminal_window()),
         session: format!("demo-{me}"),
     };
     say("\x1b[2mdaifuku demo agent: scripted, not a real one. Ctrl+C to stop.\x1b[0m");
