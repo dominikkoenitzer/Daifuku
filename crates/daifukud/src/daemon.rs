@@ -170,6 +170,7 @@ impl Daemon {
         match request {
             Request::Open { fleet } => self.open(fleet.as_deref()),
             Request::Snap => self.snap(),
+            Request::Close { fleet } => self.close(fleet.as_deref()),
             Request::Next => self.next(),
             Request::Status => Response::Status(self.status()),
             Request::Reload => {
@@ -246,6 +247,36 @@ impl Daemon {
         self.fleets.retain(|f| !f.windows.is_empty());
         self.refresh_borders();
         Response::said(format!("snapped {snapped} terminals"))
+    }
+
+    fn close(&mut self, name: Option<&str>) -> Response {
+        let index = match name {
+            Some(n) => self
+                .fleets
+                .iter()
+                .position(|f| f.name.eq_ignore_ascii_case(n)),
+            None => self.config.fleets.first().and_then(|first| {
+                self.fleets
+                    .iter()
+                    .position(|f| f.name.eq_ignore_ascii_case(&first.name))
+            }),
+        };
+        let Some(index) = index else {
+            return Response::said("that fleet is not open");
+        };
+        let record = self.fleets.remove(index);
+        let mut closed = 0;
+        for w in record.windows {
+            // Only a window that is still one of our terminals: a handle can
+            // have been reused by anything since.
+            if window::exists(w)
+                && window::class(w) == daifuku_win::terminal::WINDOW_CLASS
+                && window::close(w)
+            {
+                closed += 1;
+            }
+        }
+        Response::said(format!("closed {closed} terminals of {}", record.name))
     }
 
     fn next(&mut self) -> Response {

@@ -3,6 +3,7 @@
 //! ```text
 //! daifuku open [fleet]   open a fleet, or bring it back
 //! daifuku snap           put every fleet terminal back in its cell
+//! daifuku close [fleet]  close a fleet's terminals
 //! daifuku next           focus the agent that has waited longest
 //! daifuku status         what the daemon knows
 //! daifuku reload         re-read the config
@@ -40,6 +41,11 @@ enum Command {
     },
     /// Put every fleet terminal back in its cell.
     Snap,
+    /// Close a fleet's terminals. The first fleet when no name is given.
+    Close {
+        /// The fleet's name.
+        fleet: Option<String>,
+    },
     /// Focus the agent that has waited longest for you.
     Next,
     /// Show fleets, agents, hotkeys and the config in use.
@@ -75,6 +81,7 @@ fn main() -> ExitCode {
         Command::Config => config_path(),
         Command::Open { fleet } => control(&Request::Open { fleet }, false),
         Command::Snap => control(&Request::Snap, false),
+        Command::Close { fleet } => control(&Request::Close { fleet }, false),
         Command::Next => control(&Request::Next, false),
         Command::Status { json } => control(&Request::Status, json),
         Command::Reload => control(&Request::Reload, false),
