@@ -2,5 +2,6 @@
 
 pub mod geometry;
 pub mod grid;
+pub mod hotkey;
 
 pub use geometry::Rect;
