@@ -6,10 +6,10 @@
 //! - [`config`] is the config file and its schema.
 //! - [`hotkey`] parses `ctrl + alt + return`.
 //! - [`protocol`] is what travels over the daemon's pipes.
-//! - [`claude`] adds and removes Daifuku's hooks in Claude Code's settings.
+//! - [`agents`] adds and removes Daifuku's hooks for Claude Code and Codex.
 //! - [`task`] is the scheduled task that starts the daemon at logon.
 
-pub mod claude;
+pub mod agents;
 pub mod config;
 pub mod geometry;
 pub mod grid;

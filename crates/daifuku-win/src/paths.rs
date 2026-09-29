@@ -73,6 +73,12 @@ pub fn claude_settings() -> Option<PathBuf> {
     known(&FOLDERID_Profile).map(|p| p.join(".claude").join("settings.json"))
 }
 
+/// Codex's hooks file, `%USERPROFILE%\.codex\hooks.json`.
+#[must_use]
+pub fn codex_hooks() -> Option<PathBuf> {
+    known(&FOLDERID_Profile).map(|p| p.join(".codex").join("hooks.json"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
