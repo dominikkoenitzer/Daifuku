@@ -62,8 +62,33 @@ optional; an editor that reads the linked schema completes and checks them.
 | `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet |
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
 
-Gaps, border width and the four colours are in `gaps` and `border`; the
-global keys are in `hotkeys`.
+Gaps are in `gaps`, the look of the borders in `border`, the global keys in
+`hotkeys`, and `"sound": true` plays the system notification sound when an
+agent starts waiting.
+
+## Accessibility
+
+Colour is never the only signal. Every state has its own border width, so the
+states read in greyscale and to every kind of colour vision:
+
+| State | Width at the default of 4 px | Catppuccin | Colour-blind palette |
+|---|---|---|---|
+| done | 2 px | green | bluish green |
+| working | 4 px | blue | sky blue |
+| failed | 6 px | red | vermilion |
+| waiting | 8 px, breathing slowly | yellow | orange |
+
+- `"border": { "palette": "colorblind" }` switches to the Okabe-Ito colours,
+  chosen to stay distinct for deuteranopia, protanopia and tritanopia. Your
+  own four colours go in `"colours"`.
+- With a high contrast theme on, the borders take the theme's system colours.
+- With "Show animations in Windows" off, the waiting border stops breathing.
+  `"pulse": false` turns it off either way.
+- `"sound": true` for a chime when an agent needs you, through your own sound
+  scheme.
+- Everything works from the keyboard, and `daifuku status` lists every agent
+  and its state in plain text, for a screen reader or a script
+  (`--json`).
 
 ## How agents report
 
