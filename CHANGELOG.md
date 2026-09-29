@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `{n}` works in a fleet's `directory` as it does in its `command`, so each
+  agent can start in a folder of its own, such as its own git worktree.
+
 ## 0.1.1, 2026-09-30
 
 - The daemon reloads the config by itself within two seconds of a save.
