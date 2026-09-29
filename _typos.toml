@@ -6,5 +6,9 @@ colours = "colours"
 centre = "centre"
 licence = "licence"
 
+[default.extend-identifiers]
+# SDDL: BA is the Administrators group, as in "(A;;GA;;;BA)".
+BA = "BA"
+
 [files]
 extend-exclude = ["docs/demo.gif", "Cargo.lock", "schema.json"]

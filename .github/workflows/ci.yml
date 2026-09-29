@@ -242,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: crate-ci/typos@v1
+      - uses: crate-ci/typos@v1.50.3
 
   # Every link in the README and the docs resolves, including the schema URL
   # the starter config writes into every user's file.
