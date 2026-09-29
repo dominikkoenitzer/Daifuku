@@ -137,6 +137,9 @@ pub struct AgentWindow {
     pub title: String,
     /// What it shows.
     pub state: AgentState,
+    /// How long it has shown that, in seconds.
+    #[serde(default)]
+    pub for_seconds: u64,
 }
 
 /// Encodes one message as a line.
@@ -218,6 +221,7 @@ mod tests {
                 window: 1,
                 title: "claude".into(),
                 state: AgentState::Waiting,
+                for_seconds: 73,
             }],
         };
         for r in [
