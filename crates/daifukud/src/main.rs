@@ -9,6 +9,7 @@
 //!
 //! ```text
 //! daifukud [--config <file>]
+//! daifukud --version
 //! ```
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -27,6 +28,15 @@ mod ipc;
 mod logging;
 
 fn main() {
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
+        // Printed even though the daemon has no console: a release check or
+        // a person piping it still reads it.
+        println!("daifukud {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     #[cfg(windows)]
     {
         let config = config_arg(std::env::args().skip(1));
