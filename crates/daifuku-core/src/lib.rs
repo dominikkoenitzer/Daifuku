@@ -11,6 +11,7 @@ pub mod config;
 pub mod geometry;
 pub mod grid;
 pub mod hotkey;
+pub mod monitor;
 pub mod protocol;
 pub mod state;
 
