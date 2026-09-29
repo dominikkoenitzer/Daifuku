@@ -37,6 +37,12 @@ pub enum Request {
     },
     /// Put every fleet terminal back in its cell.
     Snap,
+    /// Close a fleet's terminals, the first fleet when no name is given.
+    Close {
+        /// Fleet name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fleet: Option<String>,
+    },
     /// Focus the terminal that has waited longest.
     Next,
     /// What the daemon knows.
@@ -179,6 +185,10 @@ mod tests {
                 fleet: Some("x".into()),
             },
             Request::Snap,
+            Request::Close { fleet: None },
+            Request::Close {
+                fleet: Some("x".into()),
+            },
             Request::Next,
             Request::Status,
             Request::Reload,
