@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "The whole config file.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Where the schema lives, for editors. Ignored by Daifuku.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "gaps": {
+      "description": "Spacing around and between terminals.",
+      "$ref": "#/$defs/Gaps",
+      "default": {
+        "outer": 24,
+        "inner": 20
+      }
+    },
+    "border": {
+      "description": "The status border drawn around every terminal an agent reports from.",
+      "$ref": "#/$defs/Border",
+      "default": {
+        "enabled": true,
+        "width": 4,
+        "offset": 0,
+        "colours": {
+          "working": "#89b4fa",
+          "waiting": "#f9e2af",
+          "done": "#a6e3a1",
+          "failed": "#f38ba8"
+        }
+      }
+    },
+    "hotkeys": {
+      "description": "Keys that act on every fleet at once.",
+      "$ref": "#/$defs/Hotkeys",
+      "default": {
+        "next_waiting": "ctrl + alt + n",
+        "snap": "ctrl + alt + backspace"
+      }
+    },
+    "fleets": {
+      "description": "The fleets, each with its own hotkey.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Fleet"
+      },
+      "default": [
+        {
+          "name": "agents",
+          "count": 6,
+          "monitor": "portrait",
+          "command": "claude",
+          "admin": true,
+          "hotkey": "ctrl + alt + return"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Gaps": {
+      "description": "Spacing around and between terminals, in physical pixels.",
+      "type": "object",
+      "properties": {
+        "outer": {
+          "description": "Margin between the outermost terminals and the edge of the work area.",
+          "type": "integer",
+          "format": "int32",
+          "default": 24
+        },
+        "inner": {
+          "description": "Space between two neighbouring terminals.",
+          "type": "integer",
+          "format": "int32",
+          "default": 20
+        }
+      },
+      "additionalProperties": false
+    },
+    "Border": {
+      "description": "The status border.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Draw status borders at all.",
+          "type": "boolean",
+          "default": true
+        },
+        "width": {
+          "description": "Thickness in physical pixels.",
+          "type": "integer",
+          "format": "int32",
+          "default": 4
+        },
+        "offset": {
+          "description": "How far outside the visible frame the border sits; negative overlaps\nthe window's own edge.",
+          "type": "integer",
+          "format": "int32",
+          "default": 0
+        },
+        "colours": {
+          "description": "Colour per state.",
+          "$ref": "#/$defs/StateColours",
+          "default": {
+            "working": "#89b4fa",
+            "waiting": "#f9e2af",
+            "done": "#a6e3a1",
+            "failed": "#f38ba8"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "StateColours": {
+      "description": "A colour for each agent state. The defaults are Catppuccin Mocha.",
+      "type": "object",
+      "properties": {
+        "working": {
+          "description": "Thinking and calling tools. Blue.",
+          "$ref": "#/$defs/Colour",
+          "default": "#89b4fa"
+        },
+        "waiting": {
+          "description": "Blocked on you. Yellow, the one to look for.",
+          "$ref": "#/$defs/Colour",
+          "default": "#f9e2af"
+        },
+        "done": {
+          "description": "Finished its turn. Green.",
+          "$ref": "#/$defs/Colour",
+          "default": "#a6e3a1"
+        },
+        "failed": {
+          "description": "The turn ended on an error. Red.",
+          "$ref": "#/$defs/Colour",
+          "default": "#f38ba8"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Colour": {
+      "description": "A colour as #rrggbb",
+      "type": "string",
+      "pattern": "^#?[0-9a-fA-F]{6}$"
+    },
+    "Hotkeys": {
+      "description": "Keys that act on whatever fleets are open.",
+      "type": "object",
+      "properties": {
+        "next_waiting": {
+          "description": "Focus the terminal that has waited longest for you.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HotkeyText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "ctrl + alt + n"
+        },
+        "snap": {
+          "description": "Put every fleet terminal back in its cell.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HotkeyText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "ctrl + alt + backspace"
+        }
+      },
+      "additionalProperties": false
+    },
+    "HotkeyText": {
+      "description": "A hotkey as written in the file. Kept as text so the file round-trips as\nthe user wrote it; [`Config::validate`] proves every one parses.",
+      "type": "string"
+    },
+    "Fleet": {
+      "description": "One fleet: a set of terminals opened and arranged together.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "The name `daifuku open <name>` takes. Unique.",
+          "type": "string",
+          "default": "agents"
+        },
+        "count": {
+          "description": "How many terminals, 1 to 16.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 6
+        },
+        "monitor": {
+          "description": "Which monitor the fleet goes on.",
+          "$ref": "#/$defs/MonitorPick",
+          "default": "portrait"
+        },
+        "shape": {
+          "description": "Force a grid shape instead of the automatic one.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Shape"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "directory": {
+          "description": "The folder every terminal starts in. Defaults to your profile folder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "description": "What each terminal runs, `claude` by default. `null` opens a shell.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": "claude"
+        },
+        "profile": {
+          "description": "The Windows Terminal profile to open, by name. Defaults to Windows\nTerminal's own default profile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "admin": {
+          "description": "Open the terminals as administrator.",
+          "type": "boolean",
+          "default": true
+        },
+        "hotkey": {
+          "description": "The key that opens this fleet, or brings it back if it is open.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HotkeyText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "ctrl + alt + return"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MonitorPick": {
+      "description": "portrait, landscape, primary, secondary, cursor, or a device name such as \\\\.\\DISPLAY2",
+      "anyOf": [
+        {
+          "enum": [
+            "portrait",
+            "landscape",
+            "primary",
+            "secondary",
+            "cursor"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Shape": {
+      "description": "A grid shape: how many columns and rows.",
+      "type": "object",
+      "properties": {
+        "columns": {
+          "description": "Columns, at least one.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "rows": {
+          "description": "Rows, at least one.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "columns",
+        "rows"
+      ]
+    }
+  }
+}
