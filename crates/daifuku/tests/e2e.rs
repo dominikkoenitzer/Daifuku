@@ -131,9 +131,12 @@ fn a_hook_in_a_real_console_colours_its_window_and_the_border_follows_it_away() 
         k = event(&dir, "PreToolUse").display(),
         d = event(&dir, "Stop").display(),
     );
+    // `/s` and one pair of outer quotes: without them cmd strips the first
+    // and the last quote of a line that starts with one, which breaks every
+    // quoted path in it. Measured on the first CI run.
     let console = Command::new("cmd.exe")
-        .args(["/d", "/c"])
-        .raw_arg(&script)
+        .args(["/d", "/s", "/c"])
+        .raw_arg(format!("\"{script}\""))
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
         .unwrap();
