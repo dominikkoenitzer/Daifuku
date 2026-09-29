@@ -91,7 +91,10 @@ pub fn open(
             let launch = Launch {
                 directory: Some(directory(fleet)),
                 profile: fleet.profile.clone(),
-                command: fleet.command.clone(),
+                command: fleet
+                    .command
+                    .as_ref()
+                    .map(|c| c.replace("{n}", &(started + i + 1).to_string())),
                 title: Some(format!("{} {}", fleet.name, started + i + 1)),
                 clean: fleet.no_profile,
             };

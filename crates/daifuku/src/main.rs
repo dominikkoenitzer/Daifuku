@@ -61,7 +61,10 @@ enum Command {
     Demo,
     /// One scripted demo agent. `daifuku demo` starts these.
     #[command(hide = true)]
-    DemoAgent,
+    DemoAgent {
+        /// Which of the fleet's terminals this is, from 1.
+        number: Option<usize>,
+    },
     /// Show fleets, agents, hotkeys and the config in use.
     Status {
         /// Print the raw JSON reply.
@@ -125,8 +128,8 @@ fn main() -> ExitCode {
         Command::Close { fleet } => control(&Request::Close { fleet }, false),
         Command::Next => control(&Request::Next, false),
         Command::Demo => control(&Request::Demo, false),
-        Command::DemoAgent => {
-            demo_agent();
+        Command::DemoAgent { number } => {
+            demo_agent(number);
             ExitCode::SUCCESS
         }
         Command::Status { json } => control(&Request::Status, json),
@@ -136,12 +139,12 @@ fn main() -> ExitCode {
 }
 
 #[cfg(windows)]
-fn demo_agent() {
-    demo::run();
+fn demo_agent(number: Option<usize>) {
+    demo::run(number);
 }
 
 #[cfg(not(windows))]
-fn demo_agent() {}
+fn demo_agent(_: Option<usize>) {}
 
 fn setup_result(r: anyhow::Result<()>) -> ExitCode {
     match r {

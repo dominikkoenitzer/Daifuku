@@ -223,7 +223,7 @@
           ]
         },
         "command": {
-          "description": "What each terminal runs, `claude` by default. `null` opens a shell.",
+          "description": "What each terminal runs, `claude` by default. `null` opens a shell.\n`{n}` is replaced by the terminal's number, 1 for the first cell.",
           "type": [
             "string",
             "null"
