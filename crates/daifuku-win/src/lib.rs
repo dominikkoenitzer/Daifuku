@@ -13,12 +13,14 @@
 //! - [`console`]: from a process to the terminal window it draws in.
 //! - [`pipe`]: named pipes with the security each of Daifuku's two needs.
 //! - [`terminal`]: finding and launching Windows Terminal.
+//! - [`paths`]: where the config, the logs and the binaries live.
 
 #![cfg(windows)]
 
 pub mod console;
 pub mod dpi;
 pub mod monitor;
+pub mod paths;
 pub mod pipe;
 pub mod process;
 pub mod terminal;
