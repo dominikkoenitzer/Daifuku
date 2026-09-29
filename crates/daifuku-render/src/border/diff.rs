@@ -135,7 +135,11 @@ impl BorderDiff {
             let spec = next[&key];
             match self.last.get(&key) {
                 None => changes.added.push(spec),
-                Some(previous) if previous.colour != spec.colour => changes.repainted.push(spec),
+                Some(previous)
+                    if previous.colour != spec.colour || previous.width != spec.width =>
+                {
+                    changes.repainted.push(spec)
+                }
                 Some(previous) if previous.rect != spec.rect => changes.moved.push(spec),
                 Some(_) => {}
             }
@@ -245,6 +249,15 @@ mod tests {
         assert_eq!(changes.repainted.len(), 2);
         assert!(changes.moved.is_empty());
         assert_eq!(changes.specs().count(), 2);
+    }
+
+    #[test]
+    fn a_new_width_repaints_like_a_new_colour() {
+        let mut diff = BorderDiff::new();
+        let _ = diff.diff(vec![spec(A, LEFT, BLUE)]);
+        let changes = diff.diff(vec![spec(A, LEFT, BLUE).with_width(8)]);
+        assert_eq!(changes.repainted.len(), 1);
+        assert!(changes.moved.is_empty() && changes.added.is_empty());
     }
 
     #[test]

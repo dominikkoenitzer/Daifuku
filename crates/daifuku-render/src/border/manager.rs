@@ -277,7 +277,7 @@ impl Borders {
         let Some(mut window) = self.take_window(key) else {
             return;
         };
-        if let Err(error) = window.track(spec.target.hwnd(), spec.rect, spec.colour) {
+        if let Err(error) = window.track(spec.target.hwnd(), spec.rect, spec.colour, spec.width) {
             if error.is_refusal() {
                 // Said once, not once per pass. `BorderWindow::track` has
                 // already taken the frame off the screen, so recycling the
