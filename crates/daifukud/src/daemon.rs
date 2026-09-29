@@ -238,8 +238,7 @@ impl Daemon {
         }
     }
 
-    /// Six scripted agents in a clean, unelevated fleet on the first fleet's
-    /// monitor. The script is `daifuku demo-agent`, from the folder this
+    /// Six scripted agents in a clean fleet on the first fleet's monitor. The script is `daifuku demo-agent`, from the folder this
     /// daemon runs from, so an installed daemon only ever starts an installed
     /// binary.
     fn demo(&mut self) -> Response {
@@ -272,7 +271,10 @@ impl Daemon {
             // The drive root: nothing personal in the path if a prompt shows.
             directory: Some(std::path::PathBuf::from(r"C:\")),
             command: Some(format!("& '{}' demo-agent {{n}}", exe.display())),
-            admin: false,
+            // Administrator terminals when the daemon can open them, like the
+            // fleets people run for real: a tiling window manager leaves those
+            // alone, so the grid stays the grid.
+            admin: self.elevated,
             no_profile: true,
             hotkey: None,
             ..daifuku_core::config::Fleet::default()
