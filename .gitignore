@@ -1,0 +1,25 @@
+# Build output
+/target
+/dist
+
+# Logs and crash dumps: the daemon writes daifuku.log, a test run can drop one
+# next to the checkout.
+*.log
+*.dmp
+*.pdb
+
+# Config copies produced by a manual session or a test. The real config lives
+# in %USERPROFILE%, never in the repository.
+daifuku.json
+daifuku-*.json
+!/schema.json
+
+# Release artefacts built by hand rather than by the workflow
+*.zip
+*.zip.sha256
+
+# Editors and tooling
+.vs/
+.idea/
+*.user
+*.suo
