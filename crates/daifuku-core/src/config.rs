@@ -137,10 +137,11 @@ pub struct Hotkeys {
 impl Default for Hotkeys {
     /// Ctrl and Alt, because common tiling setups live on Alt alone, and keys
     /// that type nothing with AltGr on the German, Swiss and French layouts,
-    /// where AltGr is Ctrl and Alt together.
+    /// where AltGr is Ctrl and Alt together. Not Ctrl, Alt and Space: on the
+    /// first machine Daifuku ran on, another program already held it.
     fn default() -> Self {
         Self {
-            next_waiting: Some(HotkeyText::new("ctrl + alt + space")),
+            next_waiting: Some(HotkeyText::new("ctrl + alt + n")),
             snap: Some(HotkeyText::new("ctrl + alt + backspace")),
         }
     }
