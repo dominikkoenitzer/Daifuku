@@ -14,6 +14,7 @@
 //! - [`pipe`]: named pipes with the security each of Daifuku's two needs.
 //! - [`terminal`]: finding and launching Windows Terminal.
 //! - [`paths`]: where the config, the logs and the binaries live.
+//! - [`setup`]: what installing needs: a locked folder and a scheduled task.
 
 #![cfg(windows)]
 
@@ -23,6 +24,7 @@ pub mod monitor;
 pub mod paths;
 pub mod pipe;
 pub mod process;
+pub mod setup;
 pub mod terminal;
 pub mod window;
 

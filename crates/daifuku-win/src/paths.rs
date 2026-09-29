@@ -17,8 +17,8 @@ use std::path::PathBuf;
 
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
-    FOLDERID_LocalAppData, FOLDERID_ProgramData, FOLDERID_ProgramFiles, KF_FLAG_DEFAULT,
-    SHGetKnownFolderPath,
+    FOLDERID_LocalAppData, FOLDERID_Profile, FOLDERID_ProgramData, FOLDERID_ProgramFiles,
+    FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
 
 fn known(id: &windows::core::GUID) -> Option<PathBuf> {
@@ -59,6 +59,18 @@ pub fn log_dir(elevated: bool) -> Option<PathBuf> {
 #[must_use]
 pub fn install_dir() -> Option<PathBuf> {
     known(&FOLDERID_ProgramFiles).map(|p| p.join("Daifuku"))
+}
+
+/// `System32`.
+#[must_use]
+pub fn system_dir() -> Option<PathBuf> {
+    known(&FOLDERID_System)
+}
+
+/// Claude Code's user settings, `%USERPROFILE%\.claude\settings.json`.
+#[must_use]
+pub fn claude_settings() -> Option<PathBuf> {
+    known(&FOLDERID_Profile).map(|p| p.join(".claude").join("settings.json"))
 }
 
 #[cfg(test)]
