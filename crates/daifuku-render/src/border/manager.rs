@@ -99,10 +99,10 @@ impl BorderManager {
         self.worker.send(BorderMessage::Apply(Box::new(changes)))
     }
 
-    /// Moves the borders of the windows in one animation frame.
+    /// Moves the borders of windows that moved.
     ///
-    /// Call this from the [`crate::Animator`] apply callback with the frame it
-    /// hands out: the border of every window that has one follows it, keeping
+    /// Call this with where each window is now: the border of every window
+    /// that has one follows it, keeping
     /// the colour the last [`BorderManager::update`] gave it, and nothing is
     /// added, repainted or taken down. A frame that moved no window with a
     /// border sends nothing.
