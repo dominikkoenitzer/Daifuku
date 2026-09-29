@@ -291,11 +291,11 @@ impl Daemon {
         let Some(&first) = queue.first() else {
             return Response::said("no agent is waiting");
         };
-        // Pressing it again while on the first one moves on to the second.
-        let target = if window::foreground() == first {
-            queue.get(1).copied().unwrap_or(first)
-        } else {
-            first
+        // Pressed again from a terminal in the queue, it moves on to the next
+        // one, wrapping at the end: three waiting agents are three presses.
+        let target = match queue.iter().position(|&w| w == window::foreground()) {
+            Some(i) => queue[(i + 1) % queue.len()],
+            None => first,
         };
         if window::focus(target) {
             Response::said(format!("focused {}", window::title(target)))
