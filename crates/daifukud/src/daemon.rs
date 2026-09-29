@@ -49,6 +49,10 @@ struct Daemon {
     /// The pulse timer, running only while an agent waits.
     pulse_timer: Option<usize>,
     started: std::time::Instant,
+    /// When the config file last changed, to reload it without being asked.
+    config_stamp: Option<std::time::SystemTime>,
+    /// The monitors as last seen, to put fleets back when they change.
+    monitors: Vec<daifuku_core::monitor::MonitorInfo>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -82,6 +86,8 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         animations: access::animations(),
         pulse_timer: None,
         started: std::time::Instant::now(),
+        config_stamp: None,
+        monitors: daifuku_win::monitor::monitors(),
     };
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
@@ -141,6 +147,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
 
 impl Daemon {
     fn load_config(&mut self) {
+        self.config_stamp = stamp(&self.config_path);
         let text = match std::fs::read_to_string(&self.config_path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -473,6 +480,26 @@ impl Daemon {
     }
 
     fn sweep(&mut self) {
+        // The config changed on disk: take it, as `daifuku reload` would.
+        if stamp(&self.config_path) != self.config_stamp {
+            tracing::info!("config file changed, reloading");
+            let _ = self.control(&Request::Reload);
+        }
+        // A monitor came, went or changed its size (a plug, a resolution, a
+        // display link renegotiating): every open fleet goes back into the
+        // grid of the monitor it belongs on now.
+        let now = daifuku_win::monitor::monitors();
+        if now != self.monitors {
+            tracing::info!(
+                before = self.monitors.len(),
+                after = now.len(),
+                "monitors changed, snapping fleets"
+            );
+            self.monitors = now;
+            if !self.fleets.is_empty() {
+                let _ = self.snap();
+            }
+        }
         let (hc, anim) = (access::high_contrast(), access::animations());
         if (hc, anim) != (self.high_contrast, self.animations) {
             tracing::info!(
@@ -587,6 +614,11 @@ fn dim(c: daifuku_core::config::Colour, k: f64) -> daifuku_core::config::Colour 
         out
     };
     daifuku_core::config::Colour::new(f(c.r), f(c.g), f(c.b))
+}
+
+/// When a file last changed, `None` when it does not exist.
+fn stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]
