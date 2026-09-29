@@ -31,7 +31,7 @@ use windows::Win32::Security::Authorization::{
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_NONE,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    FlushFileBuffers, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
@@ -81,60 +81,70 @@ impl Pipe {
     }
 }
 
-/// The server end: the daemon creates one per pipe and loops on
-/// [`Server::accept`].
-pub struct Server {
-    pipe: Pipe,
-    /// The instance the next client will connect to. There is always one, from
-    /// the moment the name is claimed: between two clients the name is never
-    /// free for another process to take.
-    listening: Option<OwnedHandle>,
+/// One server instance of a pipe. The daemon creates a few per pipe, one
+/// thread each, and every thread loops on [`Instance::accept`].
+///
+/// An instance is created once and reused for every client: a client is
+/// disconnected, not the instance destroyed. So from the moment the name is
+/// claimed until the daemon exits, the name is held, and there is never a
+/// gap in which another process could take it. With several instances,
+/// several hooks firing in the same instant each find one free.
+pub struct Instance {
+    handle: OwnedHandle,
 }
 
-/// One connected client.
-pub struct Connection {
-    handle: OwnedHandle,
+/// One connected client. Dropping it disconnects the client and frees the
+/// instance for the next one.
+pub struct Connection<'a> {
+    handle: &'a OwnedHandle,
     /// The client's process id, as Windows reports it.
     pub client: u32,
 }
 
-impl Server {
-    /// Claims the pipe name. Fails if any other process already holds it.
-    ///
-    /// # Errors
-    ///
-    /// When the name is taken or the security descriptor is refused.
-    pub fn new(pipe: Pipe) -> io::Result<Self> {
-        Ok(Self {
-            pipe,
-            listening: Some(create(pipe, true)?),
-        })
+/// Claims the pipe name and creates `count` instances of it. Fails if any
+/// other process already holds the name.
+///
+/// # Errors
+///
+/// When the name is taken or the security descriptor is refused.
+pub fn instances(pipe: Pipe, count: usize) -> io::Result<Vec<Instance>> {
+    let mut all = Vec::with_capacity(count.max(1));
+    all.push(Instance {
+        handle: create(pipe, true)?,
+    });
+    for _ in 1..count {
+        all.push(Instance {
+            handle: create(pipe, false)?,
+        });
     }
+    Ok(all)
+}
 
-    /// Waits for the next client.
+impl Instance {
+    /// Waits for the next client on this instance.
     ///
     /// # Errors
     ///
-    /// When the pipe cannot be created or the connection fails.
-    pub fn accept(&mut self) -> io::Result<Connection> {
-        let handle = match self.listening.take() {
-            Some(h) => h,
-            None => create(self.pipe, false)?,
-        };
-        let raw_handle = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(&handle));
+    /// When the connection fails.
+    pub fn accept(&mut self) -> io::Result<Connection<'_>> {
+        let raw_handle = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(
+            &self.handle,
+        ));
         // SAFETY: a valid pipe handle, synchronous connect.
         if let Err(e) = unsafe { ConnectNamedPipe(raw_handle, None) }
             && e.code() != ERROR_PIPE_CONNECTED.to_hresult()
         {
+            // SAFETY: as above; resets an instance a client left half-open.
+            let _ = unsafe { DisconnectNamedPipe(raw_handle) };
             return Err(io::Error::other(e));
         }
         let mut client = 0u32;
         // SAFETY: client is a valid out pointer.
         let _ = unsafe { GetNamedPipeClientProcessId(raw_handle, &raw mut client) };
-        // The next instance goes up before this client is handed out, so the
-        // name stays claimed while the connection is served.
-        self.listening = create(self.pipe, false).ok();
-        Ok(Connection { handle, client })
+        Ok(Connection {
+            handle: &self.handle,
+            client,
+        })
     }
 }
 
@@ -186,7 +196,7 @@ fn create(pipe: Pipe, first: bool) -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(h.0) })
 }
 
-impl Connection {
+impl Connection<'_> {
     /// Reads one line, at most [`MAX_LINE`] bytes.
     ///
     /// # Errors
@@ -211,13 +221,17 @@ impl Connection {
     }
 }
 
-impl Drop for Connection {
+impl Drop for Connection<'_> {
     fn drop(&mut self) {
         let raw_handle = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(
-            &self.handle,
+            self.handle,
         ));
-        // SAFETY: the handle is still open until OwnedHandle drops after this.
-        let _ = unsafe { DisconnectNamedPipe(raw_handle) };
+        // SAFETY: the instance's handle, which outlives the connection. The
+        // flush makes sure a reply was read before the client is cut off.
+        unsafe {
+            let _ = FlushFileBuffers(raw_handle);
+            let _ = DisconnectNamedPipe(raw_handle);
+        }
     }
 }
 
