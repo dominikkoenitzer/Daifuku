@@ -45,6 +45,8 @@ pub enum Request {
     },
     /// Focus the terminal that has waited longest.
     Next,
+    /// Open six scripted demo agents, to see Daifuku without a real one.
+    Demo,
     /// What the daemon knows.
     Status,
     /// Re-read the config file.
@@ -190,6 +192,7 @@ mod tests {
                 fleet: Some("x".into()),
             },
             Request::Next,
+            Request::Demo,
             Request::Status,
             Request::Reload,
             Request::Stop,

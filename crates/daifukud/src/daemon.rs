@@ -174,6 +174,7 @@ impl Daemon {
             Request::Snap => self.snap(),
             Request::Close { fleet } => self.close(fleet.as_deref()),
             Request::Next => self.next(),
+            Request::Demo => self.demo(),
             Request::Status => Response::Status(self.status()),
             Request::Reload => {
                 self.load_config();
@@ -237,11 +238,68 @@ impl Daemon {
         }
     }
 
+    /// Six scripted agents in a clean, unelevated fleet on the first fleet's
+    /// monitor. The script is `daifuku demo-agent`, from the folder this
+    /// daemon runs from, so an installed daemon only ever starts an installed
+    /// binary.
+    fn demo(&mut self) -> Response {
+        let Some(fleet) = self.demo_fleet() else {
+            return Response::error("cannot find daifuku.exe next to the daemon");
+        };
+        let index = self.fleets.iter().position(|f| f.name == "demo");
+        let current = index.map(|i| self.fleets.remove(i));
+        match fleet::open(&fleet, &self.config, current, self.elevated) {
+            Ok((record, message)) => {
+                self.fleets.push(record);
+                self.refresh_borders();
+                Response::said(message)
+            }
+            Err(e) => Response::error(format!("{e:#}")),
+        }
+    }
+
+    fn demo_fleet(&self) -> Option<daifuku_core::config::Fleet> {
+        let exe = std::env::current_exe().ok()?.parent()?.join("daifuku.exe");
+        Some(daifuku_core::config::Fleet {
+            name: "demo".to_owned(),
+            count: 6,
+            monitor: self
+                .config
+                .fleets
+                .first()
+                .map(|f| f.monitor.clone())
+                .unwrap_or_default(),
+            // The drive root: nothing personal in the path if a prompt shows.
+            directory: Some(std::path::PathBuf::from(r"C:\")),
+            command: Some(format!("& '{}' demo-agent", exe.display())),
+            admin: false,
+            no_profile: true,
+            hotkey: None,
+            ..daifuku_core::config::Fleet::default()
+        })
+    }
+
+    /// A fleet's definition: from the config, or the built-in demo.
+    fn definition(&self, name: &str) -> Option<daifuku_core::config::Fleet> {
+        self.config.fleet(name).cloned().or_else(|| {
+            if name == "demo" {
+                self.demo_fleet()
+            } else {
+                None
+            }
+        })
+    }
+
     fn snap(&mut self) -> Response {
         let mut snapped = 0;
-        for record in &mut self.fleets {
-            if let Some(fleet) = self.config.fleet(&record.name)
-                && fleet::snap(fleet, &self.config, record).is_ok()
+        let definitions: Vec<_> = self
+            .fleets
+            .iter()
+            .map(|r| self.definition(&r.name))
+            .collect();
+        for (record, definition) in self.fleets.iter_mut().zip(definitions) {
+            if let Some(fleet) = definition
+                && fleet::snap(&fleet, &self.config, record).is_ok()
             {
                 snapped += record.windows.len();
             }
