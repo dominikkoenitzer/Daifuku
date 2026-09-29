@@ -76,6 +76,40 @@ jobs:
           $flags = if ('${{ matrix.profile }}' -eq 'release') { '--release' } else { '' }
           cargo test --locked --workspace --all-features $flags
 
+  e2e:
+    name: end to end
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+      # The real daemon, a real console window and the real hook inside it,
+      # on the runner's interactive desktop. The test skips itself without
+      # DAIFUKU_E2E, and a skipped test still reports as passed, so the job
+      # also requires the tally line only a finished run prints.
+      - name: Build both binaries
+        run: cargo build --locked --workspace
+      - name: Run against a real desktop
+        shell: pwsh
+        env:
+          DAIFUKU_E2E: "1"
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Continue'
+          $output = cargo test --locked -p daifuku --test e2e -- --nocapture 2>&1 | Out-String
+          Write-Output $output
+          if ($LASTEXITCODE -ne 0) { throw "the end-to-end test failed with $LASTEXITCODE" }
+          if ($output -notmatch 'e2e: \d+ steps passed') {
+              throw 'the end-to-end test did not run to the end; check the runner has a desktop'
+          }
+      - name: The daemon's log
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem "$env:ProgramData\Daifuku\logs", "$env:LOCALAPPDATA\Daifuku\logs" -Filter *.log -ErrorAction SilentlyContinue | Get-Content -Tail 80
+
   doc:
     name: doc
     timeout-minutes: 30
@@ -188,3 +222,69 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+
+  # Workflows are code too: a typo in an expression or a shell quoting mistake
+  # only shows on the run that needed it, often a release. actionlint reads
+  # every workflow, including the shell inside `run:` through shellcheck.
+  actionlint:
+    name: actionlint
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: raven-actions/actionlint@v2
+
+  # Spelling in code, comments and docs. A misspelt identifier is a bug that
+  # compiles; a misspelt word in the README is the first thing a stranger sees.
+  typos:
+    name: spelling
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: crate-ci/typos@v1
+
+  # Every link in the README and the docs resolves, including the schema URL
+  # the starter config writes into every user's file.
+  links:
+    name: links
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --include-fragments README.md docs
+          fail: true
+
+  # The release workflow's packaging, on every push, without publishing: a
+  # release that breaks is found here rather than on the tag.
+  package:
+    name: package (dry run)
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - run: cargo build --locked --release --workspace
+      - name: Stage, run and zip
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $stage = 'dist/Daifuku-dry-run'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/daifuku.exe, target/release/daifukud.exe, LICENSE $stage
+          foreach ($exe in 'daifuku.exe', 'daifukud.exe') {
+              $out = (& "$stage/$exe" --version 2>&1) -join ' '
+              if ($LASTEXITCODE -ne 0) { throw "$exe --version exited with $LASTEXITCODE" }
+              Write-Output "$exe -> $out"
+          }
+          & "$stage/daifuku.exe" schema | Out-File -Encoding utf8 "$stage/daifuku.schema.json"
+          Compress-Archive -Path "$stage/*" -DestinationPath dist/Daifuku-dry-run.zip -Force
+          $size = (Get-Item dist/Daifuku-dry-run.zip).Length
+          Write-Output "zip is $size bytes"
+          if ($size -gt 20MB) { throw 'the release zip grew past 20 MB' }
