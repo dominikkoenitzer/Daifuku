@@ -221,31 +221,47 @@ pub fn foreground() -> u64 {
 }
 
 /// Brings a window to the front and gives it the keyboard, and says whether
-/// it really is in front afterwards.
+/// it is still in front a moment later.
 ///
 /// Windows guards the foreground: `SetForegroundWindow` from a process that
 /// did not receive the last input can report success and still only flash
-/// the taskbar button. Measured on the first run, from a request over the
-/// control pipe: the call returned true and the old window kept the focus.
-/// So this does what reliably works and then checks:
+/// the taskbar button, and a switch that did happen can be taken back by the
+/// window that lost it. Both were measured on the first runs. So each attempt
+/// does what reliably works, then waits for the switch to settle and checks:
 ///
 /// 1. Joins the input queue of the thread that owns the foreground window
 ///    for the duration of the call (`AttachThreadInput`), which makes the
 ///    switch look like it came from the foreground's own input.
-/// 2. If the window is still not in front, taps Alt once (a key up and down
-///    of Alt alone, which no program treats as a shortcut) so this process has
-///    the last input, and tries again.
+/// 2. From the second attempt on, first taps Alt once (a key up and down of
+///    Alt alone, which no program treats as a shortcut) so this process has
+///    the last input.
 pub fn focus(w: u64) -> bool {
     let h = hwnd(w);
-    // SAFETY: plain calls on handles and thread ids; the attachment is
-    // always undone before returning.
+    // SAFETY: plain call on a handle.
     unsafe {
         if IsIconic(h).as_bool() {
             let _ = ShowWindow(h, SW_RESTORE);
         }
-        if foreground() == w {
+    }
+    for attempt in 0..3 {
+        if foreground() != w {
+            if attempt > 0 {
+                tap_alt();
+            }
+            switch_to(h);
+        }
+        if settled(w) {
             return true;
         }
+    }
+    false
+}
+
+/// One switch attempt, with the foreground thread's input queue joined.
+fn switch_to(h: HWND) {
+    // SAFETY: plain calls on handles and thread ids; the attachment is always
+    // undone before returning.
+    unsafe {
         let front = GetForegroundWindow();
         let front_thread = GetWindowThreadProcessId(front, None);
         let me = GetCurrentThreadId();
@@ -257,11 +273,17 @@ pub fn focus(w: u64) -> bool {
         if attached {
             let _ = AttachThreadInput(me, front_thread, false);
         }
-        if foreground() == w {
-            return true;
+    }
+}
+
+/// Whether `w` is in front now and still is 80 ms later, which is longer
+/// than a window that lost the foreground takes to grab it back.
+fn settled(w: u64) -> bool {
+    for _ in 0..4 {
+        if foreground() != w {
+            return false;
         }
-        tap_alt();
-        let _ = SetForegroundWindow(h);
+        std::thread::sleep(Duration::from_millis(20));
     }
     foreground() == w
 }
