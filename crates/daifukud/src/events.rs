@@ -4,16 +4,26 @@
 //! and delivers it to this thread's message loop. The callback only records
 //! the window and the kind of event; the main loop drains the queue after
 //! every message and does the work there.
+//!
+//! One trap, found on the first run: Windows calls the callback from inside
+//! `GetMessageW`, and `GetMessageW` does not return for it. A border then only
+//! caught up with its window on the next timer tick, two seconds later. So the
+//! first event into an empty queue posts [`WM_EVENTS`] to the thread, which
+//! makes `GetMessageW` return and the loop drain the queue at once.
 
 use std::cell::RefCell;
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, OBJID_WINDOW,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    PostThreadMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
+
+/// Posted to the main thread when the event queue goes from empty to not.
+pub const WM_EVENTS: u32 = WM_APP + 2;
 
 /// What happened to a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,11 +114,19 @@ unsafe extern "system" fn callback(
         EVENT_OBJECT_LOCATIONCHANGE => Event::Moved(w),
         _ => Event::Visibility(w),
     };
-    QUEUE.with(|q| {
+    let first = QUEUE.with(|q| {
         let mut q = q.borrow_mut();
+        let first = q.is_empty();
         // A drag fires a move per frame; one pending per window is enough.
         if !q.contains(&e) {
             q.push(e);
         }
+        first
     });
+    if first {
+        // SAFETY: posting a message with no pointers to this very thread.
+        unsafe {
+            let _ = PostThreadMessageW(GetCurrentThreadId(), WM_EVENTS, WPARAM(0), LPARAM(0));
+        }
+    }
 }
