@@ -46,6 +46,9 @@ pub struct Config {
     pub hotkeys: Hotkeys,
     /// The fleets, each with its own hotkey.
     pub fleets: Vec<Fleet>,
+    /// Play the system notification sound when an agent starts waiting for
+    /// you, for when you are not looking at the screen.
+    pub sound: bool,
 }
 
 impl Default for Config {
@@ -56,6 +59,7 @@ impl Default for Config {
             border: Border::default(),
             hotkeys: Hotkeys::default(),
             fleets: vec![Fleet::default()],
+            sound: false,
         }
     }
 }
@@ -71,8 +75,19 @@ pub struct Border {
     /// How far outside the visible frame the border sits; negative overlaps
     /// the window's own edge.
     pub offset: i32,
-    /// Colour per state.
-    pub colours: StateColours,
+    /// The colours, as a set. `catppuccin` by default; `colorblind` is the
+    /// Okabe-Ito palette, which stays distinct for every common kind of
+    /// colour blindness.
+    pub palette: Palette,
+    /// Colours of your own, one per state, instead of the palette's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colours: Option<StateColours>,
+    /// Draw each state at its own width, so a state reads without its
+    /// colour: at a width of 4, done is 2, working 4, failed 6 and waiting 8.
+    pub state_widths: bool,
+    /// Let a waiting border breathe slowly, the one thing on screen that
+    /// moves. Off whenever Windows is set to show no animations.
+    pub pulse: bool,
 }
 
 impl Default for Border {
@@ -81,7 +96,66 @@ impl Default for Border {
             enabled: true,
             width: 4,
             offset: 0,
-            colours: StateColours::default(),
+            palette: Palette::default(),
+            colours: None,
+            state_widths: true,
+            pulse: true,
+        }
+    }
+}
+
+impl Border {
+    /// The colours in use: your own, else the palette's.
+    #[must_use]
+    pub fn colours(&self) -> StateColours {
+        self.colours.unwrap_or_else(|| self.palette.colours())
+    }
+
+    /// The thickness a state is drawn at.
+    #[must_use]
+    pub fn width_for(&self, state: AgentState) -> i32 {
+        let w = self.width.max(1);
+        if !self.state_widths {
+            return w;
+        }
+        match state {
+            AgentState::Done => (w / 2).max(1),
+            AgentState::Working => w,
+            AgentState::Failed => w + w / 2,
+            AgentState::Waiting => w * 2,
+        }
+    }
+}
+
+/// A named set of state colours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Palette {
+    /// Catppuccin Mocha: blue, yellow, green and red.
+    #[default]
+    Catppuccin,
+    /// Okabe-Ito: sky blue, orange, bluish green and vermilion, chosen to stay
+    /// distinct for deuteranopia, protanopia and tritanopia.
+    Colorblind,
+}
+
+impl Palette {
+    /// The palette's colours.
+    #[must_use]
+    pub const fn colours(self) -> StateColours {
+        match self {
+            Self::Catppuccin => StateColours {
+                working: Colour::new(0x89, 0xb4, 0xfa),
+                waiting: Colour::new(0xf9, 0xe2, 0xaf),
+                done: Colour::new(0xa6, 0xe3, 0xa1),
+                failed: Colour::new(0xf3, 0x8b, 0xa8),
+            },
+            Self::Colorblind => StateColours {
+                working: Colour::new(0x56, 0xb4, 0xe9),
+                waiting: Colour::new(0xe6, 0x9f, 0x00),
+                done: Colour::new(0x00, 0x9e, 0x73),
+                failed: Colour::new(0xd5, 0x5e, 0x00),
+            },
         }
     }
 }
@@ -591,6 +665,45 @@ mod tests {
             assert_eq!(pick.to_string(), s);
         }
         assert_eq!("Mouse".parse::<MonitorPick>().unwrap(), MonitorPick::Cursor);
+    }
+
+    #[test]
+    fn every_state_has_its_own_width() {
+        let b = Border::default();
+        let widths: Vec<_> = AgentState::ALL.iter().map(|&s| b.width_for(s)).collect();
+        assert_eq!(
+            widths,
+            vec![2, 4, 6, 8],
+            "done, working, failed, waiting at width 4"
+        );
+        let flat = Border {
+            state_widths: false,
+            ..Border::default()
+        };
+        assert!(AgentState::ALL.iter().all(|&s| flat.width_for(s) == 4));
+        let thin = Border {
+            width: 1,
+            ..Border::default()
+        };
+        assert!(AgentState::ALL.iter().all(|&s| thin.width_for(s) >= 1));
+    }
+
+    #[test]
+    fn palettes_keep_four_distinct_colours_and_your_own_win() {
+        for p in [Palette::Catppuccin, Palette::Colorblind] {
+            let c = p.colours();
+            let all = [c.working, c.waiting, c.done, c.failed];
+            for (i, a) in all.iter().enumerate() {
+                assert!(all[i + 1..].iter().all(|b| b != a), "{p:?}");
+            }
+        }
+        let c = Config::from_json(r#"{"border":{"palette":"colorblind"}}"#).unwrap();
+        assert_eq!(c.border.colours().waiting.to_hex(), "#e69f00");
+        let own = Config::from_json(
+            r##"{"border":{"palette":"colorblind","colours":{"waiting":"#ffffff"}}}"##,
+        )
+        .unwrap();
+        assert_eq!(own.border.colours().waiting.to_hex(), "#ffffff");
     }
 
     #[test]
