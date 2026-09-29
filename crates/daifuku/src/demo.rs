@@ -128,11 +128,14 @@ fn say(line: &str) {
     let _ = out.flush();
 }
 
-pub fn run() {
+pub fn run(number: Option<usize>) {
     let me = process::current();
-    // The number the terminal title was given, `demo 3`, if Windows Terminal
-    // still shows it; else something stable per process.
-    let agent = usize::try_from(me % 6).unwrap_or(0);
+    // The fleet passes each terminal its number, so six agents never share
+    // a script; started by hand, the process id stands in.
+    let agent = number.map_or_else(
+        || usize::try_from(me % 6).unwrap_or(0),
+        |n| n.saturating_sub(1),
+    );
     let reporter = Reporter {
         window: console::terminal_window(me),
         session: format!("demo-{me}"),

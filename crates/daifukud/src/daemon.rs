@@ -271,7 +271,7 @@ impl Daemon {
                 .unwrap_or_default(),
             // The drive root: nothing personal in the path if a prompt shows.
             directory: Some(std::path::PathBuf::from(r"C:\")),
-            command: Some(format!("& '{}' demo-agent", exe.display())),
+            command: Some(format!("& '{}' demo-agent {{n}}", exe.display())),
             admin: false,
             no_profile: true,
             hotkey: None,

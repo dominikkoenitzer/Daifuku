@@ -164,6 +164,7 @@ pub struct Fleet {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directory: Option<PathBuf>,
     /// What each terminal runs, `claude` by default. `null` opens a shell.
+    /// `{n}` is replaced by the terminal's number, 1 for the first cell.
     pub command: Option<String>,
     /// The Windows Terminal profile to open, by name. Defaults to Windows
     /// Terminal's own default profile.
