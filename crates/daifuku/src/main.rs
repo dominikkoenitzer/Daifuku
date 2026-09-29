@@ -1,0 +1,258 @@
+//! `daifuku`: the command line, and the hook agents call.
+//!
+//! ```text
+//! daifuku open [fleet]   open a fleet, or bring it back
+//! daifuku snap           put every fleet terminal back in its cell
+//! daifuku next           focus the agent that has waited longest
+//! daifuku status         what the daemon knows
+//! daifuku reload         re-read the config
+//! daifuku stop           stop the daemon
+//! daifuku hook           read a hook event on stdin and report it (for agents)
+//! daifuku schema         print the config file's JSON schema
+//! daifuku config         print where the config file is
+//! ```
+
+use std::io::Read;
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+use daifuku_core::config::Config;
+use daifuku_core::protocol::Request;
+
+#[derive(Parser)]
+#[command(
+    name = "daifuku",
+    version,
+    about = "Fleets of agent terminals, in a grid, coloured by what each agent is doing."
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Open a fleet, or bring it back if it is open. The first fleet in the
+    /// config when no name is given.
+    Open {
+        /// The fleet's name.
+        fleet: Option<String>,
+    },
+    /// Put every fleet terminal back in its cell.
+    Snap,
+    /// Focus the agent that has waited longest for you.
+    Next,
+    /// Show fleets, agents, hotkeys and the config in use.
+    Status {
+        /// Print the raw JSON reply.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-read the config file.
+    Reload,
+    /// Stop the daemon.
+    Stop,
+    /// Report one hook event, read from standard input. Agents call this;
+    /// it never prints and always exits 0, so it can never disturb one.
+    Hook,
+    /// Print the config file's JSON schema.
+    Schema,
+    /// Print where the config file is.
+    Config,
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Hook => {
+            hook();
+            ExitCode::SUCCESS
+        }
+        Command::Schema => {
+            print!("{}", Config::schema());
+            ExitCode::SUCCESS
+        }
+        Command::Config => config_path(),
+        Command::Open { fleet } => control(&Request::Open { fleet }, false),
+        Command::Snap => control(&Request::Snap, false),
+        Command::Next => control(&Request::Next, false),
+        Command::Status { json } => control(&Request::Status, json),
+        Command::Reload => control(&Request::Reload, false),
+        Command::Stop => control(&Request::Stop, false),
+    }
+}
+
+/// The most a hook reads from standard input. Claude Code's events are a
+/// few hundred bytes; the cap keeps a runaway producer from costing memory.
+const MAX_HOOK_INPUT: u64 = 1024 * 1024;
+
+#[cfg(windows)]
+fn hook() {
+    use daifuku_core::protocol::{HookMessage, to_line};
+    use daifuku_core::state::{HookEvent, Transition};
+    use daifuku_win::pipe::{Pipe, send};
+    use daifuku_win::{console, process};
+
+    let mut input = String::new();
+    if std::io::stdin()
+        .take(MAX_HOOK_INPUT)
+        .read_to_string(&mut input)
+        .is_err()
+    {
+        return;
+    }
+    let Ok(event) = HookEvent::from_hook_input(&input) else {
+        return;
+    };
+    // An event that changes nothing is not worth a process walk.
+    if event.transition() == Transition::Ignore {
+        return;
+    }
+    let Some(window) = console::terminal_window(process::current()) else {
+        return;
+    };
+    let Ok(line) = to_line(&HookMessage { window, event }) else {
+        return;
+    };
+    // A short wait: an agent that waits for its hook must never notice a
+    // daemon that is busy or not running.
+    let _ = send(Pipe::Hook, &line, std::time::Duration::from_millis(100));
+}
+
+#[cfg(not(windows))]
+fn hook() {
+    let mut sink = String::new();
+    let _ = std::io::stdin()
+        .take(MAX_HOOK_INPUT)
+        .read_to_string(&mut sink);
+}
+
+#[cfg(windows)]
+fn config_path() -> ExitCode {
+    match daifuku_win::paths::config_file() {
+        Some(p) => {
+            println!("{}", p.display());
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("daifuku: no ProgramData folder");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn config_path() -> ExitCode {
+    eprintln!("daifuku runs on Windows only");
+    ExitCode::FAILURE
+}
+
+#[cfg(windows)]
+fn control(request: &Request, raw: bool) -> ExitCode {
+    use daifuku_core::protocol::{Response, from_line, to_line};
+    use daifuku_win::pipe::{Pipe, send};
+
+    let Ok(line) = to_line(request) else {
+        return ExitCode::FAILURE;
+    };
+    let reply = match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
+        Ok(Some(reply)) => reply,
+        Ok(None) => return ExitCode::FAILURE,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("daifuku: {e}. Run it from an administrator terminal.");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("daifuku: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if raw {
+        print!("{reply}");
+        return ExitCode::SUCCESS;
+    }
+    match from_line::<Response>(&reply) {
+        Ok(Response::Ok { message }) => {
+            if let Some(m) = message {
+                println!("{m}");
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(Response::Status(status)) => {
+            print_status(&status);
+            ExitCode::SUCCESS
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("daifuku: {message}");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("daifuku: unreadable reply: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn control(_: &Request, _: bool) -> ExitCode {
+    eprintln!("daifuku runs on Windows only");
+    ExitCode::FAILURE
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn print_status(s: &daifuku_core::protocol::Status) {
+    println!(
+        "daifuku {}{}",
+        s.version,
+        if s.elevated {
+            ", elevated"
+        } else {
+            ", not elevated"
+        }
+    );
+    println!("config  {}", s.config);
+    if !s.hotkeys.is_empty() {
+        println!("\nhotkeys");
+        for h in &s.hotkeys {
+            println!("  {h}");
+        }
+    }
+    println!("\nfleets");
+    if s.fleets.is_empty() {
+        println!("  none open");
+    }
+    for f in &s.fleets {
+        println!(
+            "  {} on {}: {} terminals",
+            f.name,
+            f.monitor,
+            f.windows.len()
+        );
+    }
+    println!("\nagents");
+    if s.agents.is_empty() {
+        println!("  none reporting");
+    }
+    for a in &s.agents {
+        println!("  {:<8} {:#010x}  {}", a.state.name(), a.window, a.title);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn the_command_line_is_well_formed() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn open_takes_an_optional_fleet() {
+        let cli = Cli::parse_from(["daifuku", "open", "mochi"]);
+        assert!(matches!(cli.command, Command::Open { fleet: Some(ref f) } if f == "mochi"));
+        let cli = Cli::parse_from(["daifuku", "open"]);
+        assert!(matches!(cli.command, Command::Open { fleet: None }));
+    }
+}
