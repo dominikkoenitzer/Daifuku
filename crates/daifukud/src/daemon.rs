@@ -90,6 +90,8 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
                 }
             }
             WM_INBOX => d.inbox(&inbox),
+            // Nothing to do here: window_events() below drains the queue.
+            events::WM_EVENTS => {}
             WM_TIMER if msg.hwnd.is_invalid() => d.sweep(),
             _ => {
                 // SAFETY: standard dispatch of a message this thread received.
