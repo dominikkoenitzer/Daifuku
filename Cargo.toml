@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/daifuku-core",
     "crates/daifuku-win",
+    "crates/daifuku-render",
 ]
 
 [workspace.package]
@@ -16,10 +17,12 @@ publish = false
 [workspace.dependencies]
 daifuku-core = { path = "crates/daifuku-core" }
 daifuku-win = { path = "crates/daifuku-win" }
+daifuku-render = { path = "crates/daifuku-render" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 schemars = "1.2"
 thiserror = "2.0"
+tracing = "0.1"
 windows = "0.62"
 windows-core = "0.62"
 
