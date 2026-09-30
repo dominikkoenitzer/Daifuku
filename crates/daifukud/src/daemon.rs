@@ -54,6 +54,8 @@ struct Daemon {
     started: std::time::Instant,
     /// When the config file last changed, to reload it without being asked.
     config_stamp: Option<std::time::SystemTime>,
+    /// Whether the last read of the config failed and was already retried.
+    config_retried: bool,
     /// The monitors as last seen, to put fleets back when they change.
     monitors: Vec<daifuku_core::monitor::MonitorInfo>,
     /// Since when each window has shown its state, for `daifuku status`.
@@ -92,6 +94,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         pulse_timer: None,
         started: std::time::Instant::now(),
         config_stamp: None,
+        config_retried: false,
         monitors: daifuku_win::monitor::monitors(),
         shown_since: std::collections::HashMap::new(),
     };
@@ -155,14 +158,21 @@ impl Daemon {
     fn load_config(&mut self) {
         self.config_stamp = stamp(&self.config_path);
         let text = match std::fs::read_to_string(&self.config_path) {
-            Ok(t) => t,
+            Ok(t) => {
+                self.config_retried = false;
+                t
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => {
                 self.config_error = Some(format!("{}: {e}", self.config_path.display()));
                 tracing::error!(path = %self.config_path.display(), error = %e, "config unreadable, keeping the last good one");
                 // An editor can hold the file for a moment while it saves:
-                // forget the stamp so the next sweep reads it again.
-                self.config_stamp = None;
+                // forget the stamp so the next sweep reads it once more. Only
+                // once: a file that stays unreadable is not read every sweep.
+                if !self.config_retried {
+                    self.config_stamp = None;
+                }
+                self.config_retried = true;
                 return;
             }
         };
