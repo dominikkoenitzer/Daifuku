@@ -8,11 +8,13 @@
 //! and measures again, because a window that crosses onto a monitor with a
 //! different DPI rescales itself after the first move.
 //!
-//! Moving or showing a window that another thread owns waits for that
-//! thread to handle it. A terminal whose app has stopped answering would
-//! hold the daemon's message loop for as long as it hangs, so [`place`]
-//! first checks that the thread is taking messages, and moves a window
-//! whose thread is not by a queued request instead.
+//! Moving, showing or raising a window that another thread owns waits for
+//! that thread to handle it, and so does a switch made with the foreground
+//! thread's input queue joined. A window whose app has stopped answering
+//! would hold the daemon's message loop for as long as it hangs, so
+//! [`place`] and [`focus`] first check that the thread is taking messages:
+//! [`place`] moves a window whose thread is not by a queued request instead,
+//! and [`focus`] leaves it alone.
 
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
@@ -320,8 +322,14 @@ pub fn foreground() -> u64 {
 /// 2. From the second attempt on, first taps Alt once (a key up and down of
 ///    Alt alone, which no program treats as a shortcut) so this process has
 ///    the last input.
+///
+/// A window whose thread is not answering is left alone and the result is
+/// `false`: restoring and raising it would wait for that thread.
 pub fn focus(w: u64) -> bool {
     let h = hwnd(w);
+    if !answers(h) {
+        return false;
+    }
     // SAFETY: plain call on a handle.
     unsafe {
         if IsIconic(h).as_bool() {
@@ -343,6 +351,11 @@ pub fn focus(w: u64) -> bool {
 }
 
 /// One switch attempt, with the foreground thread's input queue joined.
+///
+/// The queue is not joined when the foreground's thread is not answering:
+/// joined, the activation is handled inside that thread's queue and waits
+/// for it. The attempt then goes ahead without it, and the Alt tap of the
+/// later attempts still gives this process the last input.
 fn switch_to(h: HWND) {
     // SAFETY: plain calls on handles and thread ids; the attachment is always
     // undone before returning.
@@ -352,6 +365,7 @@ fn switch_to(h: HWND) {
         let me = GetCurrentThreadId();
         let attached = front_thread != 0
             && front_thread != me
+            && answers(front)
             && AttachThreadInput(me, front_thread, true).as_bool();
         let _ = BringWindowToTop(h);
         let _ = SetForegroundWindow(h);
