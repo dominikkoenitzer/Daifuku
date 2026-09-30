@@ -76,7 +76,9 @@ impl Pipe {
     /// or not.
     ///
     /// - Hook: full access for SYSTEM and Administrators, read and write for
-    ///   the interactive user, and a medium no-write-up label. For a pipe,
+    ///   the signed-in user alone, by their SID (another person signed in at
+    ///   the same time is not let in), and a medium no-write-up label. For a
+    ///   pipe,
     ///   generic write includes the right to create server instances, so the
     ///   elevated daemon grants the user `FILE_GENERIC_READ` and
     ///   `FILE_WRITE_DATA` only (`0x12008b`): otherwise any of the user's
@@ -84,11 +86,23 @@ impl Pipe {
     ///   daemon that is not elevated keeps generic write, since it creates
     ///   its further instances as that same user.
     /// - Control: full access for SYSTEM and Administrators only, high label.
-    const fn sddl(self, elevated: bool) -> &'static str {
+    fn sddl(self, elevated: bool) -> String {
+        // Without a SID, which only a broken token gives, no user entry at
+        // all: SYSTEM and Administrators still reach the pipe.
+        let user = |rights: &str| {
+            crate::setup::user_sid()
+                .map(|sid| format!("(A;;{rights};;;{sid})"))
+                .unwrap_or_default()
+        };
         match (self, elevated) {
-            (Self::Hook, true) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12008b;;;IU)S:(ML;;NW;;;ME)",
-            (Self::Hook, false) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)S:(ML;;NW;;;ME)",
-            (Self::Control, _) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)",
+            (Self::Hook, true) => format!(
+                "D:P(A;;GA;;;SY)(A;;GA;;;BA){}S:(ML;;NW;;;ME)",
+                user("0x12008b")
+            ),
+            (Self::Hook, false) => {
+                format!("D:P(A;;GA;;;SY)(A;;GA;;;BA){}S:(ML;;NW;;;ME)", user("GRGW"))
+            }
+            (Self::Control, _) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)".to_owned(),
         }
     }
 }
@@ -132,7 +146,7 @@ pub struct Connection<'a> {
 pub fn instances(pipe: Pipe, count: usize) -> io::Result<Vec<Instance>> {
     instances_at(
         &pipe.name(),
-        pipe.sddl(process::current_is_elevated()),
+        &pipe.sddl(process::current_is_elevated()),
         count,
     )
 }
@@ -505,7 +519,7 @@ mod tests {
     #[test]
     fn the_control_pipe_admits_no_ordinary_user() {
         for elevated in [true, false] {
-            let sddl = Pipe::Control.sddl(elevated);
+            let sddl = &Pipe::Control.sddl(elevated);
             assert!(!sddl.contains(";IU)") && !sddl.contains(";AU)") && !sddl.contains(";WD)"));
             assert!(sddl.contains("ML;;NW;;;HI"));
         }
@@ -513,19 +527,22 @@ mod tests {
 
     #[test]
     fn the_hook_pipe_lets_the_user_write_through_a_medium_label() {
-        let sddl = Pipe::Hook.sddl(true);
+        let sddl = &Pipe::Hook.sddl(true);
         // FILE_GENERIC_READ and FILE_WRITE_DATA, not FILE_CREATE_PIPE_INSTANCE.
-        assert!(sddl.contains("(A;;0x12008b;;;IU)"));
+        let sid = crate::setup::user_sid().unwrap();
+        assert!(sddl.contains(&format!("(A;;0x12008b;;;{sid})")));
+        // Not every interactive user: only this one.
+        assert!(!sddl.contains(";IU)"));
         assert!(sddl.contains("ML;;NW;;;ME"));
         // No execute, no delete, no ownership for the user.
         assert!(!sddl.contains(";GA;;;IU)"));
-        assert!(Pipe::Hook.sddl(false).contains("ML;;NW;;;ME"));
+        assert!(&Pipe::Hook.sddl(false).contains("ML;;NW;;;ME"));
     }
 
     #[test]
     fn a_full_pipe_turns_away_another_server() {
         let name = private_name();
-        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let sddl = &Pipe::Hook.sddl(process::current_is_elevated());
         let _held = instances_at(&name, sddl, 2).unwrap();
         let Err(e) = create(&name, sddl, false, 2) else {
             panic!("a third server instance was created");
@@ -542,13 +559,13 @@ mod tests {
         // With generic write the user may add an instance. If even that fails
         // here, this account is not interactive and the test proves nothing.
         let open = private_name();
-        let _first = create(&open, Pipe::Hook.sddl(false), true, 4).unwrap();
-        if create(&open, Pipe::Hook.sddl(false), false, 4).is_err() {
+        let _first = create(&open, &Pipe::Hook.sddl(false), true, 4).unwrap();
+        if create(&open, &Pipe::Hook.sddl(false), false, 4).is_err() {
             return;
         }
         let name = private_name();
-        let _first = create(&name, Pipe::Hook.sddl(true), true, 4).unwrap();
-        let Err(e) = create(&name, Pipe::Hook.sddl(true), false, 4) else {
+        let _first = create(&name, &Pipe::Hook.sddl(true), true, 4).unwrap();
+        let Err(e) = create(&name, &Pipe::Hook.sddl(true), false, 4) else {
             panic!("an ordinary process added a server instance");
         };
         assert_eq!(os_error(&e), Some(ERROR_ACCESS_DENIED.0));
@@ -557,7 +574,7 @@ mod tests {
     #[test]
     fn a_hook_line_gets_through_the_narrow_access_list() {
         let name = private_name();
-        let mut instance = instances_at(&name, Pipe::Hook.sddl(true), 1)
+        let mut instance = instances_at(&name, &Pipe::Hook.sddl(true), 1)
             .unwrap()
             .remove(0);
         let server = std::thread::spawn(move || {
@@ -574,7 +591,7 @@ mod tests {
     #[test]
     fn a_line_from_a_client_that_hung_up_before_the_accept_is_read() {
         let name = private_name();
-        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let sddl = &Pipe::Hook.sddl(process::current_is_elevated());
         let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
         send_to(&name, Pipe::Hook, "{\"early\":1}\n", Duration::from_secs(2)).unwrap();
         let mut connection = instance.accept().unwrap();
@@ -607,7 +624,7 @@ mod tests {
     #[test]
     fn an_idle_client_does_not_hold_the_pipe() {
         let name = private_name();
-        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let sddl = &Pipe::Hook.sddl(process::current_is_elevated());
         let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
         let (lines, received) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -660,7 +677,7 @@ mod tests {
     #[test]
     fn a_client_that_never_reads_its_reply_is_let_go() {
         let name = private_name();
-        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let sddl = &Pipe::Hook.sddl(process::current_is_elevated());
         let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
         let _idle = idle_client(&name);
         let start = Instant::now();
@@ -678,7 +695,7 @@ mod tests {
             (Pipe::Hook, false),
             (Pipe::Control, true),
         ] {
-            let sddl = to_wide(pipe.sddl(elevated));
+            let sddl = to_wide(&pipe.sddl(elevated));
             let mut sd = PSECURITY_DESCRIPTOR::default();
             // SAFETY: as in create().
             unsafe {
