@@ -249,7 +249,7 @@ impl Daemon {
                 "first report from a window"
             );
         }
-        if self.agents.len() >= MAX_SESSIONS && self.agents.window_state(w).is_none() {
+        if self.agents.len() >= MAX_SESSIONS && !self.agents.knows(&message.event.session_id) {
             return;
         }
         let before = self.agents.window_state(w);
