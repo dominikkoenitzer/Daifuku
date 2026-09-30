@@ -423,6 +423,41 @@ mod tests {
     }
 
     #[test]
+    fn the_encoding_pads_and_keeps_surrogate_pairs() {
+        assert_eq!(encoded("ab"), "YQBiAA==");
+        assert_eq!(encoded("\u{1f600}"), "PdgA3g==");
+    }
+
+    #[test]
+    fn a_clean_launch_skips_the_profile_and_escapes_every_semicolon() {
+        let l = Launch {
+            profile: Some("a;b".into()),
+            title: Some("x;y".into()),
+            command: Some("claude".into()),
+            clean: true,
+            ..Launch::default()
+        };
+        assert_eq!(
+            strs(&l.args(Some(Path::new("pwsh.exe")))),
+            [
+                "-w",
+                "new",
+                "new-tab",
+                "--profile",
+                r"a\;b",
+                "--title",
+                r"x\;y",
+                "pwsh.exe",
+                "-NoProfile",
+                "-NoLogo",
+                "-NoExit",
+                "-EncodedCommand",
+                "YwBsAGEAdQBkAGUA",
+            ]
+        );
+    }
+
+    #[test]
     fn a_semicolon_in_the_folder_cannot_split_it_either() {
         let l = Launch {
             directory: Some(r"C:\src;b".into()),
