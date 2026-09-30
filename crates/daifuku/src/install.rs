@@ -406,14 +406,29 @@ fn edit_json(
 /// `path` is followed, so the file it points to is the one replaced.
 fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt;
+    /// `FILE_FLAG_OPEN_REPARSE_POINT`.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".daifuku-new");
     let new = path.with_file_name(name);
-    let written = std::fs::File::create(&new).and_then(|mut f| {
-        f.write_all(text.as_bytes())?;
-        f.sync_all()
-    });
+    // A new file, never one already there: the profile is the user's, and a
+    // link planted at this name would otherwise take the write elsewhere.
+    // A leftover from a crash is removed first; removing a link removes the
+    // link, not what it points to.
+    let _ = std::fs::remove_file(&new);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        // A name that is already a link then fails instead of being
+        // followed.
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&new)
+        .and_then(|mut f| {
+            f.write_all(text.as_bytes())?;
+            f.sync_all()
+        });
     let result = written.and_then(|()| std::fs::rename(&new, &path));
     if result.is_err() {
         let _ = std::fs::remove_file(&new);
