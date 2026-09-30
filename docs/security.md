@@ -17,8 +17,8 @@ input to ordinary windows. It cannot write where only administrators can.
 | Asset | Where | Why an ordinary process cannot change it |
 |---|---|---|
 | `daifuku.exe`, `daifukud.exe` | `C:\Program Files\Daifuku` | Program Files is writable by administrators only. The logon task starts the daemon from there. |
-| The config, which names the command every fleet terminal runs | `C:\ProgramData\Daifuku\daifuku.json` | The installer gives the folder a protected access list (administrators and SYSTEM may write, users may read) and makes the Administrators group its owner and the owner of everything in it. Ownership matters: the owner of a file can always rewrite its access list, so a folder an ordinary process created before the install would otherwise stay open to it. |
-| The logon task | `\Daifuku\Daemon` in Task Scheduler | Creating or changing a task that runs with highest privileges needs administrator rights. |
+| The config, which names the command every fleet terminal runs | `C:\ProgramData\Daifuku\daifuku.json` | Administrators and SYSTEM may write the folder, users may only read it. Any user may create folders in ProgramData, so the installer keeps an existing `Daifuku` folder, and the config in it, only when it is a real folder (not a link) that Administrators or SYSTEM own and no one else may change: one an earlier install made. Anything else there is deleted without following links, and a new folder is created with its access list already in place. ProgramData itself is found on the drive Windows runs from, not through the environment, which the user can change. |
+| The logon task | `\Daifuku\Daemon` in Task Scheduler | Creating or changing a task that runs with highest privileges needs administrator rights. Its definition passes through the locked data folder on the way in, never through the user's temp folder. |
 | Windows Terminal | its package folder under `WindowsApps` | Found through the package API, never through `PATH`, which contains folders the user can write. |
 | PowerShell | `Program Files\PowerShell\7` or `System32` | Found through the known-folder API, never through `PATH` or environment variables. |
 
@@ -38,16 +38,20 @@ command line also checks that whoever answers on the pipe runs elevated before
 it sends anything, so a process that squatted the name cannot collect
 commands.
 
-**The hook pipe** takes state reports from agent hooks, which run at whatever
-integrity their agent runs at. The signed-in user may write to it (a medium
-label makes that possible for a normal process). A message names a window and
-an event, and the worst a forged one can do is colour or clear a border: the
-daemon only accepts a live, visible top-level window, never starts anything
-because of a hook, and stops tracking new sessions past 512.
+**The hook pipe** takes state reports from agent hooks. The signed-in user
+may write data to it from a normal process (a medium label), and nothing
+more: not create server instances of it, so no other process can listen in
+and collect the hooks' reports. Processes below medium integrity cannot write
+to it. A message names a window and an event, and the worst a forged one can
+do is colour or clear a border: the daemon only accepts a live, visible
+top-level window, never starts anything because of a hook, and stops tracking
+new sessions past 512.
 
-Both pipes are created with `FILE_FLAG_FIRST_PIPE_INSTANCE` and keep their
-instances for the daemon's whole life, so the name is never free for another
-process to take between two clients. Remote clients are rejected.
+Both pipes are created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, allow exactly
+as many instances as the daemon creates, and keep them for the daemon's whole
+life, so the name is never free for another process to take between two
+clients. Clients connect for identification only: whatever answers on a pipe
+can learn who the client is, never act as it. Remote clients are rejected.
 
 ## Hotkeys
 
