@@ -65,7 +65,13 @@ checks them. [docs/configuration.md](docs/configuration.md) has every key.
 {
   "fleets": [
     { "name": "agents", "count": 6, "monitor": "portrait" },
-    { "name": "site", "count": 4, "directory": "C:\\src\\site", "hotkey": "ctrl + alt + w" }
+    {
+      "name": "site",
+      "count": 4,
+      "monitor": "primary",
+      "directory": "C:\\src\\site",
+      "hotkey": "ctrl + alt + w"
+    }
   ]
 }
 ```
