@@ -389,3 +389,168 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
 }
+
+/// A window as a line: handle, class, title and, for the foreground, which
+/// of its children has the keyboard and whether it is in a menu.
+fn describe(w: u64) -> String {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId,
+    };
+
+    let h = HWND(w as usize as *mut core::ffi::c_void);
+    let mut info = GUITHREADINFO {
+        cbSize: u32::try_from(size_of::<GUITHREADINFO>()).unwrap(),
+        ..Default::default()
+    };
+    // SAFETY: plain calls on a handle and a sized struct.
+    let known = unsafe {
+        let thread = GetWindowThreadProcessId(h, None);
+        thread != 0 && GetGUIThreadInfo(thread, &raw mut info).is_ok()
+    };
+    let raw = |h: HWND| h.0 as usize as u64;
+    let focus = if known {
+        let f = raw(info.hwndFocus);
+        format!(
+            ", keyboard {f:#x} ({}), active {:#x}, flags {:#x}",
+            window::class(f),
+            raw(info.hwndActive),
+            info.flags.0
+        )
+    } else {
+        String::new()
+    };
+    format!("{w:#x} {} {:?}{focus}", window::class(w), window::title(w))
+}
+
+/// Presses and releases Enter, with its scan code as a keyboard sends it:
+/// Windows Terminal reads the scan code and drops a key without one.
+fn press_enter() -> u32 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+        VK_RETURN,
+    };
+
+    let key = |flags: KEYBD_EVENT_FLAGS| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VK_RETURN,
+                wScan: 0x1C,
+                dwFlags: flags,
+                ..Default::default()
+            },
+        },
+    };
+    let inputs = [key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)];
+    // SAFETY: inputs is a valid array of INPUT with the right size.
+    unsafe { SendInput(&inputs, i32::try_from(size_of::<INPUT>()).unwrap()) }
+}
+
+/// The windows whose agents wait, by what `status` says.
+fn waiting() -> Vec<u64> {
+    status().map_or_else(Vec::new, |s| {
+        s.agents
+            .into_iter()
+            .filter(|a| a.state.name() == "waiting")
+            .map(|a| a.window)
+            .collect()
+    })
+}
+
+fn print_agents() {
+    for a in status().map(|s| s.agents).unwrap_or_default() {
+        println!(
+            "  agent {:#x} {:?}: {} for {} s",
+            a.window,
+            a.title,
+            a.state.name(),
+            a.for_seconds
+        );
+    }
+}
+
+#[test]
+fn next_twice_brings_each_waiting_agent_up_and_enter_approves_it() {
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    let dir = scratch();
+    let config = dir.join("daifuku.json");
+    std::fs::write(
+        &config,
+        r#"{"fleets":[],"hotkeys":{"next_waiting":null,"snap":null}}"#,
+    )
+    .unwrap();
+    let mut steps = 0;
+    let daemon = Command::new(daemon_exe())
+        .arg("--config")
+        .arg(&config)
+        .spawn()
+        .unwrap();
+    let mut cleanup = Cleanup(vec![daemon]);
+    wait_for("the daemon to answer", Duration::from_secs(15), status);
+
+    // The demo: six scripted agents, two of which ask for approval in their
+    // first task and then wait for Enter.
+    let opened = run(&["demo"]);
+    assert!(opened.contains("opened demo"), "{opened}");
+    wait_for("two waiting agents", Duration::from_secs(60), || {
+        (waiting().len() >= 2).then_some(())
+    });
+    steps += 1;
+
+    // Twice: `next` brings a waiting agent's terminal to the front, and
+    // Enter typed there approves it.
+    let mut approved = Vec::new();
+    for round in 1..=2 {
+        let queue = waiting();
+        println!("round {round}: waiting {queue:#x?}");
+        print_agents();
+        println!("  before next: {}", describe(window::foreground()));
+        let reply = run(&["next"]);
+        println!("  next: {}", reply.trim());
+        let target = window::foreground();
+        println!("  after next: {}", describe(target));
+        assert!(
+            queue.contains(&target) && !approved.contains(&target),
+            "round {round}: next left {} in front, not a waiting agent's terminal",
+            describe(target)
+        );
+        steps += 1;
+
+        let sent = press_enter();
+        println!("  sent {sent} of 2 key events");
+        let start = Instant::now();
+        let mut left = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            if !waiting().contains(&target) {
+                left = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        println!("  after enter: {}", describe(window::foreground()));
+        print_agents();
+        assert!(
+            left,
+            "round {round}: Enter did not reach the agent in {target:#x}"
+        );
+        approved.push(target);
+        steps += 1;
+    }
+
+    let _ = run(&["close", "demo"]);
+    let _ = run(&["stop"]);
+    let mut daemon = cleanup.0.pop().unwrap();
+    wait_for("the daemon to exit", Duration::from_secs(10), || {
+        daemon.try_wait().ok().flatten()
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}

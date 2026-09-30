@@ -143,6 +143,7 @@ dependencies = [
  "daifuku-core",
  "daifuku-win",
  "serde_json",
+ "windows",
 ]
 
 [[package]]
