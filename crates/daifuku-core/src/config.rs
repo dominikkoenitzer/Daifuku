@@ -776,6 +776,40 @@ mod tests {
     }
 
     #[test]
+    fn size_limits_include_their_ends() {
+        for text in [
+            r#"{"border":{"offset":64}}"#,
+            r#"{"border":{"offset":-64}}"#,
+            r#"{"gaps":{"outer":1000,"inner":1000}}"#,
+            r#"{"border":{"width":0}}"#,
+            r#"{"border":{"width":64}}"#,
+        ] {
+            assert!(Config::from_json(text).is_ok(), "{text}");
+        }
+        for text in [
+            r#"{"border":{"offset":65}}"#,
+            r#"{"border":{"offset":-65}}"#,
+            r#"{"gaps":{"outer":1001,"inner":0}}"#,
+            r#"{"gaps":{"outer":0,"inner":1001}}"#,
+            r#"{"border":{"width":-1}}"#,
+            r#"{"border":{"width":65}}"#,
+        ] {
+            assert!(
+                matches!(Config::from_json(text), Err(ConfigError::Size(_))),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fleet_named_only_spaces_has_no_name() {
+        assert_eq!(
+            Config::from_json(r#"{"fleets":[{"name":"  "}]}"#),
+            Err(ConfigError::UnnamedFleet)
+        );
+    }
+
+    #[test]
     fn the_default_config_serialises_and_reads_back_identical() {
         let text = serde_json::to_string(&Config::default()).unwrap();
         assert_eq!(Config::from_json(&text).unwrap(), Config::default());
