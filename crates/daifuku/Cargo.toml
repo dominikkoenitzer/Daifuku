@@ -16,3 +16,11 @@ serde_json = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 daifuku-win = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+# The end-to-end tests type into a terminal the way a person does.
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
