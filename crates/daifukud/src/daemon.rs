@@ -17,7 +17,6 @@ use crate::events::{self, Event};
 use crate::fleet::{self, OpenFleet};
 use crate::hotkeys::{Action, Hotkeys};
 use crate::ipc::{self, Inbound, Inbox, WM_INBOX};
-use crate::logging;
 
 /// The most sessions tracked at once. A hook can report any session id it
 /// likes; past this, new ones are ignored instead of growing the map forever.
@@ -68,10 +67,12 @@ struct Daemon {
 }
 
 /// Runs the daemon until it is told to stop.
+///
+/// Logging is set up by the caller, so an error this returns still reaches
+/// the log before the writer stops.
 pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     dpi::per_monitor_v2();
     let elevated = process::current_is_elevated();
-    let _log = logging::init(paths::log_dir(elevated).as_deref());
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         elevated,
@@ -80,7 +81,9 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
 
     // SAFETY: no arguments.
     let main_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
-    let inbox = ipc::start(main_thread).context("another daifukud already runs in this session")?;
+    let inbox = ipc::start(main_thread).context(
+        "could not open Daifuku's pipes; another daifukud may already run in this session",
+    )?;
 
     let config_path = config_override
         .or_else(paths::config_file)

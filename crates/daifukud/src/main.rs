@@ -40,8 +40,13 @@ fn main() {
     #[cfg(windows)]
     {
         let config = config_arg(std::env::args().skip(1));
+        // The log outlives `run`, so a failure to start is written down
+        // before the writer stops.
+        let elevated = daifuku_win::process::current_is_elevated();
+        let log = logging::init(daifuku_win::paths::log_dir(elevated).as_deref());
         if let Err(error) = daemon::run(config) {
             tracing::error!(error = %format!("{error:#}"), "daifukud stopped");
+            drop(log);
             std::process::exit(1);
         }
     }
