@@ -42,6 +42,9 @@
   they call another copy, replaces a settings file whole instead of
   rewriting it in place, and edits it only when it really is in your
   profile, not behind a link out of it.
+- The installer edits Claude Code's and Codex's settings with your own
+  rights, not an administrator's, and refuses to run when the terminal
+  belongs to another account than the one signed in.
 - Uninstall removes only hooks that run a program called `daifuku.exe`, and
   keeps the empty hook groups and lists you had.
 - Windows Terminal counts only when the system installed it from a signed
