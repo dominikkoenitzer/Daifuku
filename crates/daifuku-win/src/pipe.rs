@@ -22,8 +22,8 @@ use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::time::Duration;
 
 use windows::Win32::Foundation::{
-    ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
-    LocalFree,
+    ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
+    INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -31,12 +31,12 @@ use windows::Win32::Security::Authorization::{
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_NONE,
-    FlushFileBuffers, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    FILE_WRITE_DATA, FlushFileBuffers, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
+    PIPE_WAIT, WaitNamedPipeW,
 };
 use windows::core::PCWSTR;
 
@@ -68,15 +68,23 @@ impl Pipe {
         format!(r"\\.\pipe\daifuku-{}-{kind}", process::session())
     }
 
-    /// The security descriptor, in SDDL.
+    /// The security descriptor, in SDDL, for a daemon that runs `elevated`
+    /// or not.
     ///
     /// - Hook: full access for SYSTEM and Administrators, read and write for
-    ///   the interactive user, and a medium no-write-up label.
+    ///   the interactive user, and a medium no-write-up label. For a pipe,
+    ///   generic write includes the right to create server instances, so the
+    ///   elevated daemon grants the user `FILE_GENERIC_READ` and
+    ///   `FILE_WRITE_DATA` only (`0x12008b`): otherwise any of the user's
+    ///   processes could add a server of its own and collect hook lines. A
+    ///   daemon that is not elevated keeps generic write, since it creates
+    ///   its further instances as that same user.
     /// - Control: full access for SYSTEM and Administrators only, high label.
-    const fn sddl(self) -> &'static str {
-        match self {
-            Self::Hook => "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)S:(ML;;NW;;;ME)",
-            Self::Control => "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)",
+    const fn sddl(self, elevated: bool) -> &'static str {
+        match (self, elevated) {
+            (Self::Hook, true) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12008b;;;IU)S:(ML;;NW;;;ME)",
+            (Self::Hook, false) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)S:(ML;;NW;;;ME)",
+            (Self::Control, _) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)",
         }
     }
 }
@@ -104,17 +112,27 @@ pub struct Connection<'a> {
 /// Claims the pipe name and creates `count` instances of it. Fails if any
 /// other process already holds the name.
 ///
+/// `count` is also the most instances the pipe may ever have, so once they
+/// are all created no other process can add one.
+///
 /// # Errors
 ///
 /// When the name is taken or the security descriptor is refused.
 pub fn instances(pipe: Pipe, count: usize) -> io::Result<Vec<Instance>> {
-    let mut all = Vec::with_capacity(count.max(1));
-    all.push(Instance {
-        handle: create(pipe, true)?,
-    });
-    for _ in 1..count {
+    instances_at(
+        &pipe.name(),
+        pipe.sddl(process::current_is_elevated()),
+        count,
+    )
+}
+
+fn instances_at(name: &str, sddl: &str, count: usize) -> io::Result<Vec<Instance>> {
+    let count = count.clamp(1, 254);
+    let max = u32::try_from(count).unwrap_or(1);
+    let mut all = Vec::with_capacity(count);
+    for i in 0..count {
         all.push(Instance {
-            handle: create(pipe, false)?,
+            handle: create(name, sddl, i == 0, max)?,
         });
     }
     Ok(all)
@@ -130,9 +148,13 @@ impl Instance {
         let raw_handle = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(
             &self.handle,
         ));
+        // A client may connect before this call. ERROR_PIPE_CONNECTED says so,
+        // and ERROR_NO_DATA says it has also hung up already, which a hook
+        // does the moment it has written; what it wrote can still be read.
         // SAFETY: a valid pipe handle, synchronous connect.
         if let Err(e) = unsafe { ConnectNamedPipe(raw_handle, None) }
             && e.code() != ERROR_PIPE_CONNECTED.to_hresult()
+            && e.code() != ERROR_NO_DATA.to_hresult()
         {
             // SAFETY: as above; resets an instance a client left half-open.
             let _ = unsafe { DisconnectNamedPipe(raw_handle) };
@@ -148,8 +170,8 @@ impl Instance {
     }
 }
 
-fn create(pipe: Pipe, first: bool) -> io::Result<OwnedHandle> {
-    let sddl = to_wide(pipe.sddl());
+fn create(name: &str, sddl: &str, first: bool, max: u32) -> io::Result<OwnedHandle> {
+    let sddl = to_wide(sddl);
     let mut sd = PSECURITY_DESCRIPTOR::default();
     // SAFETY: sddl is NUL terminated; sd receives a LocalAlloc'd descriptor
     // that is freed below.
@@ -167,7 +189,7 @@ fn create(pipe: Pipe, first: bool) -> io::Result<OwnedHandle> {
         lpSecurityDescriptor: sd.0,
         bInheritHandle: false.into(),
     };
-    let name = to_wide(&pipe.name());
+    let name = to_wide(name);
     let mut open_mode = PIPE_ACCESS_DUPLEX;
     if first {
         open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
@@ -178,7 +200,7 @@ fn create(pipe: Pipe, first: bool) -> io::Result<OwnedHandle> {
             PCWSTR(name.as_ptr()),
             open_mode,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_UNLIMITED_INSTANCES,
+            max,
             64 * 1024,
             64 * 1024,
             0,
@@ -245,9 +267,14 @@ impl Drop for Connection<'_> {
 /// When no daemon is listening, the control server is not elevated, or the
 /// exchange fails.
 pub fn send(pipe: Pipe, line: &str, wait: Duration) -> io::Result<Option<String>> {
-    let name = to_wide(&pipe.name());
+    send_to(&pipe.name(), pipe, line, wait)
+}
+
+fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Option<String>> {
+    let name = to_wide(name);
+    // The hook asks for exactly what its access list grants the user.
     let access = match pipe {
-        Pipe::Hook => GENERIC_WRITE.0,
+        Pipe::Hook => FILE_WRITE_DATA.0,
         Pipe::Control => GENERIC_READ.0 | GENERIC_WRITE.0,
     };
     let open = || {
@@ -305,6 +332,18 @@ pub fn send(pipe: Pipe, line: &str, wait: Duration) -> io::Result<Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY};
+
+    /// A pipe name no daemon uses, different for every call.
+    fn private_name() -> String {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!(r"\\.\pipe\daifuku-test-{}-{n}", std::process::id())
+    }
+
+    fn os_error(e: &io::Error) -> Option<u32> {
+        e.raw_os_error().and_then(|c| u32::try_from(c).ok())
+    }
 
     #[test]
     fn names_are_per_session_and_distinct() {
@@ -316,24 +355,85 @@ mod tests {
 
     #[test]
     fn the_control_pipe_admits_no_ordinary_user() {
-        let sddl = Pipe::Control.sddl();
-        assert!(!sddl.contains(";IU)") && !sddl.contains(";AU)") && !sddl.contains(";WD)"));
-        assert!(sddl.contains("ML;;NW;;;HI"));
+        for elevated in [true, false] {
+            let sddl = Pipe::Control.sddl(elevated);
+            assert!(!sddl.contains(";IU)") && !sddl.contains(";AU)") && !sddl.contains(";WD)"));
+            assert!(sddl.contains("ML;;NW;;;HI"));
+        }
     }
 
     #[test]
     fn the_hook_pipe_lets_the_user_write_through_a_medium_label() {
-        let sddl = Pipe::Hook.sddl();
-        assert!(sddl.contains("(A;;GRGW;;;IU)"));
+        let sddl = Pipe::Hook.sddl(true);
+        // FILE_GENERIC_READ and FILE_WRITE_DATA, not FILE_CREATE_PIPE_INSTANCE.
+        assert!(sddl.contains("(A;;0x12008b;;;IU)"));
         assert!(sddl.contains("ML;;NW;;;ME"));
         // No execute, no delete, no ownership for the user.
         assert!(!sddl.contains(";GA;;;IU)"));
+        assert!(Pipe::Hook.sddl(false).contains("ML;;NW;;;ME"));
+    }
+
+    #[test]
+    fn a_full_pipe_turns_away_another_server() {
+        let name = private_name();
+        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let _held = instances_at(&name, sddl, 2).unwrap();
+        let Err(e) = create(&name, sddl, false, 2) else {
+            panic!("a third server instance was created");
+        };
+        assert_eq!(os_error(&e), Some(ERROR_PIPE_BUSY.0));
+    }
+
+    #[test]
+    fn an_ordinary_process_cannot_add_a_server_to_the_hook_pipe() {
+        // Elevated, the test runs as an administrator, whom the list admits.
+        if process::current_is_elevated() {
+            return;
+        }
+        // With generic write the user may add an instance. If even that fails
+        // here, this account is not interactive and the test proves nothing.
+        let open = private_name();
+        let _first = create(&open, Pipe::Hook.sddl(false), true, 4).unwrap();
+        if create(&open, Pipe::Hook.sddl(false), false, 4).is_err() {
+            return;
+        }
+        let name = private_name();
+        let _first = create(&name, Pipe::Hook.sddl(true), true, 4).unwrap();
+        let Err(e) = create(&name, Pipe::Hook.sddl(true), false, 4) else {
+            panic!("an ordinary process added a server instance");
+        };
+        assert_eq!(os_error(&e), Some(ERROR_ACCESS_DENIED.0));
+    }
+
+    #[test]
+    fn a_hook_line_gets_through_the_narrow_access_list() {
+        let name = private_name();
+        let mut instance = instances_at(&name, Pipe::Hook.sddl(true), 1)
+            .unwrap()
+            .remove(0);
+        let server = std::thread::spawn(move || instance.accept().unwrap().read_line().unwrap());
+        send_to(&name, Pipe::Hook, "{\"hook\":1}\n", Duration::from_secs(2)).unwrap();
+        assert_eq!(server.join().unwrap(), "{\"hook\":1}\n");
+    }
+
+    #[test]
+    fn a_line_from_a_client_that_hung_up_before_the_accept_is_read() {
+        let name = private_name();
+        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
+        send_to(&name, Pipe::Hook, "{\"early\":1}\n", Duration::from_secs(2)).unwrap();
+        let mut connection = instance.accept().unwrap();
+        assert_eq!(connection.read_line().unwrap(), "{\"early\":1}\n");
     }
 
     #[test]
     fn both_descriptors_parse() {
-        for pipe in [Pipe::Hook, Pipe::Control] {
-            let sddl = to_wide(pipe.sddl());
+        for (pipe, elevated) in [
+            (Pipe::Hook, true),
+            (Pipe::Hook, false),
+            (Pipe::Control, true),
+        ] {
+            let sddl = to_wide(pipe.sddl(elevated));
             let mut sd = PSECURITY_DESCRIPTOR::default();
             // SAFETY: as in create().
             unsafe {
