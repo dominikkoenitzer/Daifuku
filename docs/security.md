@@ -19,7 +19,7 @@ input to ordinary windows. It cannot write where only administrators can.
 | `daifuku.exe`, `daifukud.exe` | `C:\Program Files\Daifuku` | Program Files is writable by administrators only. The logon task starts the daemon from there. |
 | The config, which names the command every fleet terminal runs | `C:\ProgramData\Daifuku\daifuku.json` | Administrators and SYSTEM may write the folder, users may only read it. Any user may create folders in ProgramData, so the installer keeps an existing `Daifuku` folder, and the config in it, only when it is a real folder (not a link) that Administrators or SYSTEM own and no one else may change: one an earlier install made. Anything else there is deleted without following links, and a new folder is created with its access list already in place. ProgramData itself is found on the drive Windows runs from, not through the environment, which the user can change. |
 | The logon task | `\Daifuku\Daemon` in Task Scheduler | Creating or changing a task that runs with highest privileges needs administrator rights. Its definition passes through the locked data folder on the way in, never through the user's temp folder. |
-| Windows Terminal | its package folder under `WindowsApps` | Found through the package API, never through `PATH`, which contains folders the user can write. |
+| Windows Terminal | its package folder under `WindowsApps` | Found through the package API, never through `PATH`, which contains folders the user can write. Only a package the system installed from a signed source counts: one registered from loose files in developer mode can live in any folder. |
 | PowerShell | `Program Files\PowerShell\7` or `System32` | Found through the known-folder API, never through `PATH` or environment variables. |
 
 The command a fleet runs (`claude` by default) is resolved by that PowerShell
@@ -74,7 +74,10 @@ Windows does not let it type into the administrator terminals that result.
   agent or a terminal controls.
 - The installer never removes or rewrites a hook it did not add, and never
   writes the settings file when nothing changed; `daifuku uninstall` removes
-  exactly the hooks that run `daifuku.exe hook`.
+  exactly the hooks that run a program called `daifuku.exe` with `hook`.
+- The installer runs as administrator but the profile is the user's, so it
+  edits an agent's settings only when the file, with every link followed,
+  is inside the profile.
 
 ## Checked on every push
 
