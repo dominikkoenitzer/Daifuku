@@ -9,6 +9,10 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # A week before a new release is proposed: long enough for a hijacked or
+    # broken publish to be yanked first. Security updates skip the wait.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       # windows and windows-core are pinned to the same version on purpose and
@@ -29,6 +33,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: ci
