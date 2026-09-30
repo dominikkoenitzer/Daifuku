@@ -90,17 +90,21 @@ jobs:
       - name: Build
         run: cargo build --locked --release --workspace
 
+      # The tag and the ref name arrive as environment variables, never pasted
+      # into the script: a branch may be called anything, quotes included.
       - name: Stage binaries
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
-          $tag = "${{ inputs.tag }}"
+          $tag = $env:RELEASE_TAG
           if ([string]::IsNullOrWhiteSpace($tag)) {
-              if ("${{ github.ref_type }}" -eq 'tag') {
-                  $tag = "${{ github.ref_name }}"
+              if ($env:GITHUB_REF_TYPE -eq 'tag') {
+                  $tag = $env:GITHUB_REF_NAME
               } else {
-                  $tag = "${{ github.ref_name }}-$("${{ github.sha }}".Substring(0, 7))"
+                  $tag = "$env:GITHUB_REF_NAME-$($env:GITHUB_SHA.Substring(0, 7))"
               }
           }
           $name = "Daifuku-$tag-$env:TARGET"
@@ -115,15 +119,17 @@ jobs:
 
       - name: Verify the staged binaries run and agree with the tag
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
 
           # The tag being published, when there is one. A workflow_dispatch on a
           # branch has none, and must not be held to this.
-          $tag = "${{ inputs.tag }}"
-          if ([string]::IsNullOrWhiteSpace($tag) -and "${{ github.ref_type }}" -eq 'tag') {
-              $tag = "${{ github.ref_name }}"
+          $tag = $env:RELEASE_TAG
+          if ([string]::IsNullOrWhiteSpace($tag) -and $env:GITHUB_REF_TYPE -eq 'tag') {
+              $tag = $env:GITHUB_REF_NAME
           }
           $expected = if ($tag -match '^v(.+)$') { $Matches[1] } else { $null }
 
