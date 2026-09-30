@@ -18,26 +18,30 @@
 //! sends anything.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::windows::io::{FromRawHandle, OwnedHandle};
-use std::time::Duration;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
-    INVALID_HANDLE_VALUE, LocalFree,
+    ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
+    ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
+    LocalFree, WAIT_TIMEOUT, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_NONE, FILE_WRITE_DATA, FlushFileBuffers,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE,
+    FILE_WRITE_DATA, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION,
+    SECURITY_SQOS_PRESENT, WriteFile,
 };
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
     PIPE_WAIT, WaitNamedPipeW,
 };
+use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 use windows::core::PCWSTR;
 
 use crate::process;
@@ -54,7 +58,7 @@ pub enum Pipe {
 
 /// The longest line either side accepts. A status reply for sixteen fleets of
 /// sixteen terminals is a few kilobytes; anything past this is not Daifuku.
-const MAX_LINE: u64 = 256 * 1024;
+const MAX_LINE: usize = 256 * 1024;
 
 impl Pipe {
     /// The pipe's full name, per Remote Desktop session so two people signed
@@ -97,14 +101,21 @@ impl Pipe {
 /// claimed until the daemon exits, the name is held, and there is never a
 /// gap in which another process could take it. With several instances,
 /// several hooks firing in the same instant each find one free.
+///
+/// Every read and write on an instance has a deadline, so a client that
+/// connects and then says nothing, or never reads its reply, holds the
+/// instance for a moment and not for ever.
 pub struct Instance {
     handle: OwnedHandle,
+    /// Signalled when an operation on the handle completes.
+    event: OwnedHandle,
 }
 
 /// One connected client. Dropping it disconnects the client and frees the
 /// instance for the next one.
 pub struct Connection<'a> {
-    handle: &'a OwnedHandle,
+    instance: &'a Instance,
+    accepted: Instant,
     /// The client's process id, as Windows reports it.
     pub client: u32,
 }
@@ -133,6 +144,7 @@ fn instances_at(name: &str, sddl: &str, count: usize) -> io::Result<Vec<Instance
     for i in 0..count {
         all.push(Instance {
             handle: create(name, sddl, i == 0, max)?,
+            event: event()?,
         });
     }
     Ok(all)
@@ -145,29 +157,149 @@ impl Instance {
     ///
     /// When the connection fails.
     pub fn accept(&mut self) -> io::Result<Connection<'_>> {
-        let raw_handle = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(
-            &self.handle,
-        ));
+        let raw_handle = raw(&self.handle);
         // A client may connect before this call. ERROR_PIPE_CONNECTED says so,
         // and ERROR_NO_DATA says it has also hung up already, which a hook
         // does the moment it has written; what it wrote can still be read.
-        // SAFETY: a valid pipe handle, synchronous connect.
-        if let Err(e) = unsafe { ConnectNamedPipe(raw_handle, None) }
-            && e.code() != ERROR_PIPE_CONNECTED.to_hresult()
-            && e.code() != ERROR_NO_DATA.to_hresult()
+        // SAFETY: a valid pipe handle; overlapped() waits for the connect.
+        let connected = overlapped(raw_handle, raw(&self.event), None, |ov| unsafe {
+            ConnectNamedPipe(raw_handle, Some(ov))
+        });
+        if let Err(e) = connected
+            && !matches!(os_error(&e), Some(ERROR_PIPE_CONNECTED | ERROR_NO_DATA))
         {
             // SAFETY: as above; resets an instance a client left half-open.
             let _ = unsafe { DisconnectNamedPipe(raw_handle) };
-            return Err(io::Error::other(e));
+            return Err(e);
         }
         let mut client = 0u32;
         // SAFETY: client is a valid out pointer.
         let _ = unsafe { GetNamedPipeClientProcessId(raw_handle, &raw mut client) };
         Ok(Connection {
-            handle: &self.handle,
+            instance: self,
+            accepted: Instant::now(),
             client,
         })
     }
+}
+
+fn raw(handle: &OwnedHandle) -> HANDLE {
+    HANDLE(handle.as_raw_handle())
+}
+
+fn os_error(e: &io::Error) -> Option<WIN32_ERROR> {
+    e.raw_os_error()
+        .and_then(|c| u32::try_from(c).ok())
+        .map(WIN32_ERROR)
+}
+
+/// An unnamed, manual-reset event for [`overlapped`].
+fn event() -> io::Result<OwnedHandle> {
+    // SAFETY: no attributes, no name.
+    let h = unsafe { CreateEventW(None, true, false, None) }.map_err(win32)?;
+    // SAFETY: h is a fresh, owned, valid handle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(h.0) })
+}
+
+/// Turns a failed Win32 call back into the error code it carries, so callers
+/// can match on it.
+fn win32(e: windows::core::Error) -> io::Error {
+    WIN32_ERROR::from_error(&e).map_or_else(
+        || io::Error::other(e),
+        |code| io::Error::from_raw_os_error(i32::try_from(code.0).unwrap_or(i32::MAX)),
+    )
+}
+
+/// Starts one operation on a handle opened with `FILE_FLAG_OVERLAPPED` and
+/// waits for it until `deadline`, or for as long as it takes without one. An
+/// operation still pending at the deadline is cancelled and fails with
+/// [`io::ErrorKind::TimedOut`]. Returns the bytes transferred.
+///
+/// The operation must not outlive this call, and it does not: a cancelled
+/// one is waited for too before the `OVERLAPPED` goes out of scope.
+fn overlapped(
+    handle: HANDLE,
+    event: HANDLE,
+    deadline: Option<Instant>,
+    start: impl FnOnce(*mut OVERLAPPED) -> windows::core::Result<()>,
+) -> io::Result<u32> {
+    let mut ov = OVERLAPPED {
+        hEvent: event,
+        ..OVERLAPPED::default()
+    };
+    if let Err(e) = start(&raw mut ov) {
+        let e = win32(e);
+        if os_error(&e) != Some(ERROR_IO_PENDING) {
+            return Err(e);
+        }
+        let ms = deadline.map_or(INFINITE, |d| {
+            let left = d.saturating_duration_since(Instant::now()).as_millis();
+            u32::try_from(left).unwrap_or(INFINITE - 1)
+        });
+        // SAFETY: event is a valid event handle.
+        if unsafe { WaitForSingleObject(event, ms) } == WAIT_TIMEOUT {
+            // SAFETY: ov is the pending operation's own OVERLAPPED.
+            let _ = unsafe { CancelIoEx(handle, Some(&raw const ov)) };
+        }
+    }
+    let mut done = 0u32;
+    // SAFETY: ov and done are valid; waits until the operation has finished,
+    // whether it completed or was cancelled.
+    match unsafe { GetOverlappedResult(handle, &raw const ov, &raw mut done, true) }.map_err(win32)
+    {
+        Ok(()) => Ok(done),
+        Err(e) if os_error(&e) == Some(ERROR_OPERATION_ABORTED) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the other end of the pipe did not answer in time",
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+/// Reads one line, at most [`MAX_LINE`] bytes, from an overlapped handle.
+/// A peer that hangs up ends the line where it is.
+fn read_line(handle: HANDLE, event: HANDLE, deadline: Option<Instant>) -> io::Result<String> {
+    let mut line = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !line.contains(&b'\n') && line.len() < MAX_LINE {
+        // SAFETY: chunk outlives the operation, which overlapped() waits for.
+        let read = overlapped(handle, event, deadline, |ov| unsafe {
+            ReadFile(handle, Some(&mut chunk), None, Some(ov))
+        });
+        match read {
+            Ok(0) => break,
+            Ok(n) => line.extend_from_slice(&chunk[..usize::try_from(n).unwrap_or(0)]),
+            Err(e) if os_error(&e) == Some(ERROR_BROKEN_PIPE) => break,
+            Err(e) => return Err(e),
+        }
+    }
+    if let Some(end) = line.iter().position(|&b| b == b'\n') {
+        line.truncate(end + 1);
+    }
+    line.truncate(MAX_LINE);
+    String::from_utf8(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Writes all of `bytes` to an overlapped handle.
+fn write_all(
+    handle: HANDLE,
+    event: HANDLE,
+    mut bytes: &[u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        // SAFETY: bytes outlives the operation, which overlapped() waits for.
+        let written = overlapped(handle, event, deadline, |ov| unsafe {
+            WriteFile(handle, Some(bytes), None, Some(ov))
+        })?;
+        if written == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        bytes = bytes
+            .get(usize::try_from(written).unwrap_or(usize::MAX)..)
+            .unwrap_or_default();
+    }
+    Ok(())
 }
 
 fn create(name: &str, sddl: &str, first: bool, max: u32) -> io::Result<OwnedHandle> {
@@ -190,7 +322,7 @@ fn create(name: &str, sddl: &str, first: bool, max: u32) -> io::Result<OwnedHand
         bInheritHandle: false.into(),
     };
     let name = to_wide(name);
-    let mut open_mode = PIPE_ACCESS_DUPLEX;
+    let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
     if first {
         open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
     }
@@ -219,40 +351,55 @@ fn create(name: &str, sddl: &str, first: bool, max: u32) -> io::Result<OwnedHand
 }
 
 impl Connection<'_> {
-    /// Reads one line, at most 256 KiB.
+    /// Reads one line, at most 256 KiB, which must have arrived `within` the
+    /// accept.
     ///
     /// # Errors
     ///
-    /// When the client hangs up first or the read fails.
-    pub fn read_line(&mut self) -> io::Result<String> {
-        let file = std::fs::File::from(self.handle.try_clone()?);
-        let mut line = String::new();
-        BufReader::new(file.take(MAX_LINE)).read_line(&mut line)?;
-        Ok(line)
+    /// When the read fails or times out. A client that hangs up first gives
+    /// what it sent until then.
+    pub fn read_line(&mut self, within: Duration) -> io::Result<String> {
+        read_line(
+            raw(&self.instance.handle),
+            raw(&self.instance.event),
+            Some(self.accepted + within),
+        )
     }
 
-    /// Writes one line.
+    /// Writes one line and waits, at most `within`, for the client to read
+    /// it and hang up, since disconnecting earlier would throw the line away.
     ///
     /// # Errors
     ///
-    /// When the client is gone.
-    pub fn write_line(&mut self, line: &str) -> io::Result<()> {
-        let mut file = std::fs::File::from(self.handle.try_clone()?);
-        file.write_all(line.as_bytes())?;
-        file.flush()
+    /// When the client is gone, or neither takes the line nor hangs up in
+    /// time.
+    pub fn write_line(&mut self, line: &str, within: Duration) -> io::Result<()> {
+        let deadline = Some(Instant::now() + within);
+        let (handle, event) = (raw(&self.instance.handle), raw(&self.instance.event));
+        write_all(handle, event, line.as_bytes(), deadline)?;
+        // The client reads its reply, then closes the pipe, which ends this
+        // read. Anything else it sends meanwhile is ignored.
+        let mut chunk = [0u8; 512];
+        loop {
+            // SAFETY: chunk outlives the operation, which overlapped() waits for.
+            let read = overlapped(handle, event, deadline, |ov| unsafe {
+                ReadFile(handle, Some(&mut chunk), None, Some(ov))
+            });
+            match read {
+                Ok(_) => {}
+                Err(e) if os_error(&e) == Some(ERROR_BROKEN_PIPE) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
 impl Drop for Connection<'_> {
     fn drop(&mut self) {
-        let raw_handle = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(
-            self.handle,
-        ));
-        // SAFETY: the instance's handle, which outlives the connection. The
-        // flush makes sure a reply was read before the client is cut off.
+        // SAFETY: the instance's handle, which outlives the connection. A
+        // reply was waited for in write_line, so nothing is left to flush.
         unsafe {
-            let _ = FlushFileBuffers(raw_handle);
-            let _ = DisconnectNamedPipe(raw_handle);
+            let _ = DisconnectNamedPipe(raw(&self.instance.handle));
         }
     }
 }
@@ -326,7 +473,7 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
         return Ok(None);
     }
     let mut reply = String::new();
-    BufReader::new(file.take(MAX_LINE)).read_line(&mut reply)?;
+    BufReader::new(file.take(u64::try_from(MAX_LINE).unwrap_or(u64::MAX))).read_line(&mut reply)?;
     Ok(Some(reply))
 }
 
@@ -412,7 +559,13 @@ mod tests {
         let mut instance = instances_at(&name, Pipe::Hook.sddl(true), 1)
             .unwrap()
             .remove(0);
-        let server = std::thread::spawn(move || instance.accept().unwrap().read_line().unwrap());
+        let server = std::thread::spawn(move || {
+            instance
+                .accept()
+                .unwrap()
+                .read_line(Duration::from_millis(500))
+                .unwrap()
+        });
         send_to(&name, Pipe::Hook, "{\"hook\":1}\n", Duration::from_secs(2)).unwrap();
         assert_eq!(server.join().unwrap(), "{\"hook\":1}\n");
     }
@@ -424,7 +577,67 @@ mod tests {
         let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
         send_to(&name, Pipe::Hook, "{\"early\":1}\n", Duration::from_secs(2)).unwrap();
         let mut connection = instance.accept().unwrap();
-        assert_eq!(connection.read_line().unwrap(), "{\"early\":1}\n");
+        assert_eq!(
+            connection.read_line(Duration::from_millis(500)).unwrap(),
+            "{\"early\":1}\n"
+        );
+    }
+
+    /// Opens `name` as a client that never writes anything.
+    fn idle_client(name: &str) -> OwnedHandle {
+        let name = to_wide(name);
+        // SAFETY: name is NUL terminated.
+        let h = unsafe {
+            CreateFileW(
+                PCWSTR(name.as_ptr()),
+                FILE_WRITE_DATA.0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                None,
+            )
+        }
+        .unwrap();
+        // SAFETY: h is a fresh, owned, valid handle.
+        unsafe { OwnedHandle::from_raw_handle(h.0) }
+    }
+
+    #[test]
+    fn an_idle_client_does_not_hold_the_pipe() {
+        let name = private_name();
+        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
+        let (lines, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            loop {
+                if let Ok(mut connection) = instance.accept()
+                    && let Ok(line) = connection.read_line(Duration::from_millis(500))
+                    && lines.send(line).is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let _idle = idle_client(&name);
+        let sent = send_to(&name, Pipe::Hook, "{\"late\":1}\n", Duration::from_secs(3));
+        assert!(sent.is_ok(), "the hook found no free instance: {sent:?}");
+        let line = received.recv_timeout(Duration::from_secs(3));
+        assert_eq!(line.as_deref(), Ok("{\"late\":1}\n"));
+    }
+
+    #[test]
+    fn a_client_that_never_reads_its_reply_is_let_go() {
+        let name = private_name();
+        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
+        let _idle = idle_client(&name);
+        let start = Instant::now();
+        let mut connection = instance.accept().unwrap();
+        let written = connection.write_line("{}\n", Duration::from_millis(300));
+        drop(connection);
+        assert_eq!(written.map_err(|e| e.kind()), Err(io::ErrorKind::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
