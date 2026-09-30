@@ -20,7 +20,8 @@ checks every key:
 ```
 
 A mistake never takes Daifuku down: an invalid file is reported by
-`daifuku status` and `daifuku doctor`, and the last valid one stays in use.
+`daifuku status` and `daifuku doctor`, and the last valid one stays in use,
+or the defaults when the daemon started with the invalid file.
 
 ## `fleets`
 
@@ -48,7 +49,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `count` | `6` | 1 to 16 terminals. |
 | `monitor` | `"portrait"` | See below. |
 | `shape` | automatic | `{ "columns": 3, "rows": 2 }` to force a grid. A shape too small for `count` grows rows. |
-| `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree. |
+| `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree (in releases after 0.1.1). A folder that does not exist falls back to your profile folder. |
 | `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | Windows Terminal's default | A Windows Terminal profile, by name. |
 | `admin` | `true` | Open the terminals as administrator. |
@@ -56,7 +57,8 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. |
 
 Opening a fleet that is already open brings it back: terminals that were
-closed are opened again, and every terminal goes back to its cell.
+closed are opened again, each in its own cell with its own number, and every
+terminal goes back to its cell.
 
 ### `monitor`
 
@@ -66,7 +68,7 @@ closed are opened again, and every terminal goes back to its cell.
 | `"landscape"` | The first monitor wider than tall, the primary one first. |
 | `"primary"` | The primary monitor. |
 | `"secondary"` | The first monitor that is not the primary. |
-| `"cursor"` | The monitor the mouse is on. |
+| `"cursor"` | The monitor the mouse is on when the fleet opens. It stays there until it is closed. |
 | `"\\\\.\\DISPLAY2"` | A monitor by its device name. |
 
 Every pick falls back to the primary monitor, so a fleet always opens
@@ -126,7 +128,7 @@ Colours are `#rrggbb`. A key left out takes the Catppuccin colour.
 
 | Key | Default | |
 |---|---|---|
-| `next_waiting` | `"ctrl + alt + n"` | Focus the agent that has waited longest. Pressed again from a waiting terminal, it moves on to the next one. |
+| `next_waiting` | `"ctrl + alt + n"` | Focus the agent that has waited longest, and after the waiting ones, the failed ones. Pressed again from one of them, it moves on to the next. |
 | `snap` | `"ctrl + alt + backspace"` | Put every fleet terminal back in its cell. |
 
 A hotkey is modifiers and one key, joined by `+`: `ctrl`, `alt`, `shift`,
@@ -143,5 +145,6 @@ types a character there, such as `e` (€) or `2` (@).
 
 ## `sound`
 
-`true` plays the system notification sound when an agent starts waiting for
-you, through your own sound scheme. Off by default.
+`true` plays Windows' Asterisk sound when an agent starts waiting for you,
+so it follows your own sound scheme (Sound settings, Program Events).
+Off by default.
