@@ -39,6 +39,8 @@
   source, and a `;` in a fleet's folder no longer splits the command.
 - A border stays above its terminal when the terminal is brought to the
   front, and no longer flashes over other windows while it moves.
+- A fleet command with double quotes in it runs as written: Windows
+  Terminal used to hand it to PowerShell with its quotes broken.
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
