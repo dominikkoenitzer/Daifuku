@@ -7,12 +7,20 @@
 //! uneven by exactly that much. [`place`] measures the difference and pays it,
 //! and measures again, because a window that crosses onto a monitor with a
 //! different DPI rescales itself after the first move.
+//!
+//! Moving or showing a window that another thread owns waits for that
+//! thread to handle it. A terminal whose app has stopped answering would
+//! hold the daemon's message loop for as long as it hangs, so [`place`]
+//! first checks that the thread is taking messages, and moves a window
+//! whose thread is not by a queued request instead.
 
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use daifuku_core::Rect;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_TIMEOUT, GetLastError, HWND, LPARAM, RECT, WIN32_ERROR, WPARAM,
+};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
@@ -22,9 +30,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
-    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
-    PostMessageW, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
-    ShowWindow, WM_CLOSE,
+    GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible,
+    IsZoomed, PostMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_RESTORE, SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE, SWP_NOZORDER, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
+    ShowWindow, ShowWindowAsync, WM_CLOSE, WM_NULL,
 };
 
 use crate::monitor::rect;
@@ -161,8 +170,15 @@ pub const fn outer_for(target: Rect, outer: Rect, frame: Rect) -> Rect {
 /// until the frame matches or three passes are spent: the second pass is for
 /// the DPI change a window goes through when it lands on another monitor,
 /// the third is slack for a slow app.
+///
+/// A window whose thread is not answering is not waited for: the move is
+/// only queued, to happen when the thread answers again, and the result is
+/// `None`.
 pub fn place(w: u64, target: Rect) -> Option<Rect> {
     let h = hwnd(w);
+    if !answers(h) {
+        return place_later(w, target);
+    }
     // SAFETY: plain calls on a handle.
     unsafe {
         if IsIconic(h).as_bool() || IsZoomed(h).as_bool() {
@@ -198,6 +214,75 @@ pub fn place(w: u64, target: Rect) -> Option<Rect> {
         wait_for_frame(w, target, Duration::from_millis(60));
     }
     frame(w)
+}
+
+/// Queues the move for a window whose thread is not answering, so it happens
+/// when the thread answers again, and returns `None` because the frame it
+/// will have is not known yet.
+///
+/// There is one queued request and no read-back, so the border widths are
+/// taken from where the window is now. A minimised or maximised window is
+/// only queued to restore: its border widths are not the ones it will have
+/// restored, and the next placement puts it in its cell.
+fn place_later(w: u64, target: Rect) -> Option<Rect> {
+    let h = hwnd(w);
+    // SAFETY: plain calls on a handle; the restore and the move are only
+    // posted to the thread that owns it.
+    unsafe {
+        if IsIconic(h).as_bool() || IsZoomed(h).as_bool() {
+            let _ = ShowWindowAsync(h, SW_RESTORE);
+            return None;
+        }
+        let want = outer_for(target, outer(w)?, frame(w)?);
+        let _ = SetWindowPos(
+            h,
+            None,
+            want.left,
+            want.top,
+            want.width(),
+            want.height(),
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+        );
+    }
+    None
+}
+
+/// How long [`answers`] gives a window's thread to handle a message, in
+/// milliseconds.
+const ANSWER_TIMEOUT_MS: u32 = 200;
+
+/// Whether the thread that owns the window is taking messages: Windows has
+/// not marked it hung, and it handles a `WM_NULL`, which does nothing,
+/// within [`ANSWER_TIMEOUT_MS`].
+///
+/// Windows marks a thread hung only after five seconds without a message,
+/// so the `WM_NULL` is what catches an app that stopped answering just now.
+fn answers(h: HWND) -> bool {
+    // SAFETY: plain calls on a handle; the message carries no pointers.
+    unsafe {
+        if IsHungAppWindow(h).as_bool() {
+            return false;
+        }
+        let sent = SendMessageTimeoutW(
+            h,
+            WM_NULL,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            ANSWER_TIMEOUT_MS,
+            None,
+        );
+        answered(sent.0 != 0, GetLastError())
+    }
+}
+
+/// Whether a `SendMessageTimeoutW` that returned `sent`, with `error` as the
+/// last error, means the thread answered. Only a timeout means it did not: a
+/// message refused for another reason, such as a window of a higher
+/// integrity level, says nothing about the thread, and the call it was a
+/// check for goes ahead as before.
+const fn answered(sent: bool, error: WIN32_ERROR) -> bool {
+    sent || error.0 != ERROR_TIMEOUT.0
 }
 
 /// Polls the frame for up to `limit`, returning as soon as it is `target`.
@@ -334,6 +419,16 @@ mod tests {
             outer_for(Rect::new(0, 0, 5, 5), r, r),
             Rect::new(0, 0, 5, 5)
         );
+    }
+
+    #[test]
+    fn only_a_timeout_means_a_window_is_not_answering() {
+        assert!(answered(true, WIN32_ERROR(0)));
+        assert!(!answered(false, ERROR_TIMEOUT));
+        assert!(answered(
+            false,
+            windows::Win32::Foundation::ERROR_ACCESS_DENIED
+        ));
     }
 
     #[test]
