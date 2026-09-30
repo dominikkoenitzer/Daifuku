@@ -53,6 +53,13 @@ life, so the name is never free for another process to take between two
 clients. Clients connect for identification only: whatever answers on a pipe
 can learn who the client is, never act as it. Remote clients are rejected.
 
+Every exchange has a deadline. A hook has half a second from connecting to
+deliver its line, a command client five seconds to send its request and five
+to read the reply; past that the daemon hangs up. A process that opens every
+hook instance and says nothing therefore holds them for a moment, not for
+ever. A hook gives up just as fast on a pipe that does not take its line, so
+a process posing as the daemon cannot make agents wait.
+
 ## Hotkeys
 
 Hotkeys are registered with `RegisterHotKey`. Any process can synthesise the
