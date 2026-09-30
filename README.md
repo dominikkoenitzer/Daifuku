@@ -9,8 +9,8 @@ each window's border shows what its agent is doing.
   monitor you choose.
 - Each border shows its agent: **blue** working, **yellow** waiting for you,
   **green** done, **red** failed.
-- **Ctrl+Alt+N** jumps to the agent that has waited longest. Press it again for
-  the next one.
+- **Ctrl+Alt+N** jumps to the agent that has waited longest, then to failed
+  ones. Press it again for the next one.
 - **Ctrl+Alt+Backspace** puts every terminal back in its cell.
 
 It works with Claude Code and Codex, in Windows Terminal. Fleets open as
@@ -65,8 +65,8 @@ checks them. [docs/configuration.md](docs/configuration.md) has every key.
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
 
 Gaps are in `gaps`, the look of the borders in `border`, the global keys in
-`hotkeys`, and `"sound": true` plays the system notification sound when an
-agent starts waiting.
+`hotkeys`, and `"sound": true` plays Windows' Asterisk sound when an agent
+starts waiting.
 
 ## Accessibility
 
@@ -86,8 +86,8 @@ states read in greyscale and to every kind of colour vision:
 - With a high contrast theme on, the borders take the theme's system colours.
 - With "Show animations in Windows" off, the waiting border stops breathing.
   `"pulse": false` turns it off either way.
-- `"sound": true` for a chime when an agent needs you, through your own sound
-  scheme.
+- `"sound": true` for a chime when an agent needs you: the Asterisk sound of
+  your own sound scheme.
 - Everything works from the keyboard, and `daifuku status` lists every agent
   and its state in plain text, for a screen reader or a script
   (`--json`).
@@ -123,13 +123,21 @@ vulnerabilities as described in [SECURITY.md](SECURITY.md).
 |---|---|
 | `daifuku open [fleet]` | open a fleet, or bring it back |
 | `daifuku snap` | put every terminal back in its cell |
-| `daifuku next` | focus the agent that has waited longest |
+| `daifuku next` | focus the agent that has waited longest, then failed ones |
 | `daifuku close [fleet]` | close a fleet |
 | `daifuku status` | fleets, agents and hotkeys |
 | `daifuku demo` | six scripted agents |
 | `daifuku reload` | re-read the config |
+| `daifuku stop` | stop the daemon |
+| `daifuku config` | print where the config file is |
+| `daifuku schema` | print the config's JSON schema |
 | `daifuku doctor` | check the setup |
+| `daifuku install [--no-hooks] [--no-start]` | install, or update in place |
 | `daifuku uninstall [--purge]` | remove it again |
+
+The commands that talk to the daemon, `open` to `stop`, need an
+administrator terminal, as the daemon runs elevated. The hotkeys work from
+anywhere.
 
 ## Build
 
