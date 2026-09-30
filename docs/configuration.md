@@ -57,8 +57,8 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
 
 Opening a fleet that is already open brings it back: terminals that were
-closed are opened again, each in its own cell with its own number, and every
-terminal goes back to its cell.
+closed are opened again, each in its own cell with its own number (after
+0.1.1), and every terminal goes back to its cell.
 
 ### `monitor`
 
@@ -68,7 +68,7 @@ terminal goes back to its cell.
 | `"landscape"` | The first monitor wider than tall, the primary one first. |
 | `"primary"` | The primary monitor. |
 | `"secondary"` | The first monitor that is not the primary. |
-| `"cursor"` | The monitor the mouse is on when the fleet opens. It stays there until it is closed. |
+| `"cursor"` | The monitor the mouse is on when the fleet opens. It stays there until it is closed (after 0.1.1). |
 | `"\\\\.\\DISPLAY2"` | A monitor by its device name. |
 
 Every pick falls back to the primary monitor, so a fleet always opens
