@@ -267,16 +267,32 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
     // Every terminal ran its command as written, with its own number.
     for n in 1..=4 {
         let file = said.join(format!("said-{n}.txt"));
-        let text = wait_for(
-            "a terminal's command to run",
-            Duration::from_secs(30),
-            || {
-                // Only a whole file: Set-Content ends it with a line break.
-                std::fs::read_to_string(&file)
-                    .ok()
-                    .filter(|t| t.ends_with('\n'))
-            },
-        );
+        // Only a whole file: Set-Content ends it with a line break.
+        let read = || {
+            std::fs::read_to_string(&file)
+                .ok()
+                .filter(|t| t.ends_with('\n'))
+        };
+        let start = Instant::now();
+        while read().is_none() && start.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let Some(text) = read() else {
+            // What PowerShell was given says which of the two command lines
+            // lost what.
+            let shells = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | Where-Object Name -in 'pwsh.exe','powershell.exe' | ForEach-Object CommandLine",
+                ])
+                .output()
+                .unwrap();
+            panic!(
+                "terminal {n} did not run its command; the shells' command lines:\n{}",
+                String::from_utf8_lossy(&shells.stdout)
+            );
+        };
         assert_eq!(text.trim_end(), format!(r#"terminal {n}; "quoted""#));
     }
     steps += 1;
