@@ -178,7 +178,7 @@ pub const fn outer_for(target: Rect, outer: Rect, frame: Rect) -> Rect {
 /// `None`.
 pub fn place(w: u64, target: Rect) -> Option<Rect> {
     let h = hwnd(w);
-    if !answers(h) {
+    if !answers_hwnd(h) {
         return place_later(w, target);
     }
     // SAFETY: plain calls on a handle.
@@ -255,11 +255,15 @@ const ANSWER_TIMEOUT_MS: u32 = 200;
 
 /// Whether the thread that owns the window is taking messages: Windows has
 /// not marked it hung, and it handles a `WM_NULL`, which does nothing,
-/// within [`ANSWER_TIMEOUT_MS`].
+/// within 200 milliseconds.
 ///
 /// Windows marks a thread hung only after five seconds without a message,
 /// so the `WM_NULL` is what catches an app that stopped answering just now.
-fn answers(h: HWND) -> bool {
+pub fn answers(w: u64) -> bool {
+    answers_hwnd(hwnd(w))
+}
+
+fn answers_hwnd(h: HWND) -> bool {
     // SAFETY: plain calls on a handle; the message carries no pointers.
     unsafe {
         if IsHungAppWindow(h).as_bool() {
@@ -327,7 +331,7 @@ pub fn foreground() -> u64 {
 /// `false`: restoring and raising it would wait for that thread.
 pub fn focus(w: u64) -> bool {
     let h = hwnd(w);
-    if !answers(h) {
+    if !answers_hwnd(h) {
         return false;
     }
     // SAFETY: plain call on a handle.
@@ -365,7 +369,7 @@ fn switch_to(h: HWND) {
         let me = GetCurrentThreadId();
         let attached = front_thread != 0
             && front_thread != me
-            && answers(front)
+            && answers_hwnd(front)
             && AttachThreadInput(me, front_thread, true).as_bool();
         let _ = BringWindowToTop(h);
         let _ = SetForegroundWindow(h);

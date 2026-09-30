@@ -114,10 +114,7 @@ pub fn open(
     record.prune();
     let stay_on = record.windows().next().map(|_| record.monitor.clone());
     let (m, cells) = cells(fleet, config, stay_on.as_deref())?;
-    record.monitor = m.device.clone();
-    // The config's count may have changed since the fleet opened: slots past
-    // it are let go (their terminals stay open, unmanaged), missing ones added.
-    record.slots.resize(cells.len(), None);
+    settle(fleet, record, &m, cells.len());
     let empty: Vec<usize> = (0..cells.len())
         .filter(|&i| record.slots[i].is_none())
         .collect();
@@ -191,14 +188,35 @@ pub fn open(
     Ok(message)
 }
 
-/// Waits for one new terminal window: shown, not there before, and not
-/// already one of the fleet's.
+/// Brings a record in line with where its fleet is now.
+///
+/// The config's count may have changed since the fleet opened: slots past it
+/// are let go (their terminals stay open, unmanaged), missing ones added. A
+/// fleet that opened where the cursor was keeps that monitor as its home
+/// while it is gone, so it returns there when the monitor comes back.
+fn settle(fleet: &Fleet, record: &mut OpenFleet, m: &MonitorInfo, count: usize) {
+    let home_gone = fleet.monitor == MonitorPick::Cursor
+        && record.windows().next().is_some()
+        && !record.monitor.is_empty()
+        && !record.monitor.eq_ignore_ascii_case(&m.device);
+    if !home_gone {
+        record.monitor.clone_from(&m.device);
+    }
+    record.slots.resize(count, None);
+}
+
+/// Waits for one new terminal window: shown, not there before, not already
+/// one of the fleet's, and taking messages, so it is placed and measured
+/// like any other window rather than by a queued move.
 fn wait_for_new(before: &BTreeSet<u64>, record: &OpenFleet) -> Option<u64> {
     let start = Instant::now();
     while start.elapsed() < SHOW_TIMEOUT {
         if let Some(w) = terminals().into_iter().find(|w| {
             !before.contains(w) && !record.slots.contains(&Some(*w)) && window::is_shown(*w)
         }) {
+            while !window::answers(w) && start.elapsed() < SHOW_TIMEOUT {
+                std::thread::sleep(Duration::from_millis(25));
+            }
             return Some(w);
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -222,7 +240,7 @@ fn place_all(record: &OpenFleet, cells: &[Rect]) {
 pub fn snap(fleet: &Fleet, config: &Config, record: &mut OpenFleet) -> anyhow::Result<()> {
     record.prune();
     let (m, cells) = cells(fleet, config, Some(&record.monitor))?;
-    record.monitor = m.device;
+    settle(fleet, record, &m, cells.len());
     place_all(record, &cells);
     Ok(())
 }
