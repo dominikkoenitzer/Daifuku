@@ -148,6 +148,13 @@ pub(crate) fn stack_above(
         (HWND_TOPMOST, false)
     };
 
+    // Already directly above the target, already on screen and not to be
+    // moved: the call below would change nothing, and every repaint of a
+    // breathing border would make it.
+    if keep_zorder && place.is_none() && is_window_visible(window) {
+        return Ok(wants_topmost);
+    }
+
     let rect = place.unwrap_or_default();
     let mut flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
     if keep_zorder {
