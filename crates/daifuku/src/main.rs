@@ -33,7 +33,8 @@ use daifuku_core::protocol::Request;
 #[command(
     name = "daifuku",
     version,
-    about = "Fleets of agent terminals, in a grid, coloured by what each agent is doing."
+    about = "Fleets of agent terminals, in a grid, coloured by what each agent is doing.",
+    after_help = "The commands that talk to the daemon, open to stop, need an administrator terminal."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -83,8 +84,8 @@ enum Command {
     Schema,
     /// Print where the config file is.
     Config,
-    /// Install for this user: Program Files, the logon task, Claude Code's
-    /// hooks. Needs an administrator terminal.
+    /// Install for this user: Program Files, the logon task, the hooks for
+    /// Claude Code and Codex. Needs an administrator terminal.
     Install {
         /// Leave Claude Code's and Codex's settings alone.
         #[arg(long)]
@@ -93,7 +94,8 @@ enum Command {
         #[arg(long)]
         no_start: bool,
     },
-    /// Remove everything `install` added. Needs an administrator terminal.
+    /// Remove the program, the logon task and Daifuku's hooks. Keeps the
+    /// config and the logs unless --purge. Needs an administrator terminal.
     Uninstall {
         /// Also delete the config and the logs.
         #[arg(long)]
