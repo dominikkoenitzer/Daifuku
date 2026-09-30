@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The next key moves on down the queue only when pressed again from the
+  terminal it just brought up, while that agent still waits. From a waiting
+  terminal that was in front anyway, such as the last one the demo opened,
+  or one whose agent had been approved and then failed, it used to skip the
+  agents that had waited longest, as far as a failed one Enter cannot approve.
 - A second zip for Windows on ARM, built and checked in every release.
 - `{n}` works in a fleet's `directory` as it does in its `command`, so each
   agent can start in a folder of its own, such as its own git worktree.
