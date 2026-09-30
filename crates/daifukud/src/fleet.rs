@@ -112,6 +112,11 @@ pub fn open(
     elevated: bool,
 ) -> anyhow::Result<String> {
     record.prune();
+    // Terminals past a lowered count are let go first, so they do not keep
+    // the fleet on their monitor.
+    record
+        .slots
+        .truncate(usize::try_from(fleet.count).unwrap_or(usize::MAX));
     let stay_on = record.windows().next().map(|_| record.monitor.clone());
     let (m, cells) = cells(fleet, config, stay_on.as_deref())?;
     settle(fleet, record, &m, cells.len());
@@ -239,6 +244,9 @@ fn place_all(record: &OpenFleet, cells: &[Rect]) {
 /// anything.
 pub fn snap(fleet: &Fleet, config: &Config, record: &mut OpenFleet) -> anyhow::Result<()> {
     record.prune();
+    record
+        .slots
+        .truncate(usize::try_from(fleet.count).unwrap_or(usize::MAX));
     let (m, cells) = cells(fleet, config, Some(&record.monitor))?;
     settle(fleet, record, &m, cells.len());
     place_all(record, &cells);
