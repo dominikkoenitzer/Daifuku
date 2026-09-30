@@ -99,11 +99,13 @@ jobs:
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Continue'
-          $output = cargo test --locked -p daifuku --test e2e -- --nocapture 2>&1 | Out-String
+          $output = cargo test --locked -p daifuku --test e2e -- --nocapture --test-threads 1 2>&1 | Out-String
           Write-Output $output
           if ($LASTEXITCODE -ne 0) { throw "the end-to-end test failed with $LASTEXITCODE" }
-          if ($output -notmatch 'e2e: \d+ steps passed') {
-              throw 'the end-to-end test did not run to the end; check the runner has a desktop'
+          # Two tests, each prints its tally only when it ran to the end.
+          $ran = ([regex]::Matches($output, 'e2e: \d+ steps passed')).Count
+          if ($ran -lt 2) {
+              throw "only $ran of 2 end-to-end tests ran to the end; check the runner has a desktop and Windows Terminal"
           }
       - name: The daemon's log
         if: always()
