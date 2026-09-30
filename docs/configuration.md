@@ -50,7 +50,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `monitor` | `"portrait"` | See below. |
 | `shape` | automatic | `{ "columns": 3, "rows": 2 }` to force a grid. A shape too small for `count` grows rows. |
 | `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree (in releases after 0.1.1). A folder that does not exist falls back to your profile folder. |
-| `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
+| `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it: PowerShell 7 when it is installed in Program Files, else Windows PowerShell, started with `-ExecutionPolicy RemoteSigned` so a `claude` installed with npm runs. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | Windows Terminal's default | A Windows Terminal profile, by name. |
 | `admin` | `true` | Open the terminals as administrator. |
 | `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
