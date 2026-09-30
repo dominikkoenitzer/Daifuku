@@ -17,7 +17,7 @@
 //! and the control client checks that whoever answers is elevated before it
 //! sends anything.
 
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::time::{Duration, Instant};
 
@@ -406,8 +406,9 @@ impl Drop for Connection<'_> {
 
 /// Sends one line and, for the control pipe, reads one back.
 ///
-/// `wait` is how long to wait for a busy pipe. The hook passes a short one: an
-/// agent must never be slowed down by a daemon that is not answering.
+/// `wait` is how long to wait for a busy pipe, and then for the line to be
+/// taken. The hook passes a short one: an agent must never be slowed down by
+/// a daemon that is not answering, nor by a process posing as one.
 ///
 /// # Errors
 ///
@@ -434,7 +435,7 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
                 None,
                 OPEN_EXISTING,
                 // Whoever answers may learn who the client is, never act as it.
-                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
                 None,
             )
         }
@@ -453,8 +454,8 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
             open().map_err(io::Error::other)?
         }
     };
-    // SAFETY: h is a fresh, owned, valid handle.
-    let handle = unsafe { OwnedHandle::from_raw_handle(h.0) };
+    // SAFETY: h is a fresh, owned, valid handle, closed when this returns.
+    let _handle = unsafe { OwnedHandle::from_raw_handle(h.0) };
     if pipe == Pipe::Control {
         let mut server = 0u32;
         // SAFETY: server is a valid out pointer.
@@ -466,15 +467,15 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
             ));
         }
     }
-    let mut file = std::fs::File::from(handle);
-    file.write_all(line.as_bytes())?;
-    file.flush()?;
+    // A server that never reads, such as one that took the name while no
+    // daemon ran, would otherwise hold the write for ever.
+    let event = event()?;
+    write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
     if pipe == Pipe::Hook {
         return Ok(None);
     }
-    let mut reply = String::new();
-    BufReader::new(file.take(u64::try_from(MAX_LINE).unwrap_or(u64::MAX))).read_line(&mut reply)?;
-    Ok(Some(reply))
+    // The elevated daemon bounds how long it takes to answer.
+    read_line(h, raw(&event), None).map(Some)
 }
 
 #[cfg(test)]
@@ -624,6 +625,36 @@ mod tests {
         assert!(sent.is_ok(), "the hook found no free instance: {sent:?}");
         let line = received.recv_timeout(Duration::from_secs(3));
         assert_eq!(line.as_deref(), Ok("{\"late\":1}\n"));
+    }
+
+    #[test]
+    fn a_hook_does_not_hang_on_a_server_that_never_reads() {
+        let name = private_name();
+        let wide = to_wide(&name);
+        // A squatter with no buffer, which never accepts and never reads.
+        // SAFETY: wide is NUL terminated.
+        let h = unsafe {
+            CreateNamedPipeW(
+                PCWSTR(wide.as_ptr()),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                0,
+                0,
+                0,
+                None,
+            )
+        };
+        assert_ne!(h, INVALID_HANDLE_VALUE);
+        // SAFETY: h is a fresh, owned, valid handle.
+        let _squatter = unsafe { OwnedHandle::from_raw_handle(h.0) };
+        let (done, finished) = std::sync::mpsc::channel();
+        let line = format!("{}\n", "x".repeat(1024 * 1024));
+        std::thread::spawn(move || {
+            let _ = send_to(&name, Pipe::Hook, &line, Duration::from_millis(200));
+            let _ = done.send(());
+        });
+        assert!(finished.recv_timeout(Duration::from_secs(2)).is_ok());
     }
 
     #[test]
