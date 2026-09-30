@@ -255,6 +255,12 @@ impl<W: Ord + Copy> Agents<W> {
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()
     }
+
+    /// Whether a session with this id is known.
+    #[must_use]
+    pub fn knows(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
+    }
 }
 
 #[cfg(test)]
@@ -319,6 +325,16 @@ mod tests {
         a.apply(1, &ev("b", "PreToolUse"));
         a.apply(2, &ev("c", "PreToolUse"));
         assert_eq!(a.len(), 3);
+    }
+
+    #[test]
+    fn knows_only_sessions_that_are_live() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("a", "PreToolUse"));
+        assert!(a.knows("a"));
+        assert!(!a.knows("b"));
+        a.apply(1, &ev("a", "SessionEnd"));
+        assert!(!a.knows("a"));
     }
 
     fn ev(session: &str, name: &str) -> HookEvent {
