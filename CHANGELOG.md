@@ -5,6 +5,14 @@
 - A second zip for Windows on ARM, built and checked in every release.
 - `{n}` works in a fleet's `directory` as it does in its `command`, so each
   agent can start in a folder of its own, such as its own git worktree.
+- A terminal reopened in a fleet goes back into its own cell with its own
+  number; before, it took the last number and moved the others.
+- A fleet whose opening fails part way keeps the terminals it had and the
+  ones it started, instead of forgetting them.
+- A fleet on the `cursor` monitor stays on that monitor when it is snapped.
+- The config is read again after a save the daemon could not read at once.
+- `daifuku demo` says so when a fleet in the config is called `demo`.
+- `daifuku status` times a window right after a tab moves out of it.
 
 ## 0.1.1, 2026-09-30
 
