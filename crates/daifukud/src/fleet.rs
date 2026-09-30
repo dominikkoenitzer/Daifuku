@@ -24,16 +24,36 @@ pub struct OpenFleet {
     pub name: String,
     /// The monitor it opened on, as picked then.
     pub monitor: String,
-    /// Its terminals, in cell order.
-    pub windows: Vec<u64>,
+    /// One slot per cell, in cell order: the terminal in it, or `None` when
+    /// that terminal was closed. A slot keeps its place, so a terminal that is
+    /// opened again lands in the cell, and gets the `{n}`, of the one it
+    /// replaces, while every other terminal stays where it is.
+    pub slots: Vec<Option<u64>>,
 }
 
 impl OpenFleet {
-    /// Drops windows that no longer exist or stopped being terminals (a
-    /// handle reused by some other window).
+    /// Empties the slots whose windows no longer exist or stopped being
+    /// terminals (a handle reused by some other window).
     pub fn prune(&mut self) {
-        self.windows
-            .retain(|&w| window::exists(w) && window::class(w) == WINDOW_CLASS);
+        for slot in &mut self.slots {
+            if slot.is_some_and(|w| !(window::exists(w) && window::class(w) == WINDOW_CLASS)) {
+                *slot = None;
+            }
+        }
+    }
+
+    /// The terminals that are open, in cell order.
+    pub fn windows(&self) -> impl Iterator<Item = u64> + '_ {
+        self.slots.iter().flatten().copied()
+    }
+
+    /// Forgets a window that was destroyed.
+    pub fn forget(&mut self, w: u64) {
+        for slot in &mut self.slots {
+            if *slot == Some(w) {
+                *slot = None;
+            }
+        }
     }
 }
 
@@ -71,13 +91,18 @@ pub fn open(
     let mut record = open.unwrap_or_else(|| OpenFleet {
         name: fleet.name.clone(),
         monitor: m.device.clone(),
-        windows: Vec::new(),
+        slots: Vec::new(),
     });
     record.prune();
     record.monitor = m.device.clone();
-    let missing = cells.len().saturating_sub(record.windows.len());
+    // The config's count may have changed since the fleet opened: slots past
+    // it are let go (their terminals stay open, unmanaged), missing ones added.
+    record.slots.resize(cells.len(), None);
+    let empty: Vec<usize> = (0..cells.len())
+        .filter(|&i| record.slots[i].is_none())
+        .collect();
 
-    if missing > 0 {
+    if !empty.is_empty() {
         if fleet.admin && !elevated {
             return Err(anyhow!(
                 "fleet `{}` opens administrator terminals, and this daemon is not elevated. Install Daifuku, or set \"admin\": false",
@@ -85,85 +110,82 @@ pub fn open(
             ));
         }
         let wt = terminal::find().context("Windows Terminal is not installed")?;
-        let before = terminals();
-        let started = record.windows.len();
-        for i in 0..missing {
+        // One terminal at a time, each waited for and put in its own cell:
+        // Windows Terminal shows windows in no promised order, so opening them
+        // all at once could give a terminal the cell, and the `{n}`, meant
+        // for another.
+        for &slot in &empty {
+            let n = slot + 1;
             let launch = Launch {
-                directory: Some(directory(fleet, started + i + 1)),
+                directory: Some(directory(fleet, n)),
                 profile: fleet.profile.clone(),
                 command: fleet
                     .command
                     .as_ref()
-                    .map(|c| c.replace("{n}", &(started + i + 1).to_string())),
-                title: Some(format!("{} {}", fleet.name, started + i + 1)),
+                    .map(|c| c.replace("{n}", &n.to_string())),
+                title: Some(format!("{} {}", fleet.name, n)),
                 clean: fleet.no_profile,
             };
+            let before = terminals();
             let r = if fleet.admin || !elevated {
                 terminal::open(&wt, &launch)
             } else {
                 terminal::open_unelevated(&wt, &launch)
             };
             r.with_context(|| format!("could not start Windows Terminal at {}", wt.display()))?;
+            match wait_for_new(&before, &record) {
+                Some(w) => {
+                    record.slots[slot] = Some(w);
+                    window::place(w, cells[slot]);
+                }
+                None => break,
+            }
         }
-        collect(&mut record, &before, missing, &cells);
     }
 
     place_all(&record, &cells);
-    if let Some(&first) = record.windows.first() {
+    if let Some(first) = record.windows().next() {
         window::focus(first);
     }
-    let message = if missing == 0 {
+    let open_now = record.windows().count();
+    let message = if empty.is_empty() {
+        format!("brought back {} ({open_now} terminals)", fleet.name)
+    } else if open_now < cells.len() {
         format!(
-            "brought back {} ({} terminals)",
-            fleet.name,
-            record.windows.len()
-        )
-    } else if record.windows.len() < cells.len() {
-        format!(
-            "opened {} of {} terminals for {}: Windows Terminal did not show the rest in time",
-            record.windows.len(),
+            "opened {open_now} of {} terminals for {}: Windows Terminal did not show the rest in time",
             cells.len(),
             fleet.name
         )
     } else {
         format!(
-            "opened {} ({} terminals on {})",
-            fleet.name,
-            record.windows.len(),
-            m.device
+            "opened {} ({open_now} terminals on {})",
+            fleet.name, m.device
         )
     };
     Ok((record, message))
 }
 
-/// Waits for `missing` new terminal windows and places each in the next free
-/// cell the moment it shows, so a fleet assembles on screen rather than
-/// appearing all at once in a heap and then jumping.
-fn collect(record: &mut OpenFleet, before: &BTreeSet<u64>, missing: usize, cells: &[Rect]) {
-    let target = record.windows.len() + missing;
+/// Waits for one new terminal window: shown, not there before, and not
+/// already one of the fleet's.
+fn wait_for_new(before: &BTreeSet<u64>, record: &OpenFleet) -> Option<u64> {
     let start = Instant::now();
-    while record.windows.len() < target && start.elapsed() < SHOW_TIMEOUT {
-        for w in terminals() {
-            if record.windows.len() >= target {
-                break;
-            }
-            if before.contains(&w) || record.windows.contains(&w) || !window::is_shown(w) {
-                continue;
-            }
-            let index = record.windows.len();
-            record.windows.push(w);
-            if let Some(&cell) = cells.get(index) {
-                window::place(w, cell);
-            }
+    while start.elapsed() < SHOW_TIMEOUT {
+        if let Some(w) = terminals().into_iter().find(|w| {
+            !before.contains(w) && !record.slots.contains(&Some(*w)) && window::is_shown(*w)
+        }) {
+            return Some(w);
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+    None
 }
 
 /// Puts every terminal of the fleet in its cell.
 fn place_all(record: &OpenFleet, cells: &[Rect]) {
-    for (&w, &cell) in record.windows.iter().zip(cells) {
-        if window::frame(w) != Some(cell) {
+    for (slot, &cell) in record.slots.iter().zip(cells) {
+        if let Some(w) = *slot
+            && window::frame(w) != Some(cell)
+        {
             window::place(w, cell);
         }
     }
