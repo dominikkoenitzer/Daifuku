@@ -37,6 +37,8 @@
   keeps the empty hook groups and lists you had.
 - Windows Terminal counts only when the system installed it from a signed
   source, and a `;` in a fleet's folder no longer splits the command.
+- A border stays above its terminal when the terminal is brought to the
+  front, and no longer flashes over other windows while it moves.
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
