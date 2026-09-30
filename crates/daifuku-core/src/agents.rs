@@ -360,6 +360,20 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_keeps_the_users_hook_in_a_group_it_shares_with_ours() {
+        let users = json!({"type": "command", "command": "C:/x/other.exe", "args": ["hook"]});
+        let mut s = json!({"hooks": {"Stop": [{"matcher": "", "hooks": [
+            {"type": "command", "command": "C:/x/daifuku.exe", "args": ["hook"]},
+            users.clone()
+        ]}]}});
+        assert_eq!(remove_hooks(&mut s), 1);
+        assert_eq!(
+            s,
+            json!({"hooks": {"Stop": [{"matcher": "", "hooks": [users]}]}})
+        );
+    }
+
+    #[test]
     fn an_empty_file_gets_a_hooks_section() {
         let mut s = json!({});
         CLAUDE.add_hooks(&mut s, EXE).unwrap();
