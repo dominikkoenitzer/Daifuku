@@ -157,6 +157,9 @@ impl Daemon {
             Err(e) => {
                 self.config_error = Some(format!("{}: {e}", self.config_path.display()));
                 tracing::error!(path = %self.config_path.display(), error = %e, "config unreadable, keeping the last good one");
+                // An editor can hold the file for a moment while it saves:
+                // forget the stamp so the next sweep reads it again.
+                self.config_stamp = None;
                 return;
             }
         };
