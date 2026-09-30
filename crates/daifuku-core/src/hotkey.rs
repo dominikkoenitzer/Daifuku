@@ -179,6 +179,12 @@ fn key_name(vk: u16) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn letters_and_digits_print_as_themselves() {
+        assert_eq!(hk("alt + q").to_string(), "alt + q");
+        assert_eq!(hk("ctrl + 7").to_string(), "ctrl + 7");
+    }
+
     fn hk(s: &str) -> Hotkey {
         s.parse().unwrap()
     }

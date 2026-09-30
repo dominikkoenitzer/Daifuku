@@ -564,6 +564,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_monitor_keyword_parses_to_its_own_pick() {
+        assert_eq!(
+            "portrait".parse::<MonitorPick>().unwrap(),
+            MonitorPick::Portrait
+        );
+        assert_eq!(
+            "landscape".parse::<MonitorPick>().unwrap(),
+            MonitorPick::Landscape
+        );
+        assert_eq!(
+            "primary".parse::<MonitorPick>().unwrap(),
+            MonitorPick::Primary
+        );
+        assert_eq!(
+            "secondary".parse::<MonitorPick>().unwrap(),
+            MonitorPick::Secondary
+        );
+        assert_eq!(
+            "cursor".parse::<MonitorPick>().unwrap(),
+            MonitorPick::Cursor
+        );
+        assert_eq!(
+            "DISPLAY9".parse::<MonitorPick>().unwrap(),
+            MonitorPick::Device("DISPLAY9".into())
+        );
+    }
+
+    #[test]
+    fn the_schema_describes_monitors_and_colours() {
+        let schema: serde_json::Value = serde_json::from_str(&Config::schema()).unwrap();
+        let defs = &schema["$defs"];
+        assert!(defs["MonitorPick"]["anyOf"].is_array());
+        assert_eq!(defs["Colour"]["pattern"], "^#?[0-9a-fA-F]{6}$");
+    }
+
+    #[test]
+    fn zero_gaps_are_allowed() {
+        assert!(Config::from_json(r#"{"gaps":{"outer":0,"inner":0}}"#).is_ok());
+        assert!(Config::from_json(r#"{"gaps":{"outer":0,"inner":-1}}"#).is_err());
+    }
+
+    #[test]
     fn no_file_is_one_fleet_of_six_admin_claudes_on_the_portrait_monitor() {
         let c = Config::from_json("").unwrap();
         assert_eq!(c.fleets.len(), 1);
