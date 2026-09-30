@@ -19,8 +19,11 @@ manager's reach, so the two run side by side.
 
 ## Install
 
-Windows 10 or 11 with Windows Terminal. From an administrator terminal, in the
-folder you unzipped the release to:
+Windows 10 or 11 with Windows Terminal. Download
+`Daifuku-v<version>-x86_64-pc-windows-msvc.zip` (or the `aarch64` zip on
+Windows on ARM, after 0.1.1) from the
+[Releases page](https://github.com/dominikkoenitzer/Daifuku/releases/latest)
+and unzip it. From an administrator terminal, in that folder:
 
 ```powershell
 .\daifuku.exe install
