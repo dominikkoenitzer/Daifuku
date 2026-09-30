@@ -593,9 +593,21 @@ impl Daemon {
 
     /// Sends the borders their end state: one frame per agent window that is
     /// on screen, in its state's colour and at its state's width. Starts or
-    /// stops the pulse to match: it runs only while an agent waits.
+    /// stops the pulse to match: it runs only while a waiting agent's window
+    /// has a frame, so not for one that is minimised or cloaked away.
     fn refresh_borders(&mut self) {
-        self.update_pulse();
+        let framed: Vec<(u64, AgentState, daifuku_core::Rect)> = self
+            .agents
+            .windows()
+            .into_iter()
+            .filter(|&(w, _)| window::is_shown(w) && !window::is_minimised(w))
+            .filter_map(|(w, state)| window::frame(w).map(|rect| (w, state, rect)))
+            .collect();
+        self.update_pulse(
+            framed
+                .iter()
+                .any(|&(_, state, _)| state == AgentState::Waiting),
+        );
         let Some(borders) = &self.borders else { return };
         let border = &self.config.border;
         let colours = if self.high_contrast {
@@ -606,43 +618,34 @@ impl Daemon {
         let breath = self
             .pulse_timer
             .map(|_| breath(self.started.elapsed().as_secs_f64()));
-        let specs: Vec<BorderSpec> =
-            self.agents
-                .windows()
-                .into_iter()
-                .filter(|&(w, _)| window::is_shown(w) && !window::is_minimised(w))
-                .filter_map(|(w, state)| {
-                    let mut colour = colours.of(state);
-                    if state == AgentState::Waiting
-                        && let Some(k) = breath
-                    {
-                        colour = dim(colour, k);
-                    }
-                    window::frame(w).map(|rect| {
-                        BorderSpec::new(WindowHandle::from_raw(w), rect, colour)
-                            .with_width(width_for(border, state, self.high_contrast))
-                    })
-                })
-                .collect();
+        let specs: Vec<BorderSpec> = framed
+            .into_iter()
+            .map(|(w, state, rect)| {
+                let mut colour = colours.of(state);
+                if state == AgentState::Waiting
+                    && let Some(k) = breath
+                {
+                    colour = dim(colour, k);
+                }
+                BorderSpec::new(WindowHandle::from_raw(w), rect, colour).with_width(width_for(
+                    border,
+                    state,
+                    self.high_contrast,
+                ))
+            })
+            .collect();
         if let Err(e) = borders.update(None, specs) {
             tracing::warn!(error = %e, "could not update borders");
         }
     }
 
-    /// Starts the pulse timer when an agent waits and the pulse is wanted and
-    /// allowed, and stops it otherwise. A high contrast theme holds it still:
-    /// dimming the theme's own colours takes away the contrast it is for.
-    fn update_pulse(&mut self) {
+    /// Starts the pulse timer when a waiting agent has a frame on screen and
+    /// the pulse is wanted and allowed, and stops it otherwise. A high
+    /// contrast theme holds it still: dimming the theme's own colours takes
+    /// away the contrast it is for.
+    fn update_pulse(&mut self, waiting: bool) {
         let b = &self.config.border;
-        let wanted = b.enabled
-            && b.pulse
-            && self.animations
-            && !self.high_contrast
-            && self
-                .agents
-                .windows()
-                .values()
-                .any(|&s| s == AgentState::Waiting);
+        let wanted = b.enabled && b.pulse && self.animations && !self.high_contrast && waiting;
         match (wanted, self.pulse_timer) {
             (true, None) => {
                 // SAFETY: a thread timer, killed below or at exit.
