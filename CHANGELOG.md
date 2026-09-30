@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A second zip for Windows on ARM, built and checked in every release.
 - `{n}` works in a fleet's `directory` as it does in its `command`, so each
   agent can start in a folder of its own, such as its own git worktree.
 
