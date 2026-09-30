@@ -184,6 +184,16 @@ impl Launch {
             if self.clean {
                 a.push("-NoProfile".into());
             }
+            // Windows PowerShell runs no scripts by default, and a `claude`
+            // installed with npm is one. PowerShell 7 allows local ones
+            // already, and a policy set by the organisation still wins.
+            if shell
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("powershell.exe"))
+            {
+                a.push("-ExecutionPolicy".into());
+                a.push("RemoteSigned".into());
+            }
             for s in ["-NoLogo", "-NoExit", "-EncodedCommand"] {
                 a.push(s.into());
             }
@@ -461,11 +471,29 @@ mod tests {
     #[test]
     fn a_semicolon_in_the_folder_cannot_split_it_either() {
         let l = Launch {
-            directory: Some(r"C:\src;b".into()),
+            directory: Some(r"C:\src\a;b".into()),
             ..Launch::default()
         };
         let args = strs(&l.args(None));
-        assert!(args.contains(&r"C:\src\;b".to_owned()), "{args:?}");
+        assert!(args.contains(&r"C:\src\a\;b".to_owned()), "{args:?}");
+    }
+
+    #[test]
+    fn windows_powershell_may_run_a_local_script_and_powershell_7_is_left_alone() {
+        let l = Launch {
+            command: Some("claude".into()),
+            ..Launch::default()
+        };
+        let five = strs(&l.args(Some(Path::new(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ))));
+        assert!(
+            five.windows(2)
+                .any(|w| w == ["-ExecutionPolicy", "RemoteSigned"]),
+            "{five:?}"
+        );
+        let seven = strs(&l.args(Some(Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe"))));
+        assert!(!seven.iter().any(|a| a == "-ExecutionPolicy"), "{seven:?}");
     }
 
     #[test]
