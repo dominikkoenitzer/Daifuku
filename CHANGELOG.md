@@ -21,6 +21,10 @@
 - The hook pipe lets the user write, not listen: no other process can add a
   server to it. Clients connect for identification only, and a report sent
   just before the daemon was ready is no longer lost.
+- A client that connects to a pipe and stays silent, or never reads its
+  reply, is cut off after a deadline, so it cannot block real hooks; a hook
+  never waits on a pipe that does not take its line; `daifuku stop` always
+  gets its reply.
 - Daemon commands from a normal terminal say they need an administrator one,
   instead of "Access is denied".
 - The config and the agents' settings files are read when saved with a byte
