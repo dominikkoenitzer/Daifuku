@@ -255,21 +255,25 @@ impl Daemon {
         let before = self.agents.window_state(w);
         if self.agents.apply(w, &message.event) {
             let now = self.agents.window_state(w);
-            match now {
-                Some(state) if self.shown_since.get(&w).map(|&(s, _)| s) != Some(state) => {
-                    self.shown_since
-                        .insert(w, (state, std::time::Instant::now()));
-                }
-                None => {
-                    self.shown_since.remove(&w);
-                }
-                _ => {}
-            }
+            self.note_states();
             if self.config.sound && now == Some(AgentState::Waiting) && before != now {
                 access::chime();
             }
             tracing::debug!(window = format!("{w:#x}"), event = %message.event.hook_event_name, state = ?self.agents.window_state(w), "agent state");
             self.refresh_borders();
+        }
+    }
+
+    /// Keeps `shown_since` in step with every window's state. A session that
+    /// moves to another window changes the window it left as well.
+    fn note_states(&mut self) {
+        let states = self.agents.windows();
+        self.shown_since.retain(|w, _| states.contains_key(w));
+        for (w, state) in states {
+            if self.shown_since.get(&w).map(|&(s, _)| s) != Some(state) {
+                self.shown_since
+                    .insert(w, (state, std::time::Instant::now()));
+            }
         }
     }
 
@@ -547,8 +551,6 @@ impl Daemon {
         }
     }
 
-    /// Sends the borders their end state: one frame per agent window that is
-    /// on screen, in its state's colour.
     /// Sends the borders their end state: one frame per agent window that is
     /// on screen, in its state's colour and at its state's width. Starts or
     /// stops the pulse to match: it runs only while an agent waits.
