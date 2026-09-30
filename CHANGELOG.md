@@ -48,6 +48,12 @@
   source, and a `;` in a fleet's folder no longer splits the command.
 - A border stays above its terminal when the terminal is brought to the
   front, and no longer flashes over other windows while it moves.
+- A `Stop` that Claude Code sends when it only pauses to call tools no longer
+  shows the agent as done, and an agent that resumes by itself after a rate
+  limit shows as working again.
+- Hooks stamp the time they start, and the daemon drops an event that
+  arrives after a newer one of its session, so a late tool hook cannot leave
+  a finished agent looking busy.
 - A fleet command with double quotes in it runs as written: Windows
   Terminal used to hand it to PowerShell with its quotes broken.
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
