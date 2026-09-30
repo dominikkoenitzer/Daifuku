@@ -183,13 +183,42 @@ impl Launch {
             if self.clean {
                 a.push("-NoProfile".into());
             }
-            for s in ["-NoLogo", "-NoExit", "-Command"] {
+            for s in ["-NoLogo", "-NoExit", "-EncodedCommand"] {
                 a.push(s.into());
             }
-            a.push(escape(cmd).into());
+            a.push(encoded(cmd).into());
         }
         a
     }
+}
+
+/// A PowerShell command as `-EncodedCommand` takes it: Base64 of its UTF-16.
+///
+/// The command passes through two command lines, Windows Terminal's and
+/// PowerShell's. Windows Terminal splits its own on `;`, and when it starts
+/// the shell it wraps an argument with spaces in quotes without escaping the
+/// quotes inside, so `-Value "a b"` reaches PowerShell broken. Base64 has no
+/// space, quote or `;` for either of them to act on.
+fn encoded(command: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = command.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * i)) as usize & 63]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// Windows Terminal splits its command line on `;` into separate actions.
@@ -356,8 +385,8 @@ mod tests {
                 r"C:\Program Files\PowerShell\7\pwsh.exe",
                 "-NoLogo",
                 "-NoExit",
-                "-Command",
-                "claude",
+                "-EncodedCommand",
+                "YwBsAGEAdQBkAGUA",
             ]
         );
     }
@@ -372,13 +401,25 @@ mod tests {
     }
 
     #[test]
-    fn semicolons_cannot_split_the_terminal_command_line() {
+    fn a_command_reaches_powershell_with_nothing_either_command_line_acts_on() {
         let l = Launch {
-            command: Some("cd x; claude".into()),
+            command: Some(r#"cd x; Set-Content a -Value "b c""#.into()),
             ..Launch::default()
         };
         let args = strs(&l.args(Some(Path::new("pwsh.exe"))));
-        assert_eq!(args.last().map(String::as_str), Some(r"cd x\; claude"));
+        let last = args.last().unwrap();
+        assert!(
+            last.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c)),
+            "{last}"
+        );
+    }
+
+    #[test]
+    fn the_encoding_is_base64_of_utf16() {
+        assert_eq!(encoded("claude"), "YwBsAGEAdQBkAGUA");
+        assert_eq!(encoded("\u{e4}"), "5AA=");
+        assert_eq!(encoded(""), "");
     }
 
     #[test]
