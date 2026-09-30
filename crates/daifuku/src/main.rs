@@ -77,6 +77,7 @@ enum Command {
     Stop,
     /// Report one hook event, read from standard input. Agents call this;
     /// it never prints and always exits 0, so it can never disturb one.
+    #[command(hide = true)]
     Hook,
     /// Print the config file's JSON schema.
     Schema,
@@ -374,6 +375,13 @@ mod tests {
         assert_eq!(since(59), "59s");
         assert_eq!(since(192), "3m 12s");
         assert_eq!(since(7500), "2h 5m");
+    }
+
+    #[test]
+    fn the_hook_is_not_offered_to_people() {
+        let cli = Cli::command();
+        let hook = cli.find_subcommand("hook").unwrap();
+        assert!(hook.is_hide_set());
     }
 
     #[test]
