@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use daifuku_core::Rect;
-use daifuku_core::config::{Config, Fleet};
+use daifuku_core::config::{Config, Fleet, MonitorPick};
 use daifuku_core::grid::Grid;
 use daifuku_core::monitor::{MonitorInfo, pick};
 use daifuku_win::terminal::{self, Launch, WINDOW_CLASS};
@@ -32,6 +32,15 @@ pub struct OpenFleet {
 }
 
 impl OpenFleet {
+    /// A fleet with no terminals yet.
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            monitor: String::new(),
+            slots: Vec::new(),
+        }
+    }
+
     /// Empties the slots whose windows no longer exist or stopped being
     /// terminals (a handle reused by some other window).
     pub fn prune(&mut self) {
@@ -59,9 +68,23 @@ impl OpenFleet {
 
 /// Where a fleet's cells are right now, with the monitor recomputed so a fleet
 /// follows a monitor that was unplugged and plugged back.
-fn cells(fleet: &Fleet, config: &Config) -> anyhow::Result<(MonitorInfo, Vec<Rect>)> {
+///
+/// `stay_on` is the monitor the fleet is on, when it is already open. A fleet
+/// that opens where the cursor is stays on that monitor afterwards: snapping
+/// it back must not carry it to wherever the cursor happens to be now.
+fn cells(
+    fleet: &Fleet,
+    config: &Config,
+    stay_on: Option<&str>,
+) -> anyhow::Result<(MonitorInfo, Vec<Rect>)> {
     let monitors = monitor::monitors();
-    let m = pick(&monitors, &fleet.monitor, monitor::cursor())
+    let choice = match (&fleet.monitor, stay_on) {
+        (MonitorPick::Cursor, Some(device)) if !device.is_empty() => {
+            MonitorPick::Device(device.to_owned())
+        }
+        (choice, _) => choice.clone(),
+    };
+    let m = pick(&monitors, &choice, monitor::cursor())
         .cloned()
         .ok_or_else(|| anyhow!("no monitor"))?;
     let cells = Grid::plan(fleet.count, m.work, config.gaps, fleet.shape);
@@ -79,21 +102,18 @@ fn terminals() -> BTreeSet<u64> {
 /// Opens `fleet`, or brings back the one that is open: missing terminals are
 /// opened again, and all of them go back to their cells.
 ///
-/// `open` is the fleet's current record, if it has one. Returns the new
-/// record and a line for the person who asked.
+/// `record` is the fleet's record, empty when it is not open yet. It holds
+/// every terminal opened so far even when this fails part way, so none is
+/// lost. Returns a line for the person who asked.
 pub fn open(
     fleet: &Fleet,
     config: &Config,
-    open: Option<OpenFleet>,
+    record: &mut OpenFleet,
     elevated: bool,
-) -> anyhow::Result<(OpenFleet, String)> {
-    let (m, cells) = cells(fleet, config)?;
-    let mut record = open.unwrap_or_else(|| OpenFleet {
-        name: fleet.name.clone(),
-        monitor: m.device.clone(),
-        slots: Vec::new(),
-    });
+) -> anyhow::Result<String> {
     record.prune();
+    let stay_on = record.windows().next().map(|_| record.monitor.clone());
+    let (m, cells) = cells(fleet, config, stay_on.as_deref())?;
     record.monitor = m.device.clone();
     // The config's count may have changed since the fleet opened: slots past
     // it are let go (their terminals stay open, unmanaged), missing ones added.
@@ -133,7 +153,7 @@ pub fn open(
                 terminal::open_unelevated(&wt, &launch)
             };
             r.with_context(|| format!("could not start Windows Terminal at {}", wt.display()))?;
-            match wait_for_new(&before, &record) {
+            match wait_for_new(&before, record) {
                 Some(w) => {
                     record.slots[slot] = Some(w);
                     window::place(w, cells[slot]);
@@ -143,7 +163,7 @@ pub fn open(
         }
     }
 
-    place_all(&record, &cells);
+    place_all(record, &cells);
     if let Some(first) = record.windows().next() {
         window::focus(first);
     }
@@ -162,7 +182,7 @@ pub fn open(
             fleet.name, m.device
         )
     };
-    Ok((record, message))
+    Ok(message)
 }
 
 /// Waits for one new terminal window: shown, not there before, and not
@@ -195,7 +215,7 @@ fn place_all(record: &OpenFleet, cells: &[Rect]) {
 /// anything.
 pub fn snap(fleet: &Fleet, config: &Config, record: &mut OpenFleet) -> anyhow::Result<()> {
     record.prune();
-    let (m, cells) = cells(fleet, config)?;
+    let (m, cells) = cells(fleet, config, Some(&record.monitor))?;
     record.monitor = m.device;
     place_all(record, &cells);
     Ok(())
