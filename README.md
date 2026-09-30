@@ -33,19 +33,22 @@ This copies Daifuku to `Program Files`, starts it at every logon, and adds its
 hooks to `%USERPROFILE%\.claude\settings.json` (and to Codex's
 `%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
 exactly as they are. Claude Code sessions that are already open normally pick
-the hooks up by themselves; restart one whose border stays blank. Codex runs
+the hooks up by themselves; restart one that still shows no border. Codex runs
 new hooks only after you trust them in its `/hooks` menu. A settings file behind a link that leads out
 of your profile is left alone, and the installer says so. A
 `ProgramData\Daifuku` folder that an earlier install did not lock is deleted
 first, config included.
 
+The installer does not add Daifuku to `PATH`, so run its commands by their
+full path:
+
 ```powershell
-daifuku doctor
+& "$env:ProgramFiles\Daifuku\daifuku.exe" doctor
 ```
 
-checks the whole setup and says how to fix anything that is wrong.
-
-To see it work without a real agent, `daifuku demo` opens six scripted ones.
+checks the whole setup and says how to fix anything that is wrong. To see it
+work without a real agent, `demo` in place of `doctor` opens six scripted
+ones. Below, `daifuku` stands for that full path.
 
 ## Configure
 
