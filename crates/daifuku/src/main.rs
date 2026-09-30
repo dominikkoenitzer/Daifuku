@@ -415,8 +415,14 @@ mod tests {
             "daemon commands need an administrator terminal"
         );
         // A daemon that is not running is said as it is.
-        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "Daifuku is not running");
-        assert_eq!(control_error(&missing, false), "Daifuku is not running");
+        let missing = std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Daifuku is not running; `daifuku doctor` says why",
+        );
+        assert_eq!(
+            control_error(&missing, false),
+            "Daifuku is not running; `daifuku doctor` says why"
+        );
         // Elevated already, the terminal is not the problem.
         let spoofed = std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,

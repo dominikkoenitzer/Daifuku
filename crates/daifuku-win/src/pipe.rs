@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
-    ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
-    LocalFree, WAIT_TIMEOUT, WIN32_ERROR,
+    ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+    HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_TIMEOUT, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -467,9 +467,18 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
             let ms = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX);
             // SAFETY: name is NUL terminated.
             if !unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), ms) }.as_bool() {
+                // The pipe is there but every instance stayed taken: the
+                // daemon runs and is busy, for one with opening a fleet.
+                // SAFETY: no arguments.
+                if unsafe { GetLastError() } == ERROR_SEM_TIMEOUT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Daifuku is busy with another command; try again in a moment",
+                    ));
+                }
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    "Daifuku is not running",
+                    "Daifuku is not running; `daifuku doctor` says why",
                 ));
             }
             open().map_err(io::Error::other)?
