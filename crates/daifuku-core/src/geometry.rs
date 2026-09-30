@@ -96,6 +96,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_square_is_not_portrait() {
+        assert!(!Rect::new(0, 0, 100, 100).is_portrait());
+        assert!(Rect::new(0, 0, 99, 100).is_portrait());
+    }
+
+    #[test]
+    fn shrinking_moves_every_edge_by_the_margin() {
+        assert_eq!(
+            Rect::new(10, 20, 110, 220).shrink(5),
+            Rect::new(15, 25, 105, 215)
+        );
+    }
+
+    #[test]
+    fn an_oversized_margin_collapses_onto_the_centre_line() {
+        // 3 on each side of a 5-wide rectangle does not fit: half of 5 is 2.
+        assert_eq!(Rect::new(0, 0, 5, 7).shrink(3), Rect::new(2, 3, 3, 4));
+    }
+
+    #[test]
+    fn the_centre_rounds_towards_the_top_left() {
+        assert_eq!(Rect::new(10, 20, 20, 40).centre(), (15, 30));
+        assert_eq!(Rect::new(0, 0, 5, 5).centre(), (2, 2));
+        assert_eq!(Rect::new(-10, -10, 10, 10).centre(), (0, 0));
+    }
+
+    #[test]
     fn size_follows_the_exclusive_convention() {
         let r = Rect::new(10, 20, 110, 70);
         assert_eq!((r.width(), r.height()), (100, 50));
