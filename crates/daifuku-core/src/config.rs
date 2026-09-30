@@ -477,12 +477,14 @@ pub enum ConfigError {
 
 impl Config {
     /// Reads and validates a config file's text. An empty or whitespace-only
-    /// file is the default config.
+    /// file is the default config. A byte order mark, which Notepad and other
+    /// Windows editors may write, is skipped.
     ///
     /// # Errors
     ///
     /// When the JSON does not parse or [`Config::validate`] fails.
     pub fn from_json(text: &str) -> Result<Self, ConfigError> {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let config = if text.trim().is_empty() {
             Self::default()
         } else {
@@ -615,6 +617,13 @@ mod tests {
             (6, true, Some("claude"))
         );
         assert_eq!(f.monitor, MonitorPick::Portrait);
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_skipped() {
+        let c = Config::from_json("\u{feff}{\"fleets\":[{\"name\":\"a\"}]}").unwrap();
+        assert_eq!(c.fleets[0].name, "a");
+        assert!(Config::from_json("\u{feff}").is_ok());
     }
 
     #[test]
