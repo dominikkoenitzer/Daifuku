@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use daifuku_core::config::Config;
+use daifuku_core::config::{Border, Config};
 use daifuku_core::protocol::{AgentWindow, FleetStatus, HookMessage, Request, Response, Status};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
@@ -606,24 +606,24 @@ impl Daemon {
         let breath = self
             .pulse_timer
             .map(|_| breath(self.started.elapsed().as_secs_f64()));
-        let specs: Vec<BorderSpec> = self
-            .agents
-            .windows()
-            .into_iter()
-            .filter(|&(w, _)| window::is_shown(w) && !window::is_minimised(w))
-            .filter_map(|(w, state)| {
-                let mut colour = colours.of(state);
-                if state == AgentState::Waiting
-                    && let Some(k) = breath
-                {
-                    colour = dim(colour, k);
-                }
-                window::frame(w).map(|rect| {
-                    BorderSpec::new(WindowHandle::from_raw(w), rect, colour)
-                        .with_width(border.width_for(state))
+        let specs: Vec<BorderSpec> =
+            self.agents
+                .windows()
+                .into_iter()
+                .filter(|&(w, _)| window::is_shown(w) && !window::is_minimised(w))
+                .filter_map(|(w, state)| {
+                    let mut colour = colours.of(state);
+                    if state == AgentState::Waiting
+                        && let Some(k) = breath
+                    {
+                        colour = dim(colour, k);
+                    }
+                    window::frame(w).map(|rect| {
+                        BorderSpec::new(WindowHandle::from_raw(w), rect, colour)
+                            .with_width(width_for(border, state, self.high_contrast))
+                    })
                 })
-            })
-            .collect();
+                .collect();
         if let Err(e) = borders.update(None, specs) {
             tracing::warn!(error = %e, "could not update borders");
         }
@@ -668,6 +668,17 @@ impl Daemon {
 fn breath(t: f64) -> f64 {
     let phase = (t / PULSE_PERIOD) * std::f64::consts::TAU;
     0.70 + 0.30 * (0.5 + 0.5 * phase.cos())
+}
+
+/// The width a state's border is drawn at. With a high contrast theme on,
+/// every state has its own width even when `state_widths` is off: the theme
+/// picks the colours, and two of them can look alike.
+fn width_for(border: &Border, state: AgentState, high_contrast: bool) -> i32 {
+    Border {
+        state_widths: border.state_widths || high_contrast,
+        ..*border
+    }
+    .width_for(state)
 }
 
 /// A colour at `k` of its brightness.
@@ -765,6 +776,28 @@ mod tests {
             (breath(PULSE_PERIOD / 2.0) - 0.70).abs() < 1e-9,
             "bottoms out at 70 %"
         );
+    }
+
+    #[test]
+    fn high_contrast_keeps_a_width_per_state() {
+        let border = Border {
+            state_widths: false,
+            ..Border::default()
+        };
+        let states = [
+            AgentState::Done,
+            AgentState::Working,
+            AgentState::Failed,
+            AgentState::Waiting,
+        ];
+        let widths = |high_contrast| -> std::collections::BTreeSet<i32> {
+            states
+                .iter()
+                .map(|&s| width_for(&border, s, high_contrast))
+                .collect()
+        };
+        assert_eq!(widths(false).len(), 1, "one width with state widths off");
+        assert_eq!(widths(true).len(), 4, "a width per state in high contrast");
     }
 
     #[test]
