@@ -80,8 +80,10 @@ Windows does not let it type into the administrator terminals that result.
   those hooks. Every other hook is left as it is.
 - The installer runs as administrator but the profile is the user's, so it
   edits an agent's settings only when the file, with every link followed,
-  is inside the profile, and writes the new version into a fresh file that
-  cannot be a link.
+  is inside the profile, writes the new version into a fresh file that
+  cannot be a link, and makes the whole edit with the user's own rights,
+  borrowed from the desktop shell, so a link swapped in half way cannot
+  lead the write anywhere the user may not write.
 
 ## Checked on every push
 
