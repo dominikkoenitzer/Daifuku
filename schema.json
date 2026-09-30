@@ -58,7 +58,7 @@
       ]
     },
     "sound": {
-      "description": "Play the system notification sound when an agent starts waiting for\nyou, for when you are not looking at the screen.",
+      "description": "Play Windows' Asterisk sound when an agent starts waiting for you,\nfor when you are not looking at the screen.",
       "type": "boolean",
       "default": false
     }
