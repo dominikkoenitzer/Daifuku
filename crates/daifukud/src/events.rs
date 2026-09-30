@@ -18,7 +18,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
     EVENT_SYSTEM_MINIMIZESTART, OBJID_WINDOW, PostThreadMessageW, WINEVENT_OUTOFCONTEXT,
     WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
@@ -48,54 +48,101 @@ pub fn drain() -> Vec<Event> {
     QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
+/// The events a border follows its window by: shown and hidden, moved,
+/// cloaked and uncloaked, minimised and restored, and the foreground.
+const FOLLOW: [(u32, u32); 5] = [
+    (EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE),
+    (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
+    (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
+    (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
+    (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
+];
+
 /// The installed hooks; dropping it removes them.
-pub struct Hooks(Vec<HWINEVENTHOOK>);
+///
+/// The destroy hook is always in: destroys are rare, and they are how agents
+/// and fleets let go of a closed window. The ones a border follows its window
+/// by are only in while [`Hooks::follow`] asks for them, because a move is
+/// reported for every caret and every mouse movement on the whole desktop,
+/// and each one wakes this thread whether any window has a border or not.
+pub struct Hooks {
+    always: Vec<HWINEVENTHOOK>,
+    following: Option<Vec<HWINEVENTHOOK>>,
+}
 
 impl Hooks {
-    /// Installs the hooks for the calling thread, which must run a message
-    /// loop for any event to arrive.
+    /// Installs the destroy hook for the calling thread, which must run a
+    /// message loop for any event to arrive.
     pub fn install() -> Self {
-        let ranges = [
-            (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
-            (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
-            (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
-            (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
-            (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
-        ];
-        let mut hooks = Vec::new();
-        for (min, max) in ranges {
-            // SAFETY: out-of-context hook with a static callback, removed in Drop.
-            let h = unsafe {
-                SetWinEventHook(
-                    min,
-                    max,
-                    None,
-                    Some(callback),
-                    0,
-                    0,
-                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-                )
-            };
-            if h.is_invalid() {
-                tracing::warn!(
-                    min,
-                    max,
-                    "SetWinEventHook failed; borders will not follow those events"
-                );
-            } else {
-                hooks.push(h);
-            }
+        Self {
+            always: hook(&[(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY)]),
+            following: None,
         }
-        Self(hooks)
+    }
+
+    /// Installs the hooks borders follow their windows by when `on`, and
+    /// removes them when not. Nothing happens when they already are as asked,
+    /// so it is cheap to call on every pass. Must be called on the thread
+    /// that installed the hooks.
+    pub fn follow(&mut self, on: bool) {
+        match (on, self.following.take()) {
+            (true, None) => {
+                tracing::debug!("following windows");
+                self.following = Some(hook(&FOLLOW));
+            }
+            (false, Some(hooks)) => {
+                tracing::debug!("no longer following windows");
+                unhook(hooks);
+            }
+            (_, kept) => self.following = kept,
+        }
     }
 }
 
 impl Drop for Hooks {
     fn drop(&mut self) {
-        for h in self.0.drain(..) {
-            // SAFETY: a hook this thread installed.
-            let _ = unsafe { UnhookWinEvent(h) };
+        unhook(std::mem::take(&mut self.always));
+        if let Some(hooks) = self.following.take() {
+            unhook(hooks);
         }
+    }
+}
+
+/// Installs one out-of-context hook per range of events.
+fn hook(ranges: &[(u32, u32)]) -> Vec<HWINEVENTHOOK> {
+    let mut hooks = Vec::new();
+    for &(min, max) in ranges {
+        // SAFETY: out-of-context hook with a static callback, removed by
+        // `unhook` on this same thread.
+        let h = unsafe {
+            SetWinEventHook(
+                min,
+                max,
+                None,
+                Some(callback),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+        };
+        if h.is_invalid() {
+            tracing::warn!(
+                min,
+                max,
+                "SetWinEventHook failed; borders will not follow those events"
+            );
+        } else {
+            hooks.push(h);
+        }
+    }
+    hooks
+}
+
+/// Removes hooks this thread installed.
+fn unhook(hooks: Vec<HWINEVENTHOOK>) {
+    for h in hooks {
+        // SAFETY: a hook this thread installed.
+        let _ = unsafe { UnhookWinEvent(h) };
     }
 }
 

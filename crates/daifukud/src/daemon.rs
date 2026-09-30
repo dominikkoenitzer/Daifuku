@@ -50,6 +50,9 @@ struct Daemon {
     animations: bool,
     /// The pulse timer, running only while an agent waits.
     pulse_timer: Option<usize>,
+    /// The window event hooks. The ones borders follow their windows by are
+    /// in only while an agent has a window and borders are drawn.
+    hooks: events::Hooks,
     started: std::time::Instant,
     /// When the config file last changed, to reload it without being asked.
     config_stamp: Option<std::time::SystemTime>,
@@ -100,6 +103,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         high_contrast: access::high_contrast(),
         animations: access::animations(),
         pulse_timer: None,
+        hooks: events::Hooks::install(),
         started: std::time::Instant::now(),
         config_stamp: None,
         config_failed: None,
@@ -112,7 +116,6 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         .inspect_err(|e| tracing::error!(error = %e, "no borders"))
         .ok();
     d.hotkeys.register(&d.config);
-    let _hooks = events::Hooks::install();
     // SAFETY: a thread timer, killed before returning.
     let timer = unsafe { SetTimer(None, 0, SWEEP_MS, None) };
 
@@ -604,8 +607,13 @@ impl Daemon {
     /// window gets none: its frame is the whole screen, and a border outside
     /// it would land on the taskbar and the next monitor. Starts or
     /// stops the pulse to match: it runs only while a waiting agent's window
-    /// has a frame, so not for one that is minimised or cloaked away.
+    /// has a frame, so not for one that is minimised or cloaked away. Hooks
+    /// the window events borders follow their windows by while there is an
+    /// agent to draw around, and unhooks them once there is none.
     fn refresh_borders(&mut self) {
+        self.hooks.follow(
+            self.borders.is_some() && self.config.border.enabled && !self.agents.is_empty(),
+        );
         let framed: Vec<(u64, AgentState, daifuku_core::Rect)> = self
             .agents
             .windows()
