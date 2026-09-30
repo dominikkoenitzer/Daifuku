@@ -99,6 +99,13 @@ pub fn is_minimised(w: u64) -> bool {
     unsafe { IsIconic(hwnd(w)) }.as_bool()
 }
 
+/// Maximised.
+#[must_use]
+pub fn is_maximised(w: u64) -> bool {
+    // SAFETY: plain query on a handle.
+    unsafe { IsZoomed(hwnd(w)) }.as_bool()
+}
+
 /// The window class, `CASCADIA_HOSTING_WINDOW_CLASS` for Windows Terminal.
 #[must_use]
 pub fn class(w: u64) -> String {
