@@ -57,6 +57,15 @@
 - Hooks stamp the time they start, and the daemon drops an event that
   arrives after a newer one of its session, so a late tool hook cannot leave
   a finished agent looking busy.
+- Idle, the daemon costs next to nothing: it listens for window moves only
+  while an agent has a border, a waiting border's pulse only recolours the
+  frames it has, spare borders give their bitmaps back, and a border already
+  in place is not restacked.
+- The waiting border breathes down to 70 % instead of 45 %, so its contrast
+  holds, and in high contrast it does not breathe and every state keeps its
+  own width.
+- A maximised terminal gets no border, which used to spill onto the taskbar
+  or the next monitor; borders repaint when display scaling changes.
 - A fleet command with double quotes in it runs as written: Windows
   Terminal used to hand it to PowerShell with its quotes broken.
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
