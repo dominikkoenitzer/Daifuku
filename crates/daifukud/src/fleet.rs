@@ -78,17 +78,23 @@ fn cells(
     stay_on: Option<&str>,
 ) -> anyhow::Result<(MonitorInfo, Vec<Rect>)> {
     let monitors = monitor::monitors();
-    let choice = match (&fleet.monitor, stay_on) {
-        (MonitorPick::Cursor, Some(device)) if !device.is_empty() => {
-            MonitorPick::Device(device.to_owned())
-        }
-        (choice, _) => choice.clone(),
-    };
+    let choice = home_pick(&fleet.monitor, stay_on);
     let m = pick(&monitors, &choice, monitor::cursor())
         .cloned()
         .ok_or_else(|| anyhow!("no monitor"))?;
     let cells = Grid::plan(fleet.count, m.work, config.gaps, fleet.shape);
     Ok((m, cells))
+}
+
+/// The monitor to look for: a fleet that opened where the cursor was stays on
+/// `stay_on`, the monitor it is on; any other goes where its config says.
+fn home_pick(choice: &MonitorPick, stay_on: Option<&str>) -> MonitorPick {
+    match (choice, stay_on) {
+        (MonitorPick::Cursor, Some(device)) if !device.is_empty() => {
+            MonitorPick::Device(device.to_owned())
+        }
+        (choice, _) => choice.clone(),
+    }
 }
 
 /// Every Windows Terminal window on the desktop right now.
@@ -315,5 +321,114 @@ mod tests {
             ..Fleet::default()
         };
         assert!(directory(&fleet, 1).is_dir());
+    }
+
+    fn on(device: &str) -> MonitorInfo {
+        let r = Rect::new(0, 0, 1920, 1080);
+        MonitorInfo {
+            device: device.to_owned(),
+            bounds: r,
+            work: r,
+            dpi: 96,
+            primary: false,
+        }
+    }
+
+    fn fleet_on(monitor: MonitorPick) -> Fleet {
+        Fleet {
+            monitor,
+            ..Fleet::default()
+        }
+    }
+
+    fn record(monitor: &str, slots: Vec<Option<u64>>) -> OpenFleet {
+        OpenFleet {
+            name: "agents".into(),
+            monitor: monitor.into(),
+            slots,
+        }
+    }
+
+    #[test]
+    fn a_cursor_fleet_keeps_its_home_while_that_monitor_is_gone() {
+        let mut r = record(r"\\.\DISPLAY1", vec![Some(1), None]);
+        settle(
+            &fleet_on(MonitorPick::Cursor),
+            &mut r,
+            &on(r"\\.\DISPLAY2"),
+            2,
+        );
+        assert_eq!(r.monitor, r"\\.\DISPLAY1");
+    }
+
+    #[test]
+    fn a_cursor_fleet_with_no_terminals_or_no_home_takes_the_current_monitor() {
+        let cursor = fleet_on(MonitorPick::Cursor);
+        for mut r in [
+            record(r"\\.\DISPLAY1", vec![None, None]),
+            record(r"\\.\DISPLAY1", Vec::new()),
+            record("", vec![Some(1)]),
+        ] {
+            settle(&cursor, &mut r, &on(r"\\.\DISPLAY2"), 2);
+            assert_eq!(r.monitor, r"\\.\DISPLAY2", "{:?}", r.slots);
+        }
+    }
+
+    #[test]
+    fn a_fleet_on_any_other_monitor_takes_the_current_one() {
+        for pick in [
+            MonitorPick::Portrait,
+            MonitorPick::Primary,
+            MonitorPick::Device(r"\\.\DISPLAY1".into()),
+        ] {
+            let mut r = record(r"\\.\DISPLAY1", vec![Some(1)]);
+            settle(&fleet_on(pick.clone()), &mut r, &on(r"\\.\DISPLAY2"), 1);
+            assert_eq!(r.monitor, r"\\.\DISPLAY2", "{pick:?}");
+        }
+    }
+
+    #[test]
+    fn a_cursor_fleet_home_matches_its_monitor_whatever_the_case() {
+        let mut r = record(r"\\.\display2", vec![Some(1)]);
+        settle(
+            &fleet_on(MonitorPick::Cursor),
+            &mut r,
+            &on(r"\\.\DISPLAY2"),
+            1,
+        );
+        assert_eq!(
+            r.monitor, r"\\.\DISPLAY2",
+            "the same monitor, as spelled now"
+        );
+    }
+
+    #[test]
+    fn settling_fits_the_slots_to_the_count() {
+        let fleet = fleet_on(MonitorPick::Portrait);
+        let mut r = record("", vec![Some(1), None, Some(3)]);
+        settle(&fleet, &mut r, &on(r"\\.\DISPLAY1"), 2);
+        assert_eq!(r.slots, vec![Some(1), None]);
+        settle(&fleet, &mut r, &on(r"\\.\DISPLAY1"), 4);
+        assert_eq!(r.slots, vec![Some(1), None, None, None]);
+    }
+
+    #[test]
+    fn only_a_cursor_fleet_with_a_home_looks_for_it() {
+        let home = r"\\.\DISPLAY2";
+        assert_eq!(
+            home_pick(&MonitorPick::Cursor, Some(home)),
+            MonitorPick::Device(home.into())
+        );
+        assert_eq!(
+            home_pick(&MonitorPick::Cursor, Some("")),
+            MonitorPick::Cursor
+        );
+        assert_eq!(home_pick(&MonitorPick::Cursor, None), MonitorPick::Cursor);
+        assert_eq!(
+            home_pick(&MonitorPick::Portrait, Some(home)),
+            MonitorPick::Portrait
+        );
+        let own = MonitorPick::Device(r"\\.\DISPLAY1".into());
+        assert_eq!(home_pick(&own, Some(home)), own);
     }
 }
