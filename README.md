@@ -110,7 +110,8 @@ states read in greyscale and to every kind of colour vision:
 - `"border": { "palette": "colorblind" }` switches to the Okabe-Ito colours,
   chosen to stay distinct for deuteranopia, protanopia and tritanopia. Your
   own four colours go in `"colours"`.
-- With a high contrast theme on, the borders take the theme's system colours.
+- With a high contrast theme on, the borders take the theme's system colours,
+  each state keeps its own width, and nothing breathes.
 - With "Show animations in Windows" off, the waiting border stops breathing.
   `"pulse": false` turns it off either way.
 - `"sound": true` for a chime when an agent needs you: the Asterisk sound of
