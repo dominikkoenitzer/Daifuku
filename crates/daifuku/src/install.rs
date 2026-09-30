@@ -205,7 +205,7 @@ pub fn doctor() -> bool {
         if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
             continue;
         }
-        let present = std::fs::read_to_string(&file)
+        let present = read_settings(&file)
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .is_some_and(|mut s| agent.add_hooks(&mut s, "daifuku.exe") == Ok(0));
@@ -320,6 +320,16 @@ fn hook_files() -> Vec<(&'static Agent, PathBuf)> {
     out
 }
 
+/// Reads a settings file as text, without the byte order mark many Windows
+/// editors put first, which JSON parsers refuse.
+fn read_settings(path: &Path) -> std::io::Result<String> {
+    let text = std::fs::read_to_string(path)?;
+    Ok(match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_owned(),
+        None => text,
+    })
+}
+
 /// Reads a JSON settings file, applies `edit`, and writes the file back only
 /// if something changed. A missing file counts as `{}`. Returns what `edit`
 /// returned.
@@ -327,7 +337,7 @@ fn edit_json(
     path: &Path,
     edit: impl FnOnce(&mut serde_json::Value) -> anyhow::Result<usize>,
 ) -> anyhow::Result<usize> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match read_settings(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_owned(),
         Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
@@ -382,5 +392,22 @@ mod tests {
             "Ctrl+Alt+S: refused, another program holds it".to_owned(),
         ];
         assert_eq!(refused_hotkeys(&hotkeys), ["Ctrl+Alt+S"]);
+    }
+
+    #[test]
+    fn a_settings_file_with_a_byte_order_mark_is_still_json() {
+        let dir = std::env::temp_dir().join(format!("daifuku-bom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        std::fs::write(&file, "\u{feff}{\"theme\": \"dark\"}\n").unwrap();
+        let edited = edit_json(&file, |s| {
+            s["hooks"] = serde_json::json!({});
+            Ok(1)
+        });
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(edited.unwrap(), 1);
+        let settings: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(settings["theme"], "dark");
     }
 }
