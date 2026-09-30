@@ -173,6 +173,10 @@ jobs:
               throw 'the uninstall did not leave exactly the user''s own hook'
           }
           Write-Output 'uninstalled: task, data and Daifuku''s hooks gone, the user''s hook kept'
+          # The last native command asked for a task that is gone on purpose and
+          # left its exit code 1 behind, which the runner would report as a
+          # failure of this whole step.
+          exit 0
 
   doc:
     name: doc
