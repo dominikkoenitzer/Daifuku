@@ -10,8 +10,8 @@ administrator editor, for example `notepad` in an administrator terminal.
 
 Every key is optional. An empty file, or no file, is one fleet of six
 administrator terminals running `claude` on the monitor turned on its side.
-With `"$schema"` pointing at the published schema, an editor completes and
-checks every key:
+With `"$schema"` pointing at the published schema, an editor completes every
+key and checks its name and type:
 
 ```json
 {
@@ -53,8 +53,8 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | Windows Terminal's default | A Windows Terminal profile, by name. |
 | `admin` | `true` | Open the terminals as administrator. |
-| `no_profile` | `false` | Start PowerShell without your profile script: faster, and nothing of your setup on screen. |
-| `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. |
+| `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
+| `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
 
 Opening a fleet that is already open brings it back: terminals that were
 closed are opened again, each in its own cell with its own number, and every
@@ -96,7 +96,7 @@ the gaps are exact.
 | Key | Default | |
 |---|---|---|
 | `enabled` | `true` | Draw status borders at all. |
-| `width` | `4` | Thickness in physical pixels. |
+| `width` | `4` | Thickness in physical pixels, 0 to 64. |
 | `offset` | `0` | How far outside the window's edge the border sits, -64 to 64; negative overlaps it. |
 | `palette` | `"catppuccin"` | `"catppuccin"` or `"colorblind"` (Okabe-Ito). |
 | `colours` | the palette's | Your own four colours, see below. |
