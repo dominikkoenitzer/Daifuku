@@ -37,10 +37,14 @@ hooks to `%USERPROFILE%\.claude\settings.json` (and to Codex's
 `%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
 exactly as they are. Claude Code sessions that are already open normally pick
 the hooks up by themselves; restart one that still shows no border. Codex runs
-new hooks only after you trust them in its `/hooks` menu. A settings file behind a link that leads out
-of your profile is left alone, and the installer says so. A
-`ProgramData\Daifuku` folder that an earlier install did not lock is deleted
-first, config included.
+new hooks only after you trust them in its `/hooks` menu. A settings file
+behind a link that leads out of your profile is left alone, and the installer
+says so.
+
+To update, unzip the new release and run `.\daifuku.exe install` there; your
+config and hooks are kept. Only a `ProgramData\Daifuku` folder that no Daifuku
+install locked, such as one another program made, is deleted and made anew,
+with any config in it.
 
 The installer does not add Daifuku to `PATH`, so run its commands by their
 full path:
