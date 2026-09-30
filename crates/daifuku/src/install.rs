@@ -513,6 +513,20 @@ mod tests {
         assert!(!through, "a junction that leads out of the root");
     }
 
+    #[test]
+    fn a_folder_that_only_starts_like_the_root_is_not_inside_it() {
+        let base = std::env::temp_dir().join(format!("daifuku-sibling-{}", std::process::id()));
+        let root = base.join("profile");
+        let sibling = base.join("profile2");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let beside = stays_inside(&sibling.join("s.json"), &root);
+        let rootless = stays_inside(&root.join("s.json"), &base.join("no-such-root"));
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(!beside, "a sibling whose name begins with the root's");
+        assert!(!rootless, "a root that does not exist holds nothing");
+    }
+
     /// A second link to the file shows whether it was rewritten in place,
     /// which a crash half way through would leave cut short, or replaced
     /// whole.
