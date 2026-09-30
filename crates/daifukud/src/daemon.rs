@@ -558,7 +558,15 @@ impl Daemon {
                 "monitors changed, snapping fleets"
             );
             self.monitors = now;
-            if !self.fleets.is_empty() {
+            // A border's corners are worked out at the DPI of its screen, so
+            // every border is handed over again, whether its window moved or
+            // not; snapping does that pass itself.
+            if let Some(b) = &self.borders {
+                b.invalidate();
+            }
+            if self.fleets.is_empty() {
+                self.refresh_borders();
+            } else {
                 let _ = self.snap();
             }
         }
