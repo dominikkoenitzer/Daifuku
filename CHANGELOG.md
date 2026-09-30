@@ -75,6 +75,11 @@
   busy, not "not running".
 - `daifuku doctor` no longer reports a hotkey as refused because a fleet is
   called `refused`.
+- `daifuku status` lists the agent that needs you first, its title before
+  its window handle.
+- A config saved as UTF-16, as Windows PowerShell's `>` writes it, is read.
+- A hotkey that did nothing, such as a fleet that could not open, beeps; the
+  reason is in the log.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
 ## 0.1.1, 2026-09-30
