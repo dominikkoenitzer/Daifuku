@@ -242,7 +242,7 @@ mod tests {
             event: HookEvent {
                 session_id: "s".into(),
                 hook_event_name: "PermissionRequest".into(),
-                notification_type: None,
+                ..HookEvent::default()
             },
         };
         assert_eq!(from_line::<HookMessage>(&to_line(&m).unwrap()).unwrap(), m);

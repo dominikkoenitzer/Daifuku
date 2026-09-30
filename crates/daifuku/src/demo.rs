@@ -116,7 +116,7 @@ impl Reporter {
             event: HookEvent {
                 session_id: self.session.clone(),
                 hook_event_name: event.to_owned(),
-                notification_type: None,
+                ..HookEvent::default()
             },
         };
         if let Ok(line) = to_line(&message) {

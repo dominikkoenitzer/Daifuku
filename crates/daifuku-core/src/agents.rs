@@ -398,6 +398,7 @@ mod tests {
                 session_id: "s".into(),
                 hook_event_name: e.into(),
                 notification_type: Some("permission_prompt".into()),
+                ..HookEvent::default()
             }
             .transition();
             assert_ne!(
