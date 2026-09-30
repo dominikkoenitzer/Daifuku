@@ -328,6 +328,14 @@ impl BorderWindow {
         self.visible = false;
     }
 
+    /// Lets go of the off-screen bitmap the frame was painted into, for a
+    /// window kept hidden as a spare. The next [`BorderWindow::track`] paints
+    /// afresh.
+    pub fn release_surface(&mut self) {
+        self.surface = None;
+        self.painted = None;
+    }
+
     /// Puts a hidden frame back on the screen, without stealing the focus.
     pub fn show(&mut self) {
         if self.visible {
