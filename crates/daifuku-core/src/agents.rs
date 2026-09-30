@@ -9,8 +9,8 @@
 //!
 //! The file is the user's. Other hooks stay exactly where they are, keys keep
 //! their order, and installing twice changes nothing the second time. A
-//! Daifuku hook is recognised by running `daifuku.exe hook`, so an uninstall
-//! removes exactly those.
+//! Daifuku hook is recognised by running a program called exactly
+//! `daifuku.exe` with `hook`, so an uninstall removes exactly those.
 
 use serde_json::{Map, Value, json};
 
@@ -136,19 +136,28 @@ impl Agent {
     }
 }
 
+/// Whether `hook` runs `daifuku.exe hook`, as a program with its arguments
+/// or as one command line with the program quoted.
 fn is_ours(hook: &Value) -> bool {
-    let command = hook
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let command = hook.get("command").and_then(Value::as_str).unwrap_or("");
     let first_arg = hook
         .get("args")
         .and_then(Value::as_array)
         .and_then(|a| a.first())
         .and_then(Value::as_str);
-    (command.ends_with("daifuku.exe") && first_arg == Some("hook"))
-        || command.ends_with("daifuku.exe\" hook")
+    (first_arg == Some("hook") && is_daifuku(command))
+        || command
+            .strip_suffix("\" hook")
+            .and_then(|c| c.strip_prefix('"'))
+            .is_some_and(|program| !program.contains('"') && is_daifuku(program))
+}
+
+/// Whether `path` names a file called `daifuku.exe`, in any folder and in
+/// any case. A program that only ends in the same letters is someone else's.
+fn is_daifuku(path: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("daifuku.exe"))
 }
 
 /// Removes every Daifuku hook, and any group or event list that held only
@@ -190,6 +199,29 @@ mod tests {
             {"type": "command", "command": "C:/x/other.exe", "args": ["hook"]}
         ]}]}});
         assert_eq!(remove_hooks(&mut s), 0, "neither is a Daifuku hook");
+    }
+
+    #[test]
+    fn a_program_whose_name_only_ends_in_daifuku_is_not_ours() {
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": r"C:\tools\notdaifuku.exe", "args": ["hook"]},
+            {"type": "command", "command": r#""C:\tools\notdaifuku.exe" hook"#},
+            {"type": "command", "command": r#""C:\tools\x.exe" "C:\daifuku.exe" hook"#}
+        ]}]}});
+        let before = s.clone();
+        assert_eq!(remove_hooks(&mut s), 0, "none of them is a Daifuku hook");
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn daifuku_is_ours_whatever_the_case_and_separator() {
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": r"C:\Program Files\Daifuku\Daifuku.EXE", "args": ["hook"]},
+            {"type": "command", "command": "C:/x/daifuku.exe", "args": ["hook"]},
+            {"type": "command", "command": "daifuku.exe", "args": ["hook"]},
+            {"type": "command", "command": r#""C:\x\daifuku.exe" hook"#}
+        ]}]}});
+        assert_eq!(remove_hooks(&mut s), 4);
     }
 
     const EXE: &str = r"C:\Program Files\Daifuku\daifuku.exe";
