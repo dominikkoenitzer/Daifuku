@@ -262,6 +262,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_report_makes_it_not_empty() {
+        let mut a = Agents::new();
+        assert!(a.is_empty());
+        a.apply(1, &ev("a", "PreToolUse"));
+        assert!(!a.is_empty());
+    }
+
+    #[test]
     fn waiting_again_goes_to_the_back_of_the_queue() {
         let mut a = Agents::new();
         a.apply(1, &ev("a", "PermissionRequest"));

@@ -161,6 +161,18 @@ fn spans(start: i32, end: i32, parts: u32, gap: i32) -> Vec<(i32, i32)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn when_no_shape_fits_the_plan_falls_back_to_one_column() {
+        // Gaps wider than the screen: every shape has cells of negative size,
+        // and none may win on a cost computed from two negatives.
+        let area = Rect::new(0, 0, 100, 100);
+        let gaps = Gaps {
+            outer: 24,
+            inner: 500,
+        };
+        assert_eq!(Grid::shape_for(4, area, gaps), shape(1, 4));
+    }
+
     /// The cost the planner minimises, written out again here so the test
     /// fails if the planner's arithmetic drifts from what it documents.
     fn reference_cost(count: u32, area: Rect, gaps: Gaps, columns: u32) -> Option<f64> {

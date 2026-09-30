@@ -96,6 +96,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_oversized_margin_collapses_a_short_rect_too() {
+        // The height this time: 3 above and below a 5-high rectangle.
+        assert_eq!(Rect::new(0, 0, 7, 5).shrink(3), Rect::new(3, 2, 4, 3));
+    }
+
+    #[test]
     fn a_square_is_not_portrait() {
         assert!(!Rect::new(0, 0, 100, 100).is_portrait());
         assert!(Rect::new(0, 0, 99, 100).is_portrait());
