@@ -95,7 +95,7 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
                 continue;
             }
             let mut updated = 0;
-            let edited = edit_json(&file, |s| {
+            let edited = edit_agent_file(&file, |s| {
                 updated = agents::update_hooks(s, &exe);
                 Ok(updated + agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))?)
             });
@@ -134,7 +134,7 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         if !file.is_file() {
             continue;
         }
-        match edit_json(&file, |s| Ok(agents::remove_hooks(s))) {
+        match edit_agent_file(&file, |s| Ok(agents::remove_hooks(s))) {
             Ok(0) => {}
             Ok(1) => println!("removed      1 hook from {}", file.display()),
             Ok(n) => println!("removed      {n} hooks from {}", file.display()),
@@ -343,6 +343,38 @@ fn read_settings(path: &Path) -> std::io::Result<String> {
     })
 }
 
+/// [`edit_json`] for an agent's settings file, only while the file really is
+/// in the user's profile.
+///
+/// The installer runs as administrator and the profile is the user's to
+/// change: a link at `.claude` or at the file itself could otherwise point
+/// the edit at a file only administrators may write.
+fn edit_agent_file(
+    path: &Path,
+    edit: impl FnOnce(&mut serde_json::Value) -> anyhow::Result<usize>,
+) -> anyhow::Result<usize> {
+    let profile = paths::profile_dir().context("no profile folder")?;
+    if !stays_inside(path, &profile) {
+        bail!(
+            "{} leads outside your profile, left untouched",
+            path.display()
+        );
+    }
+    edit_json(path, edit)
+}
+
+/// Whether `path`, with every link on the way followed, is inside `root`.
+/// A path that does not exist yet is judged by the nearest folder above it
+/// that does.
+fn stays_inside(path: &Path, root: &Path) -> bool {
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    path.ancestors()
+        .find_map(|p| std::fs::canonicalize(p).ok())
+        .is_some_and(|real| real.starts_with(&root))
+}
+
 /// Reads a JSON settings file, applies `edit`, and writes the file back only
 /// if something changed. A missing file counts as `{}`. Returns what `edit`
 /// returned.
@@ -442,6 +474,28 @@ mod tests {
         assert_eq!(edited.unwrap(), 1);
         let settings: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(settings["theme"], "dark");
+    }
+
+    #[test]
+    fn a_junction_out_of_the_root_is_not_inside_it() {
+        let base = std::env::temp_dir().join(format!("daifuku-inside-{}", std::process::id()));
+        let root = base.join("profile");
+        let outside = base.join("elsewhere");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let made = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.join(".claude"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        let inside = stays_inside(&root.join("x").join("settings.json"), &root);
+        let through = stays_inside(&root.join(".claude").join("settings.json"), &root);
+        let _ = std::fs::remove_dir(root.join(".claude"));
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert!(inside, "a file yet to be made under the root");
+        assert!(!through, "a junction that leads out of the root");
     }
 
     /// A second link to the file shows whether it was rewritten in place,
