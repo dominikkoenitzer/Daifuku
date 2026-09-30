@@ -16,6 +16,9 @@ feature-depth = 1
 [advisories]
 # RustSec, unfiltered: an unmaintained or vulnerable crate fails the job.
 ignore = []
+# A version pulled from crates.io was pulled for a reason; the lockfile must
+# move off it rather than ship it.
+yanked = "deny"
 
 [licenses]
 # Everything the current tree actually needs, plus the permissive licenses a
