@@ -592,7 +592,9 @@ impl Daemon {
     }
 
     /// Sends the borders their end state: one frame per agent window that is
-    /// on screen, in its state's colour and at its state's width. Starts or
+    /// on screen, in its state's colour and at its state's width. A maximised
+    /// window gets none: its frame is the whole screen, and a border outside
+    /// it would land on the taskbar and the next monitor. Starts or
     /// stops the pulse to match: it runs only while a waiting agent's window
     /// has a frame, so not for one that is minimised or cloaked away.
     fn refresh_borders(&mut self) {
@@ -600,7 +602,9 @@ impl Daemon {
             .agents
             .windows()
             .into_iter()
-            .filter(|&(w, _)| window::is_shown(w) && !window::is_minimised(w))
+            .filter(|&(w, _)| {
+                window::is_shown(w) && !window::is_minimised(w) && !window::is_maximised(w)
+            })
             .filter_map(|(w, state)| window::frame(w).map(|rect| (w, state, rect)))
             .collect();
         self.update_pulse(
