@@ -183,6 +183,15 @@ pub fn remove_hooks(settings: &mut Value) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_daifuku_running_hook_counts_as_ours() {
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": "C:/x/daifuku.exe", "args": ["status"]},
+            {"type": "command", "command": "C:/x/other.exe", "args": ["hook"]}
+        ]}]}});
+        assert_eq!(remove_hooks(&mut s), 0, "neither is a Daifuku hook");
+    }
+
     const EXE: &str = r"C:\Program Files\Daifuku\daifuku.exe";
 
     /// A settings file with a hook of the user's own and keys in a
