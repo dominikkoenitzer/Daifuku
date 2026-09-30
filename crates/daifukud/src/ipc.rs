@@ -40,6 +40,17 @@ pub enum Inbound {
 /// The main thread's end: drained after every wake-up.
 pub struct Inbox {
     pub receiver: Receiver<Inbound>,
+    /// Told when the reply to a stop request has been handed over.
+    stopped: Receiver<()>,
+}
+
+impl Inbox {
+    /// Waits, at most `limit`, until the reply to a stop request has reached
+    /// its client, so the process does not exit while the reply is still on
+    /// its way.
+    pub fn wait_for_stop_reply(&self, limit: Duration) {
+        let _ = self.stopped.recv_timeout(limit);
+    }
 }
 
 /// Claims both pipe names and starts both threads. Fails if either name is
@@ -50,33 +61,26 @@ pub fn start(main_thread: u32) -> anyhow::Result<Inbox> {
     let hooks = instances(Pipe::Hook, 4).map_err(|e| anyhow::anyhow!("hook pipe: {e}"))?;
     let controls = instances(Pipe::Control, 1).map_err(|e| anyhow::anyhow!("control pipe: {e}"))?;
     let (sender, receiver) = channel();
+    let (stop_replied, stopped) = sync_channel(1);
     for (i, hook) in hooks.into_iter().enumerate() {
-        spawn(
-            &format!("daifuku-hook-{i}"),
-            hook,
-            sender.clone(),
-            main_thread,
-            serve_hook,
-        );
+        let sender = sender.clone();
+        spawn(&format!("daifuku-hook-{i}"), hook, move |connection| {
+            serve_hook(connection, &sender, main_thread);
+        });
     }
     for control in controls {
-        spawn(
-            "daifuku-control",
-            control,
-            sender.clone(),
-            main_thread,
-            serve_control,
-        );
+        let (sender, stop_replied) = (sender.clone(), stop_replied.clone());
+        spawn("daifuku-control", control, move |connection| {
+            serve_control(connection, &sender, main_thread, &stop_replied);
+        });
     }
-    Ok(Inbox { receiver })
+    Ok(Inbox { receiver, stopped })
 }
 
 fn spawn(
     name: &str,
     instance: Instance,
-    sender: Sender<Inbound>,
-    main_thread: u32,
-    serve: fn(&mut daifuku_win::pipe::Connection<'_>, &Sender<Inbound>, u32),
+    serve: impl Fn(&mut daifuku_win::pipe::Connection<'_>) + Send + 'static,
 ) {
     let _ = std::thread::Builder::new()
         .name(name.to_owned())
@@ -84,7 +88,7 @@ fn spawn(
             let mut instance = instance;
             loop {
                 match instance.accept() {
-                    Ok(mut connection) => serve(&mut connection, &sender, main_thread),
+                    Ok(mut connection) => serve(&mut connection),
                     Err(error) => {
                         tracing::warn!(%error, "pipe accept failed");
                         std::thread::sleep(Duration::from_millis(250));
@@ -123,13 +127,16 @@ fn serve_control(
     connection: &mut daifuku_win::pipe::Connection<'_>,
     sender: &Sender<Inbound>,
     main_thread: u32,
+    stop_replied: &SyncSender<()>,
 ) {
     let Ok(line) = connection.read_line(CONTROL_IO) else {
         return;
     };
+    let mut stop = false;
     let response = match from_line::<Request>(&line) {
         Ok(request) => {
             tracing::info!(?request, client = connection.client, "control request");
+            stop = matches!(request, Request::Stop);
             let (reply, answer) = sync_channel(1);
             if sender.send(Inbound::Control(request, reply)).is_err() {
                 Response::error("the daemon is shutting down")
@@ -144,5 +151,8 @@ fn serve_control(
     };
     if let Ok(line) = to_line(&response) {
         let _ = connection.write_line(&line, CONTROL_IO);
+    }
+    if stop {
+        let _ = stop_replied.try_send(());
     }
 }
