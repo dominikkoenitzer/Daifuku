@@ -114,6 +114,9 @@ decides what it starts:
 Hooks use a separate pipe, open to the signed-in user, that can do nothing but
 colour a border.
 
+The full threat model is in [docs/security.md](docs/security.md); report
+vulnerabilities as described in [SECURITY.md](SECURITY.md).
+
 ## Commands
 
 | | |
