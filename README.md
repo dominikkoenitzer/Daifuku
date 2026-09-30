@@ -56,7 +56,8 @@ ones. Below, `daifuku` stands for that full path.
 ## Configure
 
 `C:\ProgramData\Daifuku\daifuku.json`, then `daifuku reload` (from 0.1.1 on,
-saving is enough).
+saving is enough). Only administrators may write that folder, so edit the file
+from an administrator editor, such as `notepad` in an administrator terminal.
 Every key is optional; an editor that reads the linked schema completes and
 checks them. [docs/configuration.md](docs/configuration.md) has every key.
 
