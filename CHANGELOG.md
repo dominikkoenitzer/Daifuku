@@ -9,21 +9,25 @@
   number; before, it took the last number and moved the others.
 - A fleet whose opening fails part way keeps the terminals it had and the
   ones it started, instead of forgetting them.
-- A fleet on the `cursor` monitor stays on that monitor when it is snapped.
+- A fleet on the `cursor` monitor stays on that monitor when it is snapped,
+  and goes back to it when it was unplugged and returns. Snap also lets go
+  of terminals past a lowered `count`, as opening does.
 - The config is read again after a save the daemon could not read at once.
 - `daifuku demo` says so when a fleet in the config is called `demo`.
 - `daifuku status` times a window right after a tab moves out of it.
+- The limit of 512 tracked agent sessions counts sessions, so one window can
+  no longer add them without end.
 - A terminal that stopped responding no longer holds up the daemon: it is
   moved later and skipped when focusing.
 - The installer replaces a `ProgramData\Daifuku` folder it did not lock
   itself, never follows a link there, finds ProgramData without the
   environment, and registers the logon task from inside that locked folder.
-- The hook pipe lets the user write, not listen: no other process can add a
-  server to it. Clients connect for identification only, and a report sent
+- The hook pipe lets the signed-in user write, not listen, and no one else:
+  while the daemon runs, no other process can add a server to it. Clients connect for identification only, and a report sent
   just before the daemon was ready is no longer lost.
 - A client that connects to a pipe and stays silent, or never reads its
   reply, is cut off after a deadline, so it cannot block real hooks; a hook
-  never waits on a pipe that does not take its line; `daifuku stop` always
+  gives up on a pipe that does not take its line in time; `daifuku stop` always
   gets its reply.
 - Daemon commands from a normal terminal say they need an administrator one,
   instead of "Access is denied".
@@ -42,6 +46,8 @@
 - A fleet command with double quotes in it runs as written: Windows
   Terminal used to hand it to PowerShell with its quotes broken.
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
+- `daifuku doctor` no longer reports a hotkey as refused because a fleet is
+  called `refused`.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
 ## 0.1.1, 2026-09-30
