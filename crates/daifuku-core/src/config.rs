@@ -1,4 +1,4 @@
-//! The config file, `%USERPROFILE%\daifuku.json`.
+//! The config file, `C:\ProgramData\Daifuku\daifuku.json`.
 //!
 //! Every key is optional. An empty file, or no file, is a working setup: one
 //! fleet of six admin terminals running `claude` on the monitor turned on its
@@ -9,7 +9,7 @@
 //!   "$schema": "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json",
 //!   "fleets": [
 //!     { "name": "agents", "count": 6, "monitor": "portrait", "hotkey": "ctrl + alt + return" },
-//!     { "name": "mochi", "count": 4, "directory": "C:\\src\\Mochi", "hotkey": "ctrl + alt + m" }
+//!     { "name": "site", "count": 4, "directory": "C:\\src\\site", "hotkey": "ctrl + alt + w" }
 //!   ]
 //! }
 //! ```
