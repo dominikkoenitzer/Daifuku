@@ -205,3 +205,111 @@ fn a_hook_in_a_real_console_colours_its_window_and_the_border_follows_it_away() 
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
 }
+
+/// Runs `daifuku` with arguments and returns what it printed.
+fn run(args: &[&str]) -> String {
+    let out = Command::new(cli()).args(args).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
+}
+
+#[test]
+fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
+    use daifuku_core::grid::{Gaps, Grid};
+    use daifuku_core::monitor::MonitorInfo;
+
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    daifuku_win::dpi::per_monitor_v2();
+    let dir = scratch();
+    let config = dir.join("daifuku.json");
+    std::fs::write(
+        &config,
+        r#"{"fleets":[{"name":"e2e","count":4,"monitor":"primary","command":null,"admin":true,"no_profile":true,"hotkey":null}],
+            "hotkeys":{"next_waiting":null,"snap":null}}"#,
+    )
+    .unwrap();
+    let mut steps = 0;
+    let daemon = Command::new(daemon_exe())
+        .arg("--config")
+        .arg(&config)
+        .spawn()
+        .unwrap();
+    let mut cleanup = Cleanup(vec![daemon]);
+    wait_for("the daemon to answer", Duration::from_secs(15), status);
+
+    let opened = run(&["open", "e2e"]);
+    assert!(opened.contains("opened e2e (4 terminals"), "{opened}");
+    let fleet = wait_for("the fleet in the status", Duration::from_secs(10), || {
+        status()?
+            .fleets
+            .into_iter()
+            .find(|f| f.name == "e2e" && f.windows.len() == 4)
+    });
+    steps += 1;
+
+    // Every terminal exactly in its cell, by its visible frame.
+    let monitors: Vec<MonitorInfo> = daifuku_win::monitor::monitors();
+    let primary = monitors.iter().find(|m| m.primary).unwrap();
+    let cells = Grid::plan(4, primary.work, Gaps::default(), None);
+    for (i, &w) in fleet.windows.iter().enumerate() {
+        assert_eq!(
+            window::frame(w),
+            Some(cells[i]),
+            "terminal {} is not in its cell",
+            i + 1
+        );
+    }
+    steps += 1;
+
+    // Pushed out of its cell, a snap puts it back.
+    let first = fleet.windows[0];
+    let moved = cells[0];
+    window::place(
+        first,
+        daifuku_core::Rect::new(
+            moved.left + 40,
+            moved.top + 30,
+            moved.right - 40,
+            moved.bottom - 30,
+        ),
+    );
+    assert_ne!(
+        window::frame(first),
+        Some(cells[0]),
+        "the move did not happen"
+    );
+    let snapped = run(&["snap"]);
+    assert!(snapped.contains("snapped 4 terminals"), "{snapped}");
+    assert_eq!(
+        window::frame(first),
+        Some(cells[0]),
+        "snap did not put it back"
+    );
+    steps += 1;
+
+    // Closing the fleet takes every terminal down.
+    let closed = run(&["close", "e2e"]);
+    assert!(closed.contains("closed 4 terminals"), "{closed}");
+    wait_for("the terminals to close", Duration::from_secs(15), || {
+        fleet
+            .windows
+            .iter()
+            .all(|&w| !window::exists(w))
+            .then_some(())
+    });
+    steps += 1;
+
+    let _ = run(&["stop"]);
+    let mut daemon = cleanup.0.pop().unwrap();
+    wait_for("the daemon to exit", Duration::from_secs(10), || {
+        daemon.try_wait().ok().flatten()
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
