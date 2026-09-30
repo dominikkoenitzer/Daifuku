@@ -29,6 +29,15 @@
   instead of "Access is denied".
 - The config and the agents' settings files are read when saved with a byte
   order mark.
+- The installer points Daifuku's hooks at the installed `daifuku.exe` when
+  they call another copy, replaces a settings file whole instead of
+  rewriting it in place, and edits it only when it really is in your
+  profile, not behind a link out of it.
+- Uninstall removes only hooks that run a program called `daifuku.exe`, and
+  keeps the empty hook groups and lists you had.
+- Windows Terminal counts only when the system installed it from a signed
+  source, and a `;` in a fleet's folder no longer splits the command.
+- `border.offset` must be -64 to 64 and the gaps at most 1000.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
 ## 0.1.1, 2026-09-30
