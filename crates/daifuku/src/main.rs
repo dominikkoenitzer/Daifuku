@@ -86,7 +86,7 @@ enum Command {
     /// Install for this user: Program Files, the logon task, Claude Code's
     /// hooks. Needs an administrator terminal.
     Install {
-        /// Leave Claude Code's settings alone.
+        /// Leave Claude Code's and Codex's settings alone.
         #[arg(long)]
         no_hooks: bool,
         /// Do not start the daemon now; it starts at the next logon.
