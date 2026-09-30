@@ -365,10 +365,10 @@ impl Daemon {
             if let Some(fleet) = definition
                 && fleet::snap(&fleet, &self.config, record).is_ok()
             {
-                snapped += record.windows.len();
+                snapped += record.windows().count();
             }
         }
-        self.fleets.retain(|f| !f.windows.is_empty());
+        self.fleets.retain(|f| f.windows().next().is_some());
         self.refresh_borders();
         Response::said(format!("snapped {snapped} terminals"))
     }
@@ -390,7 +390,7 @@ impl Daemon {
         };
         let record = self.fleets.remove(index);
         let mut closed = 0;
-        for w in record.windows {
+        for w in record.windows() {
             // Only a window that is still one of our terminals: a handle can
             // have been reused by anything since.
             if window::exists(w)
@@ -447,7 +447,7 @@ impl Daemon {
             .map(|f| FleetStatus {
                 name: f.name.clone(),
                 monitor: f.monitor.clone(),
-                windows: f.windows.clone(),
+                windows: f.windows().collect(),
             })
             .collect();
         let mut config = self.config_path.display().to_string();
@@ -483,7 +483,7 @@ impl Daemon {
                     let forgot = self.agents.forget_window(w);
                     self.shown_since.remove(&w);
                     for f in &mut self.fleets {
-                        f.windows.retain(|&x| x != w);
+                        f.forget(w);
                     }
                     refresh |= forgot;
                 }
