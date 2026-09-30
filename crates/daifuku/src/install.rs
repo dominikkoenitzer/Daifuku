@@ -94,9 +94,21 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
             if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
                 continue;
             }
-            match edit_json(&file, |s| agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))) {
+            let mut updated = 0;
+            let edited = edit_json(&file, |s| {
+                updated = agents::update_hooks(s, &exe);
+                Ok(updated + agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))?)
+            });
+            match edited {
                 Ok(0) => println!("hooks        {} already has them", agent.name),
-                Ok(n) => println!("hooks        added {n} to {}", file.display()),
+                Ok(n) => {
+                    if updated > 0 {
+                        println!("hooks        updated {updated} in {}", file.display());
+                    }
+                    if n > updated {
+                        println!("hooks        added {} to {}", n - updated, file.display());
+                    }
+                }
                 Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
             }
         }

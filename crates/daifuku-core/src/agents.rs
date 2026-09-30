@@ -10,7 +10,8 @@
 //! The file is the user's. Other hooks stay exactly where they are, keys keep
 //! their order, and installing twice changes nothing the second time. A
 //! Daifuku hook is recognised by running a program called exactly
-//! `daifuku.exe` with `hook`, so an uninstall removes exactly those.
+//! `daifuku.exe` with `hook`, so an uninstall removes exactly those, and an
+//! install that finds them calling another copy rewrites only their path.
 
 use serde_json::{Map, Value, json};
 
@@ -139,17 +140,26 @@ impl Agent {
 /// Whether `hook` runs `daifuku.exe hook`, as a program with its arguments
 /// or as one command line with the program quoted.
 fn is_ours(hook: &Value) -> bool {
+    style_of_ours(hook).is_some()
+}
+
+/// How `hook` runs `daifuku.exe hook`, or `None` when it runs something
+/// else.
+fn style_of_ours(hook: &Value) -> Option<Style> {
     let command = hook.get("command").and_then(Value::as_str).unwrap_or("");
     let first_arg = hook
         .get("args")
         .and_then(Value::as_array)
         .and_then(|a| a.first())
         .and_then(Value::as_str);
-    (first_arg == Some("hook") && is_daifuku(command))
-        || command
-            .strip_suffix("\" hook")
-            .and_then(|c| c.strip_prefix('"'))
-            .is_some_and(|program| !program.contains('"') && is_daifuku(program))
+    if first_arg == Some("hook") && is_daifuku(command) {
+        return Some(Style::ProgramAndArgs);
+    }
+    command
+        .strip_suffix("\" hook")
+        .and_then(|c| c.strip_prefix('"'))
+        .is_some_and(|program| !program.contains('"') && is_daifuku(program))
+        .then_some(Style::CommandLine)
 }
 
 /// Whether `path` names a file called `daifuku.exe`, in any folder and in
@@ -158,6 +168,33 @@ fn is_daifuku(path: &str) -> bool {
     path.rsplit(['\\', '/'])
         .next()
         .is_some_and(|name| name.eq_ignore_ascii_case("daifuku.exe"))
+}
+
+/// Points every Daifuku hook at `exe`, the `daifuku.exe` being installed, so
+/// hooks an earlier install left calling another copy work again. Each
+/// keeps its form and everything else in it, and hooks that are not
+/// Daifuku's are not touched. Returns how many were rewritten. The same for
+/// both agents.
+pub fn update_hooks(settings: &mut Value, exe: &str) -> usize {
+    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return 0;
+    };
+    let mut updated = 0;
+    let groups = hooks.values_mut().filter_map(Value::as_array_mut).flatten();
+    let all = groups.filter_map(|g| g.get_mut("hooks").and_then(Value::as_array_mut));
+    for hook in all.flatten() {
+        let wanted = match style_of_ours(hook) {
+            Some(Style::ProgramAndArgs) => exe.to_owned(),
+            Some(Style::CommandLine) => format!("\"{exe}\" hook"),
+            None => continue,
+        };
+        let current = hook.get("command").and_then(Value::as_str).unwrap_or("");
+        if !current.eq_ignore_ascii_case(&wanted) {
+            hook["command"] = Value::String(wanted);
+            updated += 1;
+        }
+    }
+    updated
 }
 
 /// Removes every Daifuku hook, and any group or event list that held only
@@ -265,6 +302,31 @@ mod tests {
         let once = s.clone();
         assert_eq!(CLAUDE.add_hooks(&mut s, EXE), Ok(0));
         assert_eq!(s, once);
+    }
+
+    #[test]
+    fn an_update_points_daifukus_hooks_at_the_current_exe() {
+        let mut s = users_file();
+        CLAUDE.add_hooks(&mut s, r"C:\old\daifuku.exe").unwrap();
+        s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = json!(30);
+        assert_eq!(update_hooks(&mut s, EXE), CLAUDE.events.len());
+        assert_eq!(CLAUDE.add_hooks(&mut s, EXE), Ok(0));
+        let mut fresh = users_file();
+        CLAUDE.add_hooks(&mut fresh, EXE).unwrap();
+        fresh["hooks"]["Stop"][0]["hooks"][0]["timeout"] = json!(30);
+        assert_eq!(s, fresh, "only the path changed, the user's own hook too");
+        assert_eq!(update_hooks(&mut s, EXE), 0, "nothing left to update");
+        assert_eq!(update_hooks(&mut s, &EXE.to_uppercase()), 0, "same file");
+    }
+
+    #[test]
+    fn an_update_keeps_the_command_line_form() {
+        let mut s = json!({});
+        CODEX.add_hooks(&mut s, r"C:\old\daifuku.exe").unwrap();
+        assert_eq!(update_hooks(&mut s, EXE), CODEX.events.len());
+        let mut fresh = json!({});
+        CODEX.add_hooks(&mut fresh, EXE).unwrap();
+        assert_eq!(s, fresh);
     }
 
     #[test]
