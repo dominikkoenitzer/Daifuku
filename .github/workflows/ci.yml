@@ -110,6 +110,70 @@ jobs:
         shell: pwsh
         run: Get-ChildItem "$env:ProgramData\Daifuku\logs", "$env:LOCALAPPDATA\Daifuku\logs" -Filter *.log -ErrorAction SilentlyContinue | Get-Content -Tail 80
 
+  # The installer, for real, on a machine where it may do everything it does
+  # on a user's: Program Files, the locked ProgramData folder, the logon task,
+  # the hooks in Claude Code's settings. Then uninstall, and prove every piece
+  # is gone again.
+  install:
+    name: install and uninstall
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: install
+      - run: cargo build --locked --release --workspace
+      - name: Install, check, uninstall
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $settings = Join-Path $env:USERPROFILE '.claude\settings.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path $settings) | Out-Null
+          # A user's own hook, which the install must keep and the uninstall
+          # must leave behind untouched.
+          '{"theme":"dark","hooks":{"Stop":[{"hooks":[{"type":"command","command":"C:/mine.exe"}]}]}}' |
+              Set-Content -Encoding utf8 $settings
+
+          ./target/release/daifuku.exe install --no-start
+          if ($LASTEXITCODE -ne 0) { throw "install exited with $LASTEXITCODE" }
+
+          $dir = Join-Path $env:ProgramFiles 'Daifuku'
+          foreach ($f in 'daifuku.exe', 'daifukud.exe') {
+              if (-not (Test-Path (Join-Path $dir $f))) { throw "$f was not installed" }
+          }
+          $data = Join-Path $env:ProgramData 'Daifuku'
+          $acl = (Get-Acl $data)
+          if ($acl.Owner -notmatch 'Administrators') { throw "ProgramData\Daifuku is owned by $($acl.Owner)" }
+          $userWrite = $acl.Access | Where-Object {
+              $_.IdentityReference -match 'Users$' -and $_.FileSystemRights -match 'Write|Modify|FullControl'
+          }
+          if ($userWrite) { throw 'ordinary users can write ProgramData\Daifuku' }
+          schtasks /Query /TN '\Daifuku\Daemon' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'the logon task was not registered' }
+          $json = Get-Content -Raw $settings | ConvertFrom-Json
+          if ($json.theme -ne 'dark') { throw 'the install lost a setting' }
+          if (@($json.hooks.Stop).Count -ne 2) { throw 'Stop should hold the user hook and Daifuku''s' }
+          Write-Output 'installed: binaries, locked folder, task, hooks next to the user''s own'
+
+          # Installing twice changes nothing.
+          $before = Get-Content -Raw $settings
+          ./target/release/daifuku.exe install --no-start | Out-Null
+          if ((Get-Content -Raw $settings) -ne $before) { throw 'a second install changed the settings' }
+
+          & (Join-Path $dir 'daifuku.exe') uninstall --purge
+          if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }
+          schtasks /Query /TN '\Daifuku\Daemon' 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw 'the logon task survived the uninstall' }
+          if (Test-Path $data) { throw 'ProgramData\Daifuku survived --purge' }
+          $json = Get-Content -Raw $settings | ConvertFrom-Json
+          if (@($json.hooks.Stop).Count -ne 1 -or $json.hooks.Stop[0].hooks[0].command -ne 'C:/mine.exe') {
+              throw 'the uninstall did not leave exactly the user''s own hook'
+          }
+          Write-Output 'uninstalled: task, data and Daifuku''s hooks gone, the user''s hook kept'
+
   doc:
     name: doc
     timeout-minutes: 30
