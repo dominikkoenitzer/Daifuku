@@ -15,7 +15,9 @@ each window's border shows what its agent is doing.
 
 It works with Claude Code and Codex, in Windows Terminal. Fleets open as
 administrator by default, which also keeps them out of a tiling window
-manager's reach, so the two run side by side.
+manager's reach, so the two run side by side. It also means the agent, and
+every command it runs, runs as administrator. `"admin": false` on a fleet
+opens its terminals as you instead.
 
 ## Install
 
