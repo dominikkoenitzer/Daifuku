@@ -13,6 +13,18 @@
 - The config is read again after a save the daemon could not read at once.
 - `daifuku demo` says so when a fleet in the config is called `demo`.
 - `daifuku status` times a window right after a tab moves out of it.
+- A terminal that stopped responding no longer holds up the daemon: it is
+  moved later and skipped when focusing.
+- The installer replaces a `ProgramData\Daifuku` folder it did not lock
+  itself, never follows a link there, finds ProgramData without the
+  environment, and registers the logon task from inside that locked folder.
+- The hook pipe lets the user write, not listen: no other process can add a
+  server to it. Clients connect for identification only, and a report sent
+  just before the daemon was ready is no longer lost.
+- Daemon commands from a normal terminal say they need an administrator one,
+  instead of "Access is denied".
+- `settings.json` files saved with a byte order mark are read.
+- `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
 ## 0.1.1, 2026-09-30
 
