@@ -100,12 +100,13 @@ the gaps are exact.
 | `offset` | `0` | How far outside the window's edge the border sits, -64 to 64; negative overlaps it. |
 | `palette` | `"catppuccin"` | `"catppuccin"` or `"colorblind"` (Okabe-Ito). |
 | `colours` | the palette's | Your own four colours, see below. |
-| `state_widths` | `true` | Each state at its own width, so a state reads without its colour. |
-| `pulse` | `true` | The waiting border breathes slowly. Off anyway when Windows shows no animations. |
+| `state_widths` | `true` | Each state at its own width, so a state reads without its colour. Always on with a high contrast theme. |
+| `pulse` | `true` | The waiting border breathes slowly, between 70 % and full brightness, so its contrast never drops far. Off anyway when Windows shows no animations or a high contrast theme is on. |
 
 With `state_widths` on, the widths at the default of 4 are done 2, working 4,
 failed 6 and waiting 8. With a high contrast theme on, the borders take the
-theme's own colours.
+theme's own colours, every state keeps its own width, and nothing breathes.
+A maximised terminal gets no border: it would lie outside the screen.
 
 ### `colours`
 
