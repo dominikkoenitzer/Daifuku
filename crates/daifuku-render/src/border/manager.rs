@@ -393,6 +393,10 @@ impl Borders {
     fn recycle(&mut self, mut window: BorderWindow) {
         window.hide();
         if self.idle.len() < MAX_IDLE {
+            // A spare keeps its window, not its bitmap: the bitmap is the size
+            // of the frame, tens of megabytes around a terminal that fills a
+            // 4K screen, and the next target is another size anyway.
+            window.release_surface();
             self.idle.push(window);
         }
         // Otherwise the window drops here, which destroys it on this thread.
