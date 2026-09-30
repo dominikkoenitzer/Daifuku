@@ -177,14 +177,7 @@ impl Daemon {
             Err(e) => {
                 self.config_error = Some(format!("{}: {e}", self.config_path.display()));
                 tracing::error!(path = %self.config_path.display(), error = %e, "config unreadable, keeping the last good one");
-                // An editor can hold the file for a moment while it saves:
-                // forget the stamp so the next sweep reads it once more. Only
-                // once per save: a file that stays unreadable is not read on
-                // every sweep, and the next save is tried afresh.
-                if self.config_failed != self.config_stamp {
-                    self.config_failed = self.config_stamp;
-                    self.config_stamp = None;
-                }
+                retry_once(&mut self.config_failed, &mut self.config_stamp);
                 return;
             }
         };
@@ -295,14 +288,11 @@ impl Daemon {
     /// Keeps `shown_since` in step with every window's state. A session that
     /// moves to another window changes the window it left as well.
     fn note_states(&mut self) {
-        let states = self.agents.windows();
-        self.shown_since.retain(|w, _| states.contains_key(w));
-        for (w, state) in states {
-            if self.shown_since.get(&w).map(|&(s, _)| s) != Some(state) {
-                self.shown_since
-                    .insert(w, (state, std::time::Instant::now()));
-            }
-        }
+        note_shown(
+            &mut self.shown_since,
+            self.agents.windows(),
+            std::time::Instant::now(),
+        );
     }
 
     fn open(&mut self, name: Option<&str>) -> Response {
@@ -457,28 +447,9 @@ impl Daemon {
             .into_iter()
             .filter(|&w| window::exists(w))
             .collect();
-        let Some(&first) = queue.first() else {
+        let since = |w: u64| self.shown_since.get(&w).map(|&(_, t)| t);
+        let Some(target) = next_target(&queue, window::foreground(), self.last_next, since) else {
             return Response::said("no agent is waiting");
-        };
-        // Pressed again from the terminal it brought up, while that agent
-        // still waits as it did then, it moves on to the next one, wrapping
-        // at the end: three waiting agents are three presses. From anywhere
-        // else it starts at the front of the queue. A terminal in front for
-        // another reason, such as the last one a fleet opened, or the one
-        // just approved whose agent has since failed or asks again, is no
-        // place in the queue: moving on from it skipped the agents that had
-        // waited longest. Measured on a demo, where it landed on a failed
-        // agent that Enter cannot approve.
-        let front = window::foreground();
-        let from = self
-            .last_next
-            .filter(|&(w, since)| {
-                w == front && self.shown_since.get(&w).map(|&(_, t)| t) == Some(since)
-            })
-            .and_then(|(w, _)| queue.iter().position(|&q| q == w));
-        let target = match from {
-            Some(i) => queue[(i + 1) % queue.len()],
-            None => first,
         };
         if window::focus(target) {
             self.last_next = self.shown_since.get(&target).map(|&(_, t)| (target, t));
@@ -711,6 +682,67 @@ fn stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Notes that reading the config file saved at `stamp` failed. An editor can
+/// hold the file for a moment while it saves: forget the stamp so the next
+/// sweep reads it once more. Only once per save: a file that stays unreadable
+/// is not read on every sweep, and the next save is tried afresh.
+fn retry_once(
+    failed: &mut Option<std::time::SystemTime>,
+    stamp: &mut Option<std::time::SystemTime>,
+) {
+    if *failed != *stamp {
+        *failed = *stamp;
+        *stamp = None;
+    }
+}
+
+/// Keeps `shown` in step with every window's state as of `now`: a window
+/// whose state changed shows it since `now`, one whose state did not keeps
+/// its time, and one that is gone is dropped.
+fn note_shown(
+    shown: &mut std::collections::HashMap<u64, (AgentState, std::time::Instant)>,
+    states: std::collections::BTreeMap<u64, AgentState>,
+    now: std::time::Instant,
+) {
+    shown.retain(|w, _| states.contains_key(w));
+    for (w, state) in states {
+        if shown.get(&w).map(|&(s, _)| s) != Some(state) {
+            shown.insert(w, (state, now));
+        }
+    }
+}
+
+/// The terminal `next` brings up from `queue`, the agents that need you in
+/// order; `None` when it is empty.
+///
+/// Pressed again from the terminal it brought up, while that agent still
+/// waits as it did then, it moves on to the next one, wrapping at the end:
+/// three waiting agents are three presses. From anywhere else it starts at
+/// the front of the queue. A terminal in front for another reason, such as
+/// the last one a fleet opened, or the one just approved whose agent has
+/// since failed or asks again, is no place in the queue: moving on from it
+/// skipped the agents that had waited longest. Measured on a demo, where it
+/// landed on a failed agent that Enter cannot approve.
+///
+/// `front` is the window in front now, `last` the one `next` brought up with
+/// the time its agent had shown its state then, and `since` gives that time
+/// for a window now.
+fn next_target<T: PartialEq + Copy>(
+    queue: &[u64],
+    front: u64,
+    last: Option<(u64, T)>,
+    since: impl Fn(u64) -> Option<T>,
+) -> Option<u64> {
+    let first = *queue.first()?;
+    let from = last
+        .filter(|&(w, t)| w == front && since(w) == Some(t))
+        .and_then(|(w, _)| queue.iter().position(|&q| q == w));
+    Some(match from {
+        Some(i) => queue[(i + 1) % queue.len()],
+        None => first,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,5 +763,98 @@ mod tests {
     fn dimming_keeps_the_hue() {
         let c = dim(daifuku_core::config::Colour::new(200, 100, 0), 0.5);
         assert_eq!((c.r, c.g, c.b), (100, 50, 0));
+    }
+
+    /// `next` from window `front`, having last brought up `last` at time `t`,
+    /// while each window in the queue has shown its state since `t`.
+    fn next_from(queue: &[u64], front: u64, last: Option<(u64, u32)>) -> Option<u64> {
+        next_target(queue, front, last, |_| Some(1))
+    }
+
+    #[test]
+    fn next_with_nobody_waiting_brings_up_nothing() {
+        assert_eq!(next_from(&[], 2, Some((2, 1))), None);
+    }
+
+    #[test]
+    fn next_starts_at_the_front_of_the_queue() {
+        assert_eq!(next_from(&[1, 2, 3], 2, None), Some(1));
+    }
+
+    #[test]
+    fn next_again_from_the_terminal_it_brought_up_moves_on() {
+        assert_eq!(next_from(&[1, 2, 3], 2, Some((2, 1))), Some(3));
+    }
+
+    #[test]
+    fn next_again_from_the_last_in_the_queue_wraps_to_the_first() {
+        assert_eq!(next_from(&[1, 2, 3], 3, Some((3, 1))), Some(1));
+    }
+
+    #[test]
+    fn next_from_another_terminal_starts_over() {
+        assert_eq!(next_from(&[1, 2, 3], 2, Some((1, 1))), Some(1));
+    }
+
+    #[test]
+    fn next_starts_over_once_the_agent_it_brought_up_has_moved_on() {
+        let later = |w: u64| Some(if w == 2 { 2 } else { 1 });
+        assert_eq!(next_target(&[1, 2, 3], 2, Some((2, 1)), later), Some(1));
+    }
+
+    #[test]
+    fn next_starts_over_when_the_last_terminal_is_out_of_the_queue() {
+        assert_eq!(next_from(&[1, 2, 3], 4, Some((4, 1))), Some(1));
+    }
+
+    #[test]
+    fn next_with_one_waiting_stays_on_it() {
+        assert_eq!(next_from(&[2], 2, Some((2, 1))), Some(2));
+    }
+
+    #[test]
+    fn a_state_keeps_its_time_until_it_changes_and_gone_windows_drop_out() {
+        use std::collections::{BTreeMap, HashMap};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        let mut shown = HashMap::new();
+        note_shown(
+            &mut shown,
+            BTreeMap::from([(1, AgentState::Waiting), (2, AgentState::Working)]),
+            t0,
+        );
+        note_shown(
+            &mut shown,
+            BTreeMap::from([(1, AgentState::Waiting), (3, AgentState::Failed)]),
+            t1,
+        );
+        assert_eq!(shown.get(&1), Some(&(AgentState::Waiting, t0)), "unchanged");
+        assert_eq!(shown.get(&2), None, "gone");
+        assert_eq!(shown.get(&3), Some(&(AgentState::Failed, t1)), "new");
+        note_shown(&mut shown, BTreeMap::from([(1, AgentState::Done)]), t1);
+        assert_eq!(shown.get(&1), Some(&(AgentState::Done, t1)), "changed");
+        assert_eq!(shown.len(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_config_is_read_once_more_per_save() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let first = Some(UNIX_EPOCH + Duration::from_secs(1));
+        let second = Some(UNIX_EPOCH + Duration::from_secs(2));
+        // A sweep reads the file again when its stamp is not the one noted.
+        let (mut failed, mut noted) = (None, first);
+        retry_once(&mut failed, &mut noted);
+        assert_eq!((failed, noted), (first, None), "read again after a failure");
+        noted = first;
+        retry_once(&mut failed, &mut noted);
+        assert_eq!(
+            (failed, noted),
+            (first, first),
+            "not again after failing twice on one save"
+        );
+        noted = second;
+        retry_once(&mut failed, &mut noted);
+        assert_eq!((failed, noted), (second, None), "a new save gets its retry");
     }
 }
