@@ -53,6 +53,9 @@ struct Daemon {
     /// The window event hooks. The ones borders follow their windows by are
     /// in only while an agent has a window and borders are drawn.
     hooks: events::Hooks,
+    /// Every agent window with a frame on screen, its state and its frame,
+    /// as the last full pass measured them.
+    framed: Vec<(u64, AgentState, daifuku_core::Rect)>,
     started: std::time::Instant,
     /// When the config file last changed, to reload it without being asked.
     config_stamp: Option<std::time::SystemTime>,
@@ -104,6 +107,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         animations: access::animations(),
         pulse_timer: None,
         hooks: events::Hooks::install(),
+        framed: Vec::new(),
         started: std::time::Instant::now(),
         config_stamp: None,
         config_failed: None,
@@ -138,7 +142,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
             events::WM_EVENTS => {}
             WM_TIMER if msg.hwnd.is_invalid() => {
                 if Some(msg.wParam.0) == d.pulse_timer {
-                    d.refresh_borders();
+                    d.paint_borders();
                 } else {
                     d.sweep();
                 }
@@ -614,7 +618,7 @@ impl Daemon {
         self.hooks.follow(
             self.borders.is_some() && self.config.border.enabled && !self.agents.is_empty(),
         );
-        let framed: Vec<(u64, AgentState, daifuku_core::Rect)> = self
+        self.framed = self
             .agents
             .windows()
             .into_iter()
@@ -624,10 +628,19 @@ impl Daemon {
             .filter_map(|(w, state)| window::frame(w).map(|rect| (w, state, rect)))
             .collect();
         self.update_pulse(
-            framed
+            self.framed
                 .iter()
                 .any(|&(_, state, _)| state == AgentState::Waiting),
         );
+        self.paint_borders();
+    }
+
+    /// Hands the frames the last [`Daemon::refresh_borders`] measured to the
+    /// border thread, a waiting one at the pulse's brightness of the moment.
+    /// This alone is a pulse tick: only the waiting colours change, and a
+    /// window that moved, changed or went away has already brought a full
+    /// pass through its window event.
+    fn paint_borders(&self) {
         let Some(borders) = &self.borders else { return };
         let border = &self.config.border;
         let colours = if self.high_contrast {
@@ -638,9 +651,10 @@ impl Daemon {
         let breath = self
             .pulse_timer
             .map(|_| breath(self.started.elapsed().as_secs_f64()));
-        let specs: Vec<BorderSpec> = framed
-            .into_iter()
-            .map(|(w, state, rect)| {
+        let specs: Vec<BorderSpec> = self
+            .framed
+            .iter()
+            .map(|&(w, state, rect)| {
                 let mut colour = colours.of(state);
                 if state == AgentState::Waiting
                     && let Some(k) = breath
