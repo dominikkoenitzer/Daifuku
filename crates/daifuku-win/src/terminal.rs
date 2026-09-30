@@ -38,9 +38,10 @@ use windows::core::{PCWSTR, PWSTR};
 use crate::wide::{from_wide, to_wide};
 
 /// The package families Windows Terminal ships as, stable first.
-const FAMILIES: [&str; 2] = [
+const FAMILIES: [&str; 3] = [
     "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
     "Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe",
+    "Microsoft.WindowsTerminalCanary_8wekyb3d8bbwe",
 ];
 
 /// The window class every Windows Terminal window has.
