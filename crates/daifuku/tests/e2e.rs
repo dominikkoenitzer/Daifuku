@@ -80,6 +80,11 @@ struct Cleanup(Vec<Child>);
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
+        // A test that failed half way leaves its terminals open, and the
+        // demo's agents in them run until they are closed.
+        for fleet in ["e2e", "demo"] {
+            let _ = Command::new(cli()).args(["close", fleet]).output();
+        }
         let _ = Command::new(cli()).arg("stop").output();
         for c in &mut self.0 {
             let _ = c.kill();
@@ -479,14 +484,15 @@ fn press_hotkey() -> u32 {
 }
 
 /// The windows whose agents wait, by what `status` says.
+/// The windows whose agents wait. A daemon that stopped answering fails the
+/// test: an empty answer would read as "every agent was approved".
 fn waiting() -> Vec<u64> {
-    status().map_or_else(Vec::new, |s| {
-        s.agents
-            .into_iter()
-            .filter(|a| a.state.name() == "waiting")
-            .map(|a| a.window)
-            .collect()
-    })
+    let s = wait_for("the daemon to answer", Duration::from_secs(5), status);
+    s.agents
+        .into_iter()
+        .filter(|a| a.state.name() == "waiting")
+        .map(|a| a.window)
+        .collect()
 }
 
 fn print_agents() {
@@ -513,8 +519,8 @@ fn next_brings_each_waiting_agent_up_and_enter_approves_it() {
     }
     let dir = scratch();
     let config = dir.join("daifuku.json");
-    // A next key nobody else uses, so a developer's own daemon keeps its
-    // Ctrl+Alt+N while this runs.
+    // A next key no other program is likely to hold, so registering it
+    // cannot fail on a runner.
     std::fs::write(
         &config,
         r#"{"fleets":[],"hotkeys":{"next_waiting":"ctrl + alt + f11","snap":null}}"#,
