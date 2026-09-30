@@ -5,7 +5,9 @@ ordinary process move an administrator's window or draw a frame beside it,
 and fleets of administrator terminals are the common case. That makes the
 daemon worth attacking, because whatever can change what it starts gets
 administrator rights for nothing. This page is the threat model: what an
-attacker without administrator rights could try, and what stops it.
+attacker without administrator rights could try, and what stops it. It
+describes the code on `main`; several of these protections came after 0.1.1,
+and the [changelog](../CHANGELOG.md) says which.
 
 The attacker assumed here is any process running as the signed-in user at
 normal integrity: a malicious npm package, a compromised extension, a script
