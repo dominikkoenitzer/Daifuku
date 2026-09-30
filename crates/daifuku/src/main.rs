@@ -328,10 +328,10 @@ fn print_status(s: &daifuku_core::protocol::Status) {
     }
     for f in &s.fleets {
         println!(
-            "  {} on {}: {} terminals",
+            "  {} on {}: {}",
             f.name,
             f.monitor,
-            f.windows.len()
+            terminals(f.windows.len())
         );
     }
     println!("\nagents");
@@ -346,6 +346,16 @@ fn print_status(s: &daifuku_core::protocol::Status) {
             a.window,
             a.title
         );
+    }
+}
+
+/// `1 terminal`, `3 terminals`: how many terminals a fleet has.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn terminals(n: usize) -> String {
+    if n == 1 {
+        "1 terminal".to_owned()
+    } else {
+        format!("{n} terminals")
     }
 }
 
@@ -375,6 +385,13 @@ mod tests {
         assert_eq!(since(59), "59s");
         assert_eq!(since(192), "3m 12s");
         assert_eq!(since(7500), "2h 5m");
+    }
+
+    #[test]
+    fn one_terminal_is_not_plural() {
+        assert_eq!(terminals(1), "1 terminal");
+        assert_eq!(terminals(0), "0 terminals");
+        assert_eq!(terminals(6), "6 terminals");
     }
 
     #[test]
