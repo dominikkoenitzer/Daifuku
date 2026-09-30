@@ -100,7 +100,7 @@
           "default": 4
         },
         "offset": {
-          "description": "How far outside the visible frame the border sits; negative overlaps\nthe window's own edge.",
+          "description": "How far outside the visible frame the border sits, -64 to 64 pixels;\nnegative overlaps the window's own edge.",
           "type": "integer",
           "format": "int32",
           "default": 0

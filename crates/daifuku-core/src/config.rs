@@ -72,8 +72,8 @@ pub struct Border {
     pub enabled: bool,
     /// Thickness in physical pixels.
     pub width: i32,
-    /// How far outside the visible frame the border sits; negative overlaps
-    /// the window's own edge.
+    /// How far outside the visible frame the border sits, -64 to 64 pixels;
+    /// negative overlaps the window's own edge.
     pub offset: i32,
     /// The colours, as a set. `catppuccin` by default; `colorblind` is the
     /// Okabe-Ito palette, which stays distinct for every common kind of
@@ -501,12 +501,19 @@ impl Config {
     ///
     /// The first problem found.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.gaps.outer < 0 || self.gaps.inner < 0 {
-            return Err(ConfigError::Size("gaps cannot be negative".into()));
+        if !(0..=1000).contains(&self.gaps.outer) || !(0..=1000).contains(&self.gaps.inner) {
+            return Err(ConfigError::Size("gaps must be 0 to 1000 pixels".into()));
         }
         if !(0..=64).contains(&self.border.width) {
             return Err(ConfigError::Size(
                 "border width must be 0 to 64 pixels".into(),
+            ));
+        }
+        // Past this a border's bitmap grows without bound, and near the end
+        // of the integer range its size wraps.
+        if !(-64..=64).contains(&self.border.offset) {
+            return Err(ConfigError::Size(
+                "border offset must be -64 to 64 pixels".into(),
             ));
         }
         let mut names = BTreeSet::new();
@@ -762,6 +769,10 @@ mod tests {
     fn negative_gaps_and_absurd_borders_are_rejected() {
         assert!(Config::from_json(r#"{"gaps":{"outer":-1,"inner":0}}"#).is_err());
         assert!(Config::from_json(r#"{"border":{"width":100}}"#).is_err());
+        assert!(Config::from_json(r#"{"border":{"offset":3000}}"#).is_err());
+        assert!(Config::from_json(r#"{"border":{"offset":-65}}"#).is_err());
+        assert!(Config::from_json(r#"{"border":{"offset":-8}}"#).is_ok());
+        assert!(Config::from_json(r#"{"gaps":{"outer":2147483647,"inner":0}}"#).is_err());
     }
 
     #[test]
