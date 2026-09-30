@@ -161,6 +161,77 @@ fn spans(start: i32, end: i32, parts: u32, gap: i32) -> Vec<(i32, i32)> {
 mod tests {
     use super::*;
 
+    /// The cost the planner minimises, written out again here so the test
+    /// fails if the planner's arithmetic drifts from what it documents.
+    fn reference_cost(count: u32, area: Rect, gaps: Gaps, columns: u32) -> Option<f64> {
+        let body = area.shrink(gaps.outer);
+        let rows = count.div_ceil(columns);
+        let w = (f64::from(body.width()) - f64::from(columns - 1) * f64::from(gaps.inner))
+            / f64::from(columns);
+        let h = (f64::from(body.height()) - f64::from(rows - 1) * f64::from(gaps.inner))
+            / f64::from(rows);
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        Some(
+            (w / h / TARGET_ASPECT).ln().abs()
+                + f64::from(columns * rows - count) * EMPTY_CELL_COST,
+        )
+    }
+
+    #[test]
+    fn the_chosen_shape_is_the_cheapest_by_the_documented_cost() {
+        let areas = [
+            PORTRAIT,
+            LANDSCAPE,
+            Rect::new(0, 0, 1280, 720),
+            Rect::new(0, 0, 700, 2000),
+        ];
+        let gap_sets = [
+            Gaps::default(),
+            Gaps { outer: 0, inner: 0 },
+            Gaps {
+                outer: 40,
+                inner: 90,
+            },
+        ];
+        for area in areas {
+            for gaps in gap_sets {
+                for count in 2..=12 {
+                    let got = Grid::shape_for(count, area, gaps);
+                    let got_cost =
+                        reference_cost(count, area, gaps, got.columns).expect("a usable shape");
+                    for columns in 1..=count {
+                        if let Some(c) = reference_cost(count, area, gaps, columns) {
+                            assert!(
+                                got_cost <= c + 1e-12,
+                                "{count} in {area:?} {gaps:?}: {got:?} beaten by {columns} columns"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_shape_whose_cells_would_be_negative_is_never_chosen() {
+        // A narrow screen with huge gaps: four columns leave no room at all.
+        let area = Rect::new(0, 0, 300, 3000);
+        let gaps = Gaps {
+            outer: 24,
+            inner: 200,
+        };
+        assert_eq!(Grid::shape_for(4, area, gaps), shape(1, 4));
+    }
+
+    #[test]
+    fn a_forced_shape_is_obeyed() {
+        let cells = Grid::plan(6, PORTRAIT, Gaps::default(), Some(shape(3, 2)));
+        let top = cells[0].top;
+        assert_eq!(cells.iter().filter(|c| c.top == top).count(), 3);
+    }
+
     /// The portrait monitor's work area on the machine Daifuku was built on.
     const PORTRAIT: Rect = Rect::new(3840, 120, 4920, 1992);
     /// A 4K landscape monitor with a taskbar.
