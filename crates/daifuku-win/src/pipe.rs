@@ -88,7 +88,7 @@ impl Pipe {
     /// - Control: full access for SYSTEM and Administrators only, high label.
     fn sddl(self, elevated: bool) -> String {
         // Without a SID, which only a broken token gives, no user entry at
-        // all: SYSTEM and Administrators still reach the pipe.
+        // all; `instances` refuses to create a hook pipe like that.
         let user = |rights: &str| {
             crate::setup::user_sid()
                 .map(|sid| format!("(A;;{rights};;;{sid})"))
@@ -142,8 +142,15 @@ pub struct Connection<'a> {
 ///
 /// # Errors
 ///
-/// When the name is taken or the security descriptor is refused.
+/// When the name is taken or the security descriptor is refused, and for
+/// the hook pipe when this process cannot read its user's SID: every hook
+/// would be turned away without a word.
 pub fn instances(pipe: Pipe, count: usize) -> io::Result<Vec<Instance>> {
+    if pipe == Pipe::Hook && crate::setup::user_sid().is_none() {
+        return Err(io::Error::other(
+            "cannot read this user's SID to let their hooks in",
+        ));
+    }
     instances_at(
         &pipe.name(),
         &pipe.sddl(process::current_is_elevated()),
