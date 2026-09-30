@@ -149,7 +149,7 @@ impl Launch {
         }
         if let Some(d) = &self.directory {
             a.push("--startingDirectory".into());
-            a.push(d.as_os_str().to_owned());
+            a.push(escape(&d.to_string_lossy()).into());
         }
         if let Some(t) = &self.title {
             a.push("--title".into());
