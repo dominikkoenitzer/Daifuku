@@ -128,7 +128,7 @@ Colours are `#rrggbb`. A key left out takes the Catppuccin colour.
 
 | Key | Default | |
 |---|---|---|
-| `next_waiting` | `"ctrl + alt + n"` | Focus the agent that has waited longest, and after the waiting ones, the failed ones. Pressed again from the one it brought up, it moves on to the next. |
+| `next_waiting` | `"ctrl + alt + n"` | Focus the agent that has waited longest, and after the waiting ones, the failed ones. Pressed again from the one it brought up, while that agent still waits, it moves on to the next. |
 | `snap` | `"ctrl + alt + backspace"` | Put every fleet terminal back in its cell. |
 
 A hotkey is modifiers and one key, joined by `+`: `ctrl`, `alt`, `shift`,
