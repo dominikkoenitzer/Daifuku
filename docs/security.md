@@ -38,9 +38,9 @@ command line also checks that whoever answers on the pipe runs elevated before
 it sends anything, so a process that squatted the name cannot collect
 commands.
 
-**The hook pipe** takes state reports from agent hooks. The signed-in user
-may write data to it from a normal process (a medium label), and nothing
-more: not create server instances of it, so no other process can listen in
+**The hook pipe** takes state reports from agent hooks. The signed-in user,
+by their own SID, may write data to it from a normal process (a medium
+label), and nothing more; another person signed in at the same time may not: not create server instances of it, so no other process can listen in
 and collect the hooks' reports. Processes below medium integrity cannot write
 to it. A message names a window and an event, and the worst a forged one can
 do is colour or clear a border: the daemon only accepts a live, visible
@@ -72,17 +72,19 @@ Windows does not let it type into the administrator terminals that result.
 - No network access, no telemetry, no update check.
 - No code runs because of a hook message, a window title or anything else an
   agent or a terminal controls.
-- The installer never removes or rewrites a hook it did not add, and never
-  writes the settings file when nothing changed; `daifuku uninstall` removes
-  exactly the hooks that run a program called `daifuku.exe` with `hook`.
+- The installer changes only hooks that run a program called `daifuku.exe`
+  with `hook`, pointing them at the installed copy, and never writes the
+  settings file when nothing changed; `daifuku uninstall` removes exactly
+  those hooks. Every other hook is left as it is.
 - The installer runs as administrator but the profile is the user's, so it
   edits an agent's settings only when the file, with every link followed,
-  is inside the profile.
+  is inside the profile, and writes the new version into a fresh file that
+  cannot be a link.
 
 ## Checked on every push
 
 CI installs Daifuku on a real Windows runner and asserts that the data folder
 is owned by Administrators and not writable by users, that the task exists,
 that a user's own hook survives next to Daifuku's, that a second install
-changes nothing, and that the uninstall removes the task, the data and exactly
-Daifuku's hooks.
+changes nothing, and that `uninstall --purge` removes the task, the data and
+exactly Daifuku's hooks.
