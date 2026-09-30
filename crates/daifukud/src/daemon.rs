@@ -401,7 +401,7 @@ impl Daemon {
         }
         self.fleets.retain(|f| f.windows().next().is_some());
         self.refresh_borders();
-        Response::said(format!("snapped {snapped} terminals"))
+        Response::said(format!("snapped {}", fleet::terminals_count(snapped)))
     }
 
     fn close(&mut self, name: Option<&str>) -> Response {
@@ -431,7 +431,11 @@ impl Daemon {
                 closed += 1;
             }
         }
-        Response::said(format!("closed {closed} terminals of {}", record.name))
+        Response::said(format!(
+            "closed {} of {}",
+            fleet::terminals_count(closed),
+            record.name
+        ))
     }
 
     fn next(&mut self) -> Response {

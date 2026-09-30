@@ -30,7 +30,7 @@ const BINARIES: [&str; 2] = ["daifuku.exe", "daifukud.exe"];
 
 /// What `install` should skip.
 pub struct Options {
-    /// Leave Claude Code's settings alone.
+    /// Leave Claude Code's and Codex's settings alone.
     pub no_hooks: bool,
     /// Register the task but do not start the daemon now.
     pub no_start: bool,
@@ -124,6 +124,7 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         }
         match edit_json(&file, |s| Ok(agents::remove_hooks(s))) {
             Ok(0) => {}
+            Ok(1) => println!("removed      1 hook from {}", file.display()),
             Ok(n) => println!("removed      {n} hooks from {}", file.display()),
             Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
         }
