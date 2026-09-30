@@ -23,6 +23,9 @@ use crate::logging;
 /// likes; past this, new ones are ignored instead of growing the map forever.
 const MAX_SESSIONS: usize = 512;
 
+/// The built-in demo fleet's name.
+const DEMO: &str = "demo";
+
 /// How often dead windows are swept, in milliseconds. Destroy events do most
 /// of the work; this catches the ones Windows did not deliver.
 const SWEEP_MS: u32 = 2000;
@@ -291,45 +294,56 @@ impl Daemon {
                 None => "the config has no fleets".to_owned(),
             });
         };
-        let index = self
+        self.open_fleet(&fleet)
+    }
+
+    /// Opens a fleet, or brings back the one that is open. Its record goes
+    /// back into the list whatever happens, so a failure part way loses
+    /// neither the terminals that were open nor the ones just started.
+    fn open_fleet(&mut self, fleet: &daifuku_core::config::Fleet) -> Response {
+        let mut record = match self
             .fleets
             .iter()
-            .position(|f| f.name.eq_ignore_ascii_case(&fleet.name));
-        let current = index.map(|i| self.fleets.remove(i));
-        match fleet::open(&fleet, &self.config, current, self.elevated) {
-            Ok((record, message)) => {
+            .position(|f| f.name.eq_ignore_ascii_case(&fleet.name))
+        {
+            Some(i) => self.fleets.remove(i),
+            None => OpenFleet::new(&fleet.name),
+        };
+        let result = fleet::open(fleet, &self.config, &mut record, self.elevated);
+        if record.windows().next().is_some() {
+            self.fleets.push(record);
+        }
+        self.refresh_borders();
+        match result {
+            Ok(message) => {
                 tracing::info!(%message);
-                self.fleets.push(record);
-                self.refresh_borders();
                 Response::said(message)
             }
             Err(e) => Response::error(format!("{e:#}")),
         }
     }
 
-    /// Six scripted agents in a clean fleet on the first fleet's monitor. The script is `daifuku demo-agent`, from the folder this
-    /// daemon runs from, so an installed daemon only ever starts an installed
-    /// binary.
+    /// Six scripted agents in a clean fleet on the first fleet's monitor.
+    /// The script is `daifuku demo-agent`, from the folder this daemon runs
+    /// from, so an installed daemon only ever starts an installed binary.
     fn demo(&mut self) -> Response {
+        // Fleet names match in any case, so a configured fleet called `Demo`
+        // would share its record with the demo's terminals.
+        if self.config.fleet(DEMO).is_some() {
+            return Response::error(format!(
+                "the config has a fleet called `{DEMO}`: rename it to run the demo"
+            ));
+        }
         let Some(fleet) = self.demo_fleet() else {
             return Response::error("cannot find daifuku.exe next to the daemon");
         };
-        let index = self.fleets.iter().position(|f| f.name == "demo");
-        let current = index.map(|i| self.fleets.remove(i));
-        match fleet::open(&fleet, &self.config, current, self.elevated) {
-            Ok((record, message)) => {
-                self.fleets.push(record);
-                self.refresh_borders();
-                Response::said(message)
-            }
-            Err(e) => Response::error(format!("{e:#}")),
-        }
+        self.open_fleet(&fleet)
     }
 
     fn demo_fleet(&self) -> Option<daifuku_core::config::Fleet> {
         let exe = std::env::current_exe().ok()?.parent()?.join("daifuku.exe");
         Some(daifuku_core::config::Fleet {
-            name: "demo".to_owned(),
+            name: DEMO.to_owned(),
             count: 6,
             monitor: self
                 .config
@@ -353,7 +367,7 @@ impl Daemon {
     /// A fleet's definition: from the config, or the built-in demo.
     fn definition(&self, name: &str) -> Option<daifuku_core::config::Fleet> {
         self.config.fleet(name).cloned().or_else(|| {
-            if name == "demo" {
+            if name.eq_ignore_ascii_case(DEMO) {
                 self.demo_fleet()
             } else {
                 None
