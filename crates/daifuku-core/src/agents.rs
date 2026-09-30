@@ -162,29 +162,30 @@ fn is_daifuku(path: &str) -> bool {
 
 /// Removes every Daifuku hook, and any group or event list that held only
 /// Daifuku's. Returns how many hooks were removed. The same for both agents.
+///
+/// A group or list that was empty before stays: only removing Daifuku's
+/// hooks makes one go.
 pub fn remove_hooks(settings: &mut Value) -> usize {
     let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return 0;
     };
     let mut removed = 0;
-    for groups in hooks.values_mut() {
+    hooks.retain(|_, groups| {
         let Some(groups) = groups.as_array_mut() else {
-            continue;
+            return true;
         };
-        for group in groups.iter_mut() {
-            if let Some(hs) = group.get_mut("hooks").and_then(Value::as_array_mut) {
-                let before = hs.len();
-                hs.retain(|h| !is_ours(h));
-                removed += before - hs.len();
-            }
-        }
-        groups.retain(|g| {
-            g.get("hooks")
-                .and_then(Value::as_array)
-                .is_none_or(|hs| !hs.is_empty())
+        let had_groups = !groups.is_empty();
+        groups.retain_mut(|group| {
+            let Some(hs) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                return true;
+            };
+            let before = hs.len();
+            hs.retain(|h| !is_ours(h));
+            removed += before - hs.len();
+            before == 0 || !hs.is_empty()
         });
-    }
-    hooks.retain(|_, groups| groups.as_array().is_none_or(|g| !g.is_empty()));
+        !had_groups || !groups.is_empty()
+    });
     removed
 }
 
@@ -280,6 +281,20 @@ mod tests {
         CLAUDE.add_hooks(&mut s, EXE).unwrap();
         assert_eq!(remove_hooks(&mut s), CLAUDE.events.len());
         assert_eq!(s, users_file(), "back to the file as the user had it");
+    }
+
+    #[test]
+    fn uninstall_keeps_the_users_empty_groups_and_lists() {
+        // `SubagentStop` is not one of Daifuku's events.
+        let users = json!({"hooks": {
+            "PreToolUse": [{"matcher": "Bash", "hooks": []}],
+            "SubagentStop": [],
+            "Notification": [{"matcher": "x"}]
+        }});
+        let mut s = users.clone();
+        CLAUDE.add_hooks(&mut s, EXE).unwrap();
+        assert_eq!(remove_hooks(&mut s), CLAUDE.events.len());
+        assert_eq!(s, users, "only what Daifuku emptied goes");
     }
 
     #[test]
