@@ -86,6 +86,12 @@ pub fn system_dir() -> Option<PathBuf> {
     known(&FOLDERID_System)
 }
 
+/// The signed-in user's profile folder, `%USERPROFILE%`.
+#[must_use]
+pub fn profile_dir() -> Option<PathBuf> {
+    known(&FOLDERID_Profile)
+}
+
 /// Claude Code's user settings, `%USERPROFILE%\.claude\settings.json`.
 #[must_use]
 pub fn claude_settings() -> Option<PathBuf> {
