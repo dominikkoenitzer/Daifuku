@@ -80,6 +80,9 @@
 - A config saved as UTF-16, as Windows PowerShell's `>` writes it, is read.
 - A hotkey that did nothing, such as a fleet that could not open, beeps; the
   reason is in the log.
+- Without PowerShell 7, fleets start Windows PowerShell with
+  `-ExecutionPolicy RemoteSigned`, so a `claude` installed with npm runs;
+  Windows Terminal Canary is found as well.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
 ## 0.1.1, 2026-09-30
