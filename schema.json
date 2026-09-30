@@ -122,12 +122,12 @@
           ]
         },
         "state_widths": {
-          "description": "Draw each state at its own width, so a state reads without its\ncolour: at a width of 4, done is 2, working 4, failed 6 and waiting 8.",
+          "description": "Draw each state at its own width, so a state reads without its\ncolour: at a width of 4, done is 2, working 4, failed 6 and waiting 8.\nAlways on with a high contrast theme.",
           "type": "boolean",
           "default": true
         },
         "pulse": {
-          "description": "Let a waiting border breathe slowly, the one thing on screen that\nmoves. Off whenever Windows is set to show no animations.",
+          "description": "Let a waiting border breathe slowly, between 70 % and full brightness,\nthe one thing on screen that moves. Off whenever Windows is set to\nshow no animations or a high contrast theme is on.",
           "type": "boolean",
           "default": true
         }

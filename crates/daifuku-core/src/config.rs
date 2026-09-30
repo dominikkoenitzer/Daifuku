@@ -84,9 +84,11 @@ pub struct Border {
     pub colours: Option<StateColours>,
     /// Draw each state at its own width, so a state reads without its
     /// colour: at a width of 4, done is 2, working 4, failed 6 and waiting 8.
+    /// Always on with a high contrast theme.
     pub state_widths: bool,
-    /// Let a waiting border breathe slowly, the one thing on screen that
-    /// moves. Off whenever Windows is set to show no animations.
+    /// Let a waiting border breathe slowly, between 70 % and full brightness,
+    /// the one thing on screen that moves. Off whenever Windows is set to
+    /// show no animations or a high contrast theme is on.
     pub pulse: bool,
 }
 
