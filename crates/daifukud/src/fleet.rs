@@ -169,17 +169,23 @@ pub fn open(
     }
     let open_now = record.windows().count();
     let message = if empty.is_empty() {
-        format!("brought back {} ({open_now} terminals)", fleet.name)
+        format!(
+            "brought back {} ({})",
+            fleet.name,
+            terminals_count(open_now)
+        )
     } else if open_now < cells.len() {
         format!(
-            "opened {open_now} of {} terminals for {}: Windows Terminal did not show the rest in time",
-            cells.len(),
+            "opened {open_now} of {} for {}: Windows Terminal did not show the rest in time",
+            terminals_count(cells.len()),
             fleet.name
         )
     } else {
         format!(
-            "opened {} ({open_now} terminals on {})",
-            fleet.name, m.device
+            "opened {} ({} on {})",
+            fleet.name,
+            terminals_count(open_now),
+            m.device
         )
     };
     Ok(message)
@@ -219,6 +225,15 @@ pub fn snap(fleet: &Fleet, config: &Config, record: &mut OpenFleet) -> anyhow::R
     record.monitor = m.device;
     place_all(record, &cells);
     Ok(())
+}
+
+/// `1 terminal`, `4 terminals`.
+pub fn terminals_count(n: usize) -> String {
+    if n == 1 {
+        "1 terminal".to_owned()
+    } else {
+        format!("{n} terminals")
+    }
 }
 
 /// The folder a fleet starts in: its configured one, else the user's profile.
