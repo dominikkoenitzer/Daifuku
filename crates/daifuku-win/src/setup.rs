@@ -179,11 +179,15 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
 
 /// Registers the task from its XML, replacing any older version.
 ///
+/// `schtasks` reads the XML from a file, and that file is written into `dir`,
+/// which must be a folder only administrators can change: in the temp folder
+/// an ordinary process could swap it for a task that runs its own program.
+///
 /// # Errors
 ///
 /// When `schtasks` fails; its own message is in the error.
-pub fn create_task(name: &str, xml: &str) -> std::io::Result<()> {
-    let file = std::env::temp_dir().join(format!("daifuku-task-{}.xml", std::process::id()));
+pub fn create_task(name: &str, xml: &str, dir: &Path) -> std::io::Result<()> {
+    let file = dir.join("task.xml");
     // schtasks reads the XML as UTF-16 with a byte order mark.
     let mut bytes = vec![0xFF, 0xFE];
     for u in xml.encode_utf16() {
