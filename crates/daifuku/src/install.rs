@@ -242,12 +242,7 @@ pub fn doctor() -> bool {
                 "daemon elevated",
                 "start it through the logon task, not by hand",
             );
-            let refused: Vec<&str> = s
-                .hotkeys
-                .iter()
-                .filter(|h| h.contains("refused"))
-                .map(|h| h.split(':').next().unwrap_or(""))
-                .collect();
+            let refused = refused_hotkeys(&s.hotkeys);
             check(
                 refused.is_empty(),
                 "hotkeys registered",
@@ -269,6 +264,15 @@ pub fn doctor() -> bool {
         );
     }
     ok
+}
+
+/// The combinations the daemon's status lists as refused. Matched on the
+/// whole ending the daemon writes, so a fleet named `refused` is not one.
+fn refused_hotkeys(hotkeys: &[String]) -> Vec<&str> {
+    hotkeys
+        .iter()
+        .filter_map(|h| h.strip_suffix(": refused, another program holds it"))
+        .collect()
 }
 
 /// Asks a running daemon to stop and waits a moment for it to exit.
@@ -368,5 +372,15 @@ mod tests {
         let c = Config::from_json(&text).unwrap();
         assert!(c.schema.is_some());
         assert_eq!(c.fleets.len(), 1);
+    }
+
+    #[test]
+    fn only_refused_hotkeys_count_as_refused() {
+        let hotkeys = [
+            "Ctrl+Alt+1: open refused".to_owned(),
+            "Ctrl+Alt+N: next waiting agent".to_owned(),
+            "Ctrl+Alt+S: refused, another program holds it".to_owned(),
+        ];
+        assert_eq!(refused_hotkeys(&hotkeys), ["Ctrl+Alt+S"]);
     }
 }
