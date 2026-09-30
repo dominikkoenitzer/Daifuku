@@ -357,15 +357,28 @@ fn print_status(s: &daifuku_core::protocol::Status) {
     if s.agents.is_empty() {
         println!("  none reporting");
     }
-    for a in &s.agents {
+    // Most urgent first and the title before the handle, so a screen reader
+    // reaches the agent that needs you in the first words it reads.
+    for a in by_urgency(&s.agents) {
         println!(
-            "  {:<8} {:>8}  {:#010x}  {}",
+            "  {:<8} {:>8}  {}  ({:#010x})",
             a.state.name(),
             since(a.for_seconds),
-            a.window,
-            a.title
+            a.title,
+            a.window
         );
     }
+}
+
+/// The agents most urgent first: waiting, failed, working, done, and within
+/// each the one in that state longest first.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn by_urgency(
+    agents: &[daifuku_core::protocol::AgentWindow],
+) -> Vec<&daifuku_core::protocol::AgentWindow> {
+    let mut sorted: Vec<_> = agents.iter().collect();
+    sorted.sort_by_key(|a| (std::cmp::Reverse(a.state), std::cmp::Reverse(a.for_seconds)));
+    sorted
 }
 
 /// `1 terminal`, `3 terminals`: how many terminals a fleet has.
@@ -391,6 +404,27 @@ fn since(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_lists_the_agent_that_needs_you_first() {
+        use daifuku_core::protocol::AgentWindow;
+        use daifuku_core::state::AgentState;
+        let agent = |window, state, for_seconds| AgentWindow {
+            window,
+            title: String::new(),
+            state,
+            for_seconds,
+        };
+        let agents = [
+            agent(1, AgentState::Done, 90),
+            agent(2, AgentState::Waiting, 5),
+            agent(3, AgentState::Working, 10),
+            agent(4, AgentState::Waiting, 40),
+            agent(5, AgentState::Failed, 1),
+        ];
+        let order: Vec<u64> = by_urgency(&agents).iter().map(|a| a.window).collect();
+        assert_eq!(order, [4, 2, 5, 3, 1]);
+    }
     use clap::CommandFactory;
 
     #[test]
