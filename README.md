@@ -28,7 +28,10 @@ folder you unzipped the release to:
 
 This copies Daifuku to `Program Files`, starts it at every logon, and adds its
 hooks to Claude Code's settings (and Codex's, if Codex is installed). Your own
-hooks stay exactly as they are.
+hooks stay exactly as they are. A settings file behind a link that leads out
+of your profile is left alone, and the installer says so. A
+`ProgramData\Daifuku` folder that an earlier install did not lock is deleted
+first, config included.
 
 ```powershell
 daifuku doctor
@@ -58,10 +61,10 @@ checks them. [docs/configuration.md](docs/configuration.md) has every key.
 |---|---|---|
 | `count` | `6` | 1 to 16 terminals |
 | `monitor` | `"portrait"` | `portrait`, `landscape`, `primary`, `secondary`, `cursor`, or a device name |
-| `command` | `"claude"` | what each terminal runs; `{n}` is its number; `null` for a plain shell |
-| `directory` | your profile | where the terminals start |
+| `command` | `"claude"` | the PowerShell command each terminal runs; `{n}` is its number; `null` for a plain shell |
+| `directory` | your profile | where the terminals start; `{n}` is its number |
 | `admin` | `true` | open as administrator |
-| `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet |
+| `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet; a second fleet needs its own, or `null` |
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
 
 Gaps are in `gaps`, the look of the borders in `border`, the global keys in
