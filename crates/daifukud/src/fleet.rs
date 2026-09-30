@@ -259,6 +259,15 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_terminal_leaves_its_slot_empty_and_the_rest_in_place() {
+        let mut record = OpenFleet::new("agents");
+        record.slots = vec![Some(1), Some(2), Some(3)];
+        record.forget(2);
+        assert_eq!(record.slots, vec![Some(1), None, Some(3)]);
+        assert_eq!(record.windows().collect::<Vec<_>>(), vec![1, 3]);
+    }
+
+    #[test]
     fn a_missing_numbered_folder_falls_back_instead_of_failing() {
         let fleet = Fleet {
             directory: Some(r"C:\no\such\place-{n}".into()),
