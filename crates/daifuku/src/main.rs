@@ -208,9 +208,15 @@ fn hook() {
     {
         return;
     }
-    let Ok(event) = HookEvent::from_hook_input(&input) else {
+    let Ok(mut event) = HookEvent::from_hook_input(&input) else {
         return;
     };
+    // Stamped before anything slow, so the order of the stamps is the order
+    // the agent ran its hooks in.
+    event.daifuku_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_nanos() / 100).ok());
     // An event that changes nothing is not worth a process walk.
     if event.transition() == Transition::Ignore {
         return;

@@ -50,7 +50,7 @@ impl AgentState {
 /// One hook call as the agent reported it: the fields Daifuku reads from the
 /// JSON a hook receives on standard input. Everything else in that JSON is
 /// ignored, so a newer agent adding fields changes nothing here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookEvent {
     /// The agent's own session id, stable for the life of the session.
     pub session_id: String,
@@ -59,6 +59,15 @@ pub struct HookEvent {
     /// Set on `Notification` events: `permission_prompt`, `idle_prompt`, ...
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_type: Option<String>,
+    /// Set on `Stop` events: why the model stopped. `tool_use` is a pause in
+    /// the middle of a turn, not its end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    /// When the hook started, in 100 ns ticks since 1970, stamped by
+    /// `daifuku hook` itself. Agents run their hooks in the background and
+    /// they may finish out of order; this puts them back in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daifuku_at: Option<u64>,
 }
 
 /// What an event means for the session that sent it.
@@ -92,7 +101,9 @@ impl HookEvent {
     ///   the agent carries on and tries something else.
     /// - A permission prompt is up, or an MCP server is asking a question:
     ///   **waiting**. A denied permission puts it back to work.
-    /// - The turn ended: **done**. It ended on an error: **failed**.
+    /// - The turn ended: **done**, unless the model only paused to call
+    ///   tools. It ended on an error: **failed**. A rate-limited session
+    ///   that resumed by itself is working again.
     /// - The session closed: forget it.
     #[must_use]
     pub fn transition(&self) -> Transition {
@@ -108,8 +119,10 @@ impl HookEvent {
                     | "elicitation_url_dialog"
                     | "agent_needs_input",
                 ) => Transition::To(AgentState::Waiting),
+                Some("quota_auto_resume_fired") => Transition::To(AgentState::Working),
                 _ => Transition::Ignore,
             },
+            "Stop" if self.stop_reason.as_deref() == Some("tool_use") => Transition::Ignore,
             // Codex reports a turn the user interrupted as an event of its
             // own; the agent is idle either way.
             "SessionStart" | "Stop" | "Interrupt" => Transition::To(AgentState::Done),
@@ -127,6 +140,9 @@ impl HookEvent {
 #[derive(Debug, Clone)]
 pub struct Agents<W: Ord + Copy> {
     sessions: BTreeMap<String, Session<W>>,
+    /// The latest hook time of sessions that ended, so a late event of one
+    /// does not bring it back. Oldest first, at most [`ENDED`] of them.
+    ended: std::collections::VecDeque<(String, u64)>,
     /// Bumped on every change, so "the oldest waiting window" is well defined
     /// without a clock.
     tick: u64,
@@ -138,12 +154,19 @@ struct Session<W> {
     state: AgentState,
     /// The tick the session entered its current state.
     since: u64,
+    /// The hook time of the latest event applied, when hooks stamp one.
+    at: Option<u64>,
 }
+
+/// How many ended sessions [`Agents`] remembers to turn away their late
+/// events.
+const ENDED: usize = 256;
 
 impl<W: Ord + Copy> Default for Agents<W> {
     fn default() -> Self {
         Self {
             sessions: BTreeMap::new(),
+            ended: std::collections::VecDeque::new(),
             tick: 0,
         }
     }
@@ -159,12 +182,21 @@ impl<W: Ord + Copy> Agents<W> {
     /// Applies one hook event from a session running in `window`, and says
     /// whether any window's state changed as a result.
     pub fn apply(&mut self, window: W, event: &HookEvent) -> bool {
+        if self.is_late(event) {
+            return false;
+        }
         let before = self.window_state(window);
         let moved_from = self.sessions.get(&event.session_id).map(|s| s.window);
         match event.transition() {
             Transition::Ignore => return false,
             Transition::End => {
                 self.sessions.remove(&event.session_id);
+                if let Some(at) = event.daifuku_at {
+                    if self.ended.len() == ENDED {
+                        self.ended.pop_front();
+                    }
+                    self.ended.push_back((event.session_id.clone(), at));
+                }
             }
             Transition::To(state) => {
                 self.tick += 1;
@@ -176,12 +208,14 @@ impl<W: Ord + Copy> Agents<W> {
                         window,
                         state,
                         since: tick,
+                        at: None,
                     });
                 if entry.state != state || entry.window != window {
                     entry.since = tick;
                 }
                 entry.window = window;
                 entry.state = state;
+                entry.at = entry.at.max(event.daifuku_at);
             }
         }
         let changed_here = self.window_state(window) != before;
@@ -189,6 +223,21 @@ impl<W: Ord + Copy> Agents<W> {
         // window of its own) also changes the window it left.
         let changed_there = moved_from.is_some_and(|w| w != window);
         changed_here || changed_there
+    }
+
+    /// Whether an event was sent before one already applied for its session,
+    /// or before its session ended: it arrived late and is old news.
+    fn is_late(&self, event: &HookEvent) -> bool {
+        let Some(at) = event.daifuku_at else {
+            return false;
+        };
+        match self.sessions.get(&event.session_id) {
+            Some(s) => s.at.is_some_and(|last| at < last),
+            None => self
+                .ended
+                .iter()
+                .any(|(id, end)| *id == event.session_id && at <= *end),
+        }
     }
 
     /// Forgets every session in a window that no longer exists. Windows reuse
@@ -341,8 +390,58 @@ mod tests {
         HookEvent {
             session_id: session.into(),
             hook_event_name: name.into(),
-            notification_type: None,
+            ..HookEvent::default()
         }
+    }
+
+    fn at(event: HookEvent, at: u64) -> HookEvent {
+        HookEvent {
+            daifuku_at: Some(at),
+            ..event
+        }
+    }
+
+    #[test]
+    fn a_late_event_does_not_undo_a_newer_one() {
+        let mut a = Agents::new();
+        a.apply(1, &at(ev("s", "PreToolUse"), 10));
+        a.apply(1, &at(ev("s", "Stop"), 30));
+        // The tool hook, started before the stop, finishes after it.
+        assert!(!a.apply(1, &at(ev("s", "PostToolUse"), 20)));
+        assert_eq!(a.window_state(1), Some(AgentState::Done));
+        // Unstamped events, from an older hook, are applied as they come.
+        a.apply(1, &ev("s", "PostToolUse"));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
+    }
+
+    #[test]
+    fn a_late_event_does_not_bring_an_ended_session_back() {
+        let mut a = Agents::new();
+        a.apply(1, &at(ev("s", "PreToolUse"), 10));
+        a.apply(1, &at(ev("s", "SessionEnd"), 30));
+        assert!(!a.apply(1, &at(ev("s", "PostToolUse"), 20)));
+        assert_eq!(a.window_state(1), None);
+        // A session that starts again later is a new one.
+        a.apply(1, &at(ev("s", "SessionStart"), 40));
+        assert_eq!(a.window_state(1), Some(AgentState::Done));
+    }
+
+    #[test]
+    fn a_stop_to_call_tools_is_not_the_end_of_the_turn() {
+        let pause = HookEvent {
+            stop_reason: Some("tool_use".into()),
+            ..ev("s", "Stop")
+        };
+        assert_eq!(pause.transition(), Transition::Ignore);
+        let end = HookEvent {
+            stop_reason: Some("end_turn".into()),
+            ..ev("s", "Stop")
+        };
+        assert_eq!(end.transition(), Transition::To(AgentState::Done));
+        assert_eq!(
+            note("s", "quota_auto_resume_fired").transition(),
+            Transition::To(AgentState::Working)
+        );
     }
 
     fn note(session: &str, kind: &str) -> HookEvent {
