@@ -27,5 +27,15 @@ pub fn init(dir: Option<&Path>) -> Option<WorkerGuard> {
         .with_ansi(false)
         .try_init()
         .ok()?;
+    // With no console, a panic would otherwise leave no trace at all.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(
+            panic = %info,
+            backtrace = %std::backtrace::Backtrace::force_capture(),
+            "daifukud panicked"
+        );
+        previous(info);
+    }));
     Some(guard)
 }
