@@ -3,11 +3,11 @@
 #   cargo install cargo-deny --locked
 #   cargo deny check
 #
-# The graph is pinned to the only target Daifuku ships for, so a Linux-only
+# The graph is pinned to the targets Daifuku ships for, so a Linux-only
 # dependency of a dependency never has to be audited or licensed here.
 
 [graph]
-targets = ["x86_64-pc-windows-msvc"]
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 all-features = true
 
 [output]
