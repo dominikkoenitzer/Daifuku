@@ -3,8 +3,10 @@
 //! The daemon runs elevated, so where it finds its programs matters: anything
 //! it starts, starts as administrator. It therefore never searches `PATH`,
 //! which has folders an ordinary process can write to. Windows Terminal is
-//! looked up through its package, whose folder only the system can change,
-//! and PowerShell through the Program Files and System32 known folders.
+//! looked up through its package, and only a package the system installed
+//! from a signed source counts: one registered from loose files in developer
+//! mode can sit in any folder, including one the user can write. PowerShell is
+//! found through the Program Files and System32 known folders.
 
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
@@ -18,7 +20,9 @@ use windows::Win32::Security::{
     TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY, TokenPrimary,
 };
 use windows::Win32::Storage::Packaging::Appx::{
-    FindPackagesByPackageFamily, GetPackagePathByFullName, PACKAGE_FILTER_HEAD,
+    FindPackagesByPackageFamily, GetPackagePathByFullName, GetStagedPackageOrigin,
+    PACKAGE_FILTER_HEAD, PackageOrigin, PackageOrigin_Inbox, PackageOrigin_LineOfBusiness,
+    PackageOrigin_Store,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::{
@@ -85,6 +89,12 @@ fn package_path(family: &str) -> Option<PathBuf> {
             return None;
         }
         let full_name = names.first().copied()?;
+        let mut origin = PackageOrigin::default();
+        if GetStagedPackageOrigin(PCWSTR(full_name.0), &raw mut origin).is_err()
+            || !trusted_origin(origin)
+        {
+            return None;
+        }
         let mut path_len = 0u32;
         let _ = GetPackagePathByFullName(PCWSTR(full_name.0), &raw mut path_len, None);
         let mut path = vec![0u16; path_len as usize];
@@ -97,6 +107,19 @@ fn package_path(family: &str) -> Option<PathBuf> {
         .ok()?;
         Some(PathBuf::from(from_wide(&path)))
     }
+}
+
+/// Whether a package came from where only the system puts packages: shipped
+/// with Windows, from the Store, or a signed package installed the ordinary
+/// way. Not a developer-mode registration, signed or not, and not an unsigned
+/// package.
+fn trusted_origin(origin: PackageOrigin) -> bool {
+    [
+        PackageOrigin_Inbox,
+        PackageOrigin_Store,
+        PackageOrigin_LineOfBusiness,
+    ]
+    .contains(&origin)
 }
 
 fn known_folder(id: &windows::core::GUID) -> Option<PathBuf> {
@@ -356,6 +379,35 @@ mod tests {
         };
         let args = strs(&l.args(Some(Path::new("pwsh.exe"))));
         assert_eq!(args.last().map(String::as_str), Some(r"cd x\; claude"));
+    }
+
+    #[test]
+    fn a_semicolon_in_the_folder_cannot_split_it_either() {
+        let l = Launch {
+            directory: Some(r"C:\src;b".into()),
+            ..Launch::default()
+        };
+        let args = strs(&l.args(None));
+        assert!(args.contains(&r"C:\src\;b".to_owned()), "{args:?}");
+    }
+
+    #[test]
+    fn only_packages_the_system_installed_count() {
+        use windows::Win32::Storage::Packaging::Appx::{
+            PackageOrigin_DeveloperSigned, PackageOrigin_DeveloperUnsigned, PackageOrigin_Unknown,
+            PackageOrigin_Unsigned,
+        };
+        assert!(trusted_origin(PackageOrigin_Store));
+        assert!(trusted_origin(PackageOrigin_Inbox));
+        assert!(trusted_origin(PackageOrigin_LineOfBusiness));
+        for o in [
+            PackageOrigin_DeveloperSigned,
+            PackageOrigin_DeveloperUnsigned,
+            PackageOrigin_Unsigned,
+            PackageOrigin_Unknown,
+        ] {
+            assert!(!trusted_origin(o), "{o:?}");
+        }
     }
 
     #[test]
