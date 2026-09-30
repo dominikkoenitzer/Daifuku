@@ -7,10 +7,11 @@ each window's border shows what its agent is doing.
 
 - **Ctrl+Alt+Enter** opens six terminals running Claude Code, in a grid on the
   monitor you choose.
-- Each border shows its agent: **blue** working, **yellow** waiting for you,
-  **green** done, **red** failed.
-- **Ctrl+Alt+N** jumps to the agent that has waited longest, then to failed
-  ones. Press it again for the next one.
+- Each border shows its agent: **blue** working, **yellow** waiting for you at
+  a permission prompt or a question, **green** done (its turn is over, or it
+  has just started), **red** its turn ended on an error, such as a rate limit.
+- **Ctrl+Alt+N** visits the waiting agents first, longest waiting first, then
+  the failed ones. Press it again for the next one.
 - **Ctrl+Alt+Backspace** puts every terminal back in its cell.
 
 It works with Claude Code and Codex, in Windows Terminal. Fleets open as
