@@ -477,6 +477,25 @@ pub enum ConfigError {
     Size(String),
 }
 
+/// A config file's bytes as text: UTF-8, or UTF-16 when the file starts with
+/// its byte order mark, as Windows PowerShell's `>` and `Out-File` write it.
+///
+/// # Errors
+///
+/// `InvalidData` when the bytes are neither.
+pub fn decode(bytes: &[u8]) -> std::io::Result<String> {
+    let invalid = |e: String| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
+        let units: Vec<u16> = rest.chunks_exact(2).map(|c| unit([c[0], c[1]])).collect();
+        String::from_utf16(&units).map_err(|e| invalid(e.to_string()))
+    };
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        _ => String::from_utf8(bytes.to_vec()).map_err(|e| invalid(e.to_string())),
+    }
+}
+
 impl Config {
     /// Reads and validates a config file's text. An empty or whitespace-only
     /// file is the default config. A byte order mark, which Notepad and other
@@ -626,6 +645,20 @@ mod tests {
             (6, true, Some("claude"))
         );
         assert_eq!(f.monitor, MonitorPick::Portrait);
+    }
+
+    #[test]
+    fn a_utf16_file_reads_like_a_utf8_one() {
+        let text = "{\"fleets\":[{\"name\":\"ä\"}]}";
+        let mut le = vec![0xFF, 0xFE];
+        le.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut be = vec![0xFE, 0xFF];
+        be.extend(text.encode_utf16().flat_map(u16::to_be_bytes));
+        for bytes in [le, be, text.as_bytes().to_vec()] {
+            let c = Config::from_json(&decode(&bytes).unwrap()).unwrap();
+            assert_eq!(c.fleets[0].name, "ä");
+        }
+        assert!(decode(&[0xC3]).is_err());
     }
 
     #[test]

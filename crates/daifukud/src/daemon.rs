@@ -175,7 +175,9 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
 impl Daemon {
     fn load_config(&mut self) {
         self.config_stamp = stamp(&self.config_path);
-        let text = match std::fs::read_to_string(&self.config_path) {
+        let text = match std::fs::read(&self.config_path)
+            .and_then(|b| daifuku_core::config::decode(&b))
+        {
             Ok(t) => {
                 self.config_failed = None;
                 t

@@ -215,11 +215,14 @@ pub fn doctor() -> bool {
     );
 
     // No file is the default config; a file that cannot be read is not.
-    let config = paths::config_file().map(|p| match std::fs::read_to_string(&p) {
-        Ok(text) => Config::from_json(&text).map_err(|e| e.to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-        Err(e) => Err(format!("{}: {e}", p.display())),
-    });
+    let config =
+        paths::config_file().map(
+            |p| match std::fs::read(&p).and_then(|b| config::decode(&b)) {
+                Ok(text) => Config::from_json(&text).map_err(|e| e.to_string()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+                Err(e) => Err(format!("{}: {e}", p.display())),
+            },
+        );
     match config {
         Some(Ok(_)) => check(true, "config valid", ""),
         Some(Err(e)) => check(false, "config valid", &e),
