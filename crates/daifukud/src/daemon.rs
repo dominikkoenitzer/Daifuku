@@ -212,6 +212,8 @@ impl Daemon {
         };
         if let Response::Error { message } = result {
             tracing::warn!(%message, "hotkey failed");
+            // A key that did nothing says so; the reason is in the log.
+            access::refused();
         }
     }
 
