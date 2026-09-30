@@ -6,14 +6,17 @@ use std::process::Command;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    SE_FILE_OBJECT, SetNamedSecurityInfoW,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+    SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
-    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-    GetTokenInformation, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
-    UNPROTECTED_DACL_SECURITY_INFORMATION,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, GetAce, GetTokenInformation,
+    IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+};
+use windows::Win32::Storage::FileSystem::{
+    CreateDirectoryW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, READ_CONTROL,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::{PCWSTR, PWSTR};
@@ -54,25 +57,48 @@ pub fn user_sid() -> Option<String> {
 /// `%ProgramData%`, which lets every user create files.
 const FOLDER_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
 
-/// Creates `dir` if needed and makes it a folder only administrators can
-/// change, including everything already in it.
+/// Makes `dir` a folder only administrators can change, and returns whether
+/// what was already there had to be removed.
 ///
-/// Ownership matters as much as the access list: the owner of a file may
-/// always rewrite its access list. A folder or file that an ordinary process
-/// created before the install would keep that process's owner, and with it a
-/// way back in. So the folder and every entry under it are given to the
-/// Administrators group, and the entries' own access lists are replaced by
-/// what they inherit from the folder.
+/// `%ProgramData%` lets every user create folders, so an ordinary process may
+/// have made `dir` before the install, filled it with a config of its own, or
+/// made it a link to somewhere else. Taking such a folder over would keep what
+/// it holds, and changing the security of a link changes whatever it points
+/// to. So a folder is kept, with everything in it, only when it is a real
+/// folder that an administrator owns and no one else may write: one this
+/// installer made before. Anything else at `dir` is deleted without following
+/// links in it, and a new folder is created with the access list already in
+/// place, so it is never open to anyone.
 ///
 /// # Errors
 ///
-/// When the folder cannot be created or a security call is refused.
-pub fn harden_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+/// When the old folder cannot be removed, the new one cannot be created
+/// (also when something appeared at `dir` in between), or a security call is
+/// refused.
+pub fn harden_dir(dir: &Path) -> std::io::Result<bool> {
+    let removed = match trusted(dir) {
+        Ok(true) => return Ok(false),
+        Ok(false) => {
+            // Does not follow links: a link is removed, not its target.
+            match std::fs::remove_dir_all(dir) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => {
+                    std::fs::remove_file(dir)?;
+                }
+                r => r?,
+            }
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e),
+    };
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let sddl = to_wide(FOLDER_SDDL);
+    let path = to_wide(&dir.to_string_lossy());
     let mut sd = PSECURITY_DESCRIPTOR::default();
-    // SAFETY: sddl is NUL terminated; sd is freed at the end. The owner and
-    // DACL pointers point into sd and are only used while it lives.
+    // SAFETY: both strings are NUL terminated; sd lives until it is freed
+    // after the folder is created.
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             PCWSTR(sddl.as_ptr()),
@@ -81,100 +107,128 @@ pub fn harden_dir(dir: &Path) -> std::io::Result<()> {
             None,
         )
         .map_err(std::io::Error::other)?;
-        let mut owner = PSID::default();
-        let mut defaulted = false.into();
-        GetSecurityDescriptorOwner(sd, &raw mut owner, &raw mut defaulted)
-            .map_err(std::io::Error::other)?;
-        let mut present = false.into();
-        let mut dacl: *mut ACL = std::ptr::null_mut();
-        GetSecurityDescriptorDacl(sd, &raw mut present, &raw mut dacl, &raw mut defaulted)
-            .map_err(std::io::Error::other)?;
-
-        let result = (|| {
-            set(
-                dir,
-                OWNER_SECURITY_INFORMATION
-                    | DACL_SECURITY_INFORMATION
-                    | PROTECTED_DACL_SECURITY_INFORMATION,
-                owner,
-                dacl,
-            )?;
-            // Every entry below: owner Administrators, no access list of its
-            // own, only what it inherits from the folder.
-            let empty = empty_acl();
-            for entry in walk(dir) {
-                set(
-                    &entry,
-                    OWNER_SECURITY_INFORMATION
-                        | DACL_SECURITY_INFORMATION
-                        | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                    owner,
-                    empty.as_ptr().cast_mut().cast(),
-                )?;
-            }
-            Ok(())
-        })();
-        let _ = LocalFree(Some(HLOCAL(sd.0)));
-        result
-    }
-}
-
-/// An ACL with no entries, as a buffer: a header of revision 2 and nothing
-/// else. Passing it with `UNPROTECTED_DACL_SECURITY_INFORMATION` leaves an
-/// object with exactly the entries it inherits.
-fn empty_acl() -> Vec<u64> {
-    // ACL header: AclRevision u8, Sbz1 u8, AclSize u16, AceCount u16, Sbz2 u16.
-    // Eight bytes, kept in a u64 so the buffer is aligned.
-    let size: u16 = 8;
-    let header = u64::from(2u8) | (u64::from(size) << 16);
-    vec![header]
-}
-
-fn set(
-    path: &Path,
-    what: windows::Win32::Security::OBJECT_SECURITY_INFORMATION,
-    owner: PSID,
-    dacl: *mut ACL,
-) -> std::io::Result<()> {
-    let p = to_wide(&path.to_string_lossy());
-    // SAFETY: p is NUL terminated; owner and dacl are valid for the call.
-    let r = unsafe {
-        SetNamedSecurityInfoW(
-            PCWSTR(p.as_ptr()),
-            SE_FILE_OBJECT,
-            what,
-            Some(owner),
-            None,
-            Some(dacl),
-            None,
-        )
-    };
-    if r.is_err() {
-        return Err(std::io::Error::from_raw_os_error(
-            i32::try_from(r.0).unwrap_or(-1),
-        ));
-    }
-    Ok(())
-}
-
-/// Every file and folder under `dir`, not following links out of it.
-fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0),
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: false.into(),
         };
-        for e in entries.flatten() {
-            let path = e.path();
-            let is_real_dir = e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink());
-            out.push(path.clone());
-            if is_real_dir {
-                stack.push(path);
+        // Fails when anything exists at the path, so a folder someone made
+        // after the removal above is never taken over.
+        let r = CreateDirectoryW(PCWSTR(path.as_ptr()), Some(&raw const attributes));
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        r.map_err(std::io::Error::from)?;
+    }
+    Ok(removed)
+}
+
+/// Whether `dir` is a real folder, not a link, owned by Administrators or
+/// SYSTEM, with an access list that lets no one else write, delete or change
+/// it. The folder is opened without following a link, so its answer is about
+/// the folder at `dir` itself.
+///
+/// # Errors
+///
+/// When `dir` cannot be opened, `NotFound` when there is nothing there.
+fn trusted(dir: &Path) -> std::io::Result<bool> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+
+    let file = std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL.0 | FILE_READ_ATTRIBUTES.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(dir)?;
+    let attributes = file.metadata()?.file_attributes();
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || attributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+    {
+        return Ok(false);
+    }
+    let mut owner = PSID::default();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: the handle is open for the call; owner and dacl point into sd,
+    // which is freed after the last use of either.
+    unsafe {
+        let r = GetSecurityInfo(
+            HANDLE(file.as_raw_handle()),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            Some(&raw mut owner),
+            None,
+            Some(&raw mut dacl),
+            None,
+            Some(&raw mut sd),
+        );
+        if r.is_err() {
+            return Err(std::io::Error::from_raw_os_error(
+                i32::try_from(r.0).unwrap_or(-1),
+            ));
+        }
+        let ok = is_admin(owner) && !dacl.is_null() && only_admins_write(dacl);
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        Ok(ok)
+    }
+}
+
+/// Whether the SID is Administrators or SYSTEM.
+///
+/// # Safety
+///
+/// `sid` must point to a valid SID.
+unsafe fn is_admin(sid: PSID) -> bool {
+    // SAFETY: as the caller promises.
+    unsafe {
+        IsWellKnownSid(sid, WinBuiltinAdministratorsSid).as_bool()
+            || IsWellKnownSid(sid, WinLocalSystemSid).as_bool()
+    }
+}
+
+/// Whether every entry of the access list that grants a right to change the
+/// folder or what is in it grants it to Administrators or SYSTEM. An entry of
+/// a kind this does not read counts as granting everything.
+///
+/// # Safety
+///
+/// `dacl` must point to a valid ACL.
+unsafe fn only_admins_write(dacl: *mut ACL) -> bool {
+    /// Write data, append, write extended attributes, delete a child, write
+    /// attributes, delete, change the access list, take ownership, and the
+    /// generic write and all.
+    const WRITE: u32 = 0x2
+        | 0x4
+        | 0x10
+        | 0x40
+        | 0x100
+        | 0x1_0000
+        | 0x4_0000
+        | 0x8_0000
+        | 0x1000_0000
+        | 0x4000_0000;
+    const ALLOWED: u8 = 0;
+    const DENIED: u8 = 1;
+    // SAFETY: as the caller promises; GetAce only hands out entries inside
+    // the list, each starting with its header.
+    unsafe {
+        for i in 0..u32::from((*dacl).AceCount) {
+            let mut ace: *mut std::ffi::c_void = std::ptr::null_mut();
+            if GetAce(dacl, i, &raw mut ace).is_err() {
+                return false;
+            }
+            let header = &*ace.cast::<ACE_HEADER>();
+            match header.AceType {
+                DENIED => {}
+                ALLOWED => {
+                    let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+                    let sid = PSID((&raw const allowed.SidStart).cast_mut().cast());
+                    if allowed.Mask & WRITE != 0 && !is_admin(sid) {
+                        return false;
+                    }
+                }
+                _ => return false,
             }
         }
     }
-    out
+    true
 }
 
 /// Registers the task from its XML, replacing any older version.
@@ -269,13 +323,39 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_acl_is_a_bare_header() {
-        let acl = empty_acl();
-        // SAFETY: reading the header bytes of our own buffer.
-        let bytes: [u8; 8] = acl[0].to_le_bytes();
-        assert_eq!(bytes[0], 2, "revision");
-        assert_eq!(u16::from_le_bytes([bytes[2], bytes[3]]), 8, "size");
-        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 0, "no entries");
+    fn a_folder_this_user_made_is_not_trusted_and_nothing_is_not_there() {
+        let dir = std::env::temp_dir().join(format!("daifuku-trust-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        assert!(!trusted(&dir).unwrap());
+        std::fs::remove_dir(&dir).unwrap();
+        assert_eq!(
+            trusted(&dir).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn a_link_is_judged_as_a_link_not_as_its_target() {
+        // A junction, which any user may make, to a folder with a config in
+        // it.
+        let base = std::env::temp_dir().join(format!("daifuku-link-{}", std::process::id()));
+        let target = base.join("target");
+        let link = base.join("link");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("daifuku.json"), "{}").unwrap();
+        let made = Command::new(system32().join("cmd.exe"))
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert!(!trusted(&link).unwrap());
+        // What harden_dir removes: the junction goes, its target stays.
+        std::fs::remove_dir_all(&link).unwrap();
+        assert!(!link.exists());
+        assert!(target.join("daifuku.json").is_file());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

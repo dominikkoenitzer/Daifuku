@@ -8,7 +8,8 @@
 //!    The daemon runs elevated, so a binary an ordinary process could swap
 //!    would hand that process administrator rights at the next logon.
 //! 3. Lock `%ProgramData%\Daifuku` to administrators, for the same reason,
-//!    and write a starter config there if there is none.
+//!    and write a starter config there if there is none. A folder there that
+//!    an earlier install did not lock is removed first, config and all.
 //! 4. Register the logon task that starts the daemon elevated, and start it.
 //! 5. Add the hooks to Claude Code's settings and, if Codex is installed,
 //!    to Codex's, leaving everything else in each file as it was.
@@ -60,13 +61,19 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
         println!("installed    {}", to.display());
     }
 
-    setup::harden_dir(&data).with_context(|| format!("could not lock {}", data.display()))?;
+    let removed =
+        setup::harden_dir(&data).with_context(|| format!("could not lock {}", data.display()))?;
+    if removed {
+        println!(
+            "removed      {} (not locked by an earlier install, so nothing in it was trusted)",
+            data.display()
+        );
+    }
     let config = data.join("daifuku.json");
     if config.is_file() {
         println!("kept config  {}", config.display());
     } else {
         std::fs::write(&config, starter_config())?;
-        setup::harden_dir(&data)?;
         println!("wrote config {}", config.display());
     }
 
