@@ -46,8 +46,8 @@ pub struct Config {
     pub hotkeys: Hotkeys,
     /// The fleets, each with its own hotkey.
     pub fleets: Vec<Fleet>,
-    /// Play the system notification sound when an agent starts waiting for
-    /// you, for when you are not looking at the screen.
+    /// Play Windows' Asterisk sound when an agent starts waiting for you,
+    /// for when you are not looking at the screen.
     pub sound: bool,
 }
 
