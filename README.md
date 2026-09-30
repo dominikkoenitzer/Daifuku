@@ -30,8 +30,11 @@ and unzip it. From an administrator terminal, in that folder:
 ```
 
 This copies Daifuku to `Program Files`, starts it at every logon, and adds its
-hooks to Claude Code's settings (and Codex's, if Codex is installed). Your own
-hooks stay exactly as they are. A settings file behind a link that leads out
+hooks to `%USERPROFILE%\.claude\settings.json` (and to Codex's
+`%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
+exactly as they are. Claude Code sessions that are already open normally pick
+the hooks up by themselves; restart one whose border stays blank. Codex runs
+new hooks only after you trust them in its `/hooks` menu. A settings file behind a link that leads out
 of your profile is left alone, and the installer says so. A
 `ProgramData\Daifuku` folder that an earlier install did not lock is deleted
 first, config included.
