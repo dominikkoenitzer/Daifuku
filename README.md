@@ -39,7 +39,7 @@ exactly as they are. Claude Code sessions that are already open normally pick
 the hooks up by themselves; restart one that still shows no border. Codex runs
 new hooks only after you trust them in its `/hooks` menu. A settings file
 behind a link that leads out of your profile is left alone, and the installer
-says so.
+says so (after 0.1.1).
 
 The installer does not add Daifuku to `PATH`, so run its commands by their
 full path:
@@ -56,7 +56,7 @@ real agent, `demo` in place of `doctor` opens six scripted ones. Below,
 To update, unzip the new release and run `.\daifuku.exe install` there; your
 config and hooks are kept. Only a `ProgramData\Daifuku` folder that no Daifuku
 install locked, such as one another program made, is deleted and made anew,
-with any config in it.
+with any config in it (after 0.1.1).
 
 ## Configure
 
@@ -86,7 +86,7 @@ checks them. [docs/configuration.md](docs/configuration.md) has every key.
 | `count` | `6` | 1 to 16 terminals |
 | `monitor` | `"portrait"` | `portrait`, `landscape`, `primary`, `secondary`, `cursor`, or a device name |
 | `command` | `"claude"` | the PowerShell command each terminal runs; `{n}` is its number; `null` for a plain shell |
-| `directory` | your profile | where the terminals start; `{n}` is its number |
+| `directory` | your profile | where the terminals start; `{n}` is its number (after 0.1.1) |
 | `admin` | `true` | open as administrator |
 | `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet; a second fleet needs its own, or `null` |
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
