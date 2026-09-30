@@ -214,16 +214,23 @@ pub fn doctor() -> bool {
         "winget install Microsoft.WindowsTerminal",
     );
 
-    let config_path = paths::config_file();
-    let config = config_path
-        .as_ref()
-        .map(|p| std::fs::read_to_string(p).unwrap_or_default());
-    match config.as_deref().map(Config::from_json) {
+    // No file is the default config; a file that cannot be read is not.
+    let config = paths::config_file().map(|p| match std::fs::read_to_string(&p) {
+        Ok(text) => Config::from_json(&text).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(format!("{}: {e}", p.display())),
+    });
+    match config {
         Some(Ok(_)) => check(true, "config valid", ""),
-        Some(Err(e)) => check(false, "config valid", &e.to_string()),
+        Some(Err(e)) => check(false, "config valid", &e),
         None => check(false, "config valid", "no ProgramData folder"),
     }
 
+    // The hooks must all be there and call the installed copy: a hook left
+    // calling an older or deleted one reports nothing.
+    let exe = paths::install_dir()
+        .map(|d| d.join("daifuku.exe").to_string_lossy().into_owned())
+        .unwrap_or_default();
     for (agent, file) in hook_files() {
         if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
             continue;
@@ -231,11 +238,13 @@ pub fn doctor() -> bool {
         let present = read_settings(&file)
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|mut s| agent.add_hooks(&mut s, "daifuku.exe") == Ok(0));
+            .is_some_and(|mut s| {
+                agents::update_hooks(&mut s, &exe) == 0 && agent.add_hooks(&mut s, &exe) == Ok(0)
+            });
         check(
             present,
-            &format!("{} hooks present", agent.name),
-            "run `daifuku install`, or add them by hand (see the README)",
+            &format!("{} hooks present and current", agent.name),
+            "run `daifuku install`",
         );
     }
 
@@ -265,6 +274,15 @@ pub fn doctor() -> bool {
                 "daemon elevated",
                 "start it through the logon task, not by hand",
             );
+            check(
+                s.version == env!("CARGO_PKG_VERSION"),
+                "daemon up to date",
+                &format!(
+                    "the daemon runs {} and this daifuku is {}: run `daifuku install` from the newer one, which also restarts the daemon",
+                    s.version,
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
             let refused = refused_hotkeys(&s.hotkeys);
             check(
                 refused.is_empty(),
@@ -285,6 +303,9 @@ pub fn doctor() -> bool {
         println!(
             "--    elevation and hotkeys: run doctor from an administrator terminal to check those too"
         );
+    }
+    if let Some(logs) = paths::log_dir(true) {
+        println!("logs  {}", logs.display());
     }
     ok
 }
