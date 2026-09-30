@@ -61,6 +61,9 @@ struct Daemon {
     monitors: Vec<daifuku_core::monitor::MonitorInfo>,
     /// Since when each window has shown its state, for `daifuku status`.
     shown_since: std::collections::HashMap<u64, (AgentState, std::time::Instant)>,
+    /// The terminal `next` last brought to the front, so that pressing it
+    /// again from there moves on instead of starting over.
+    last_next: Option<u64>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -98,6 +101,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         config_failed: None,
         monitors: daifuku_win::monitor::monitors(),
         shown_since: std::collections::HashMap::new(),
+        last_next: None,
     };
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
@@ -452,13 +456,24 @@ impl Daemon {
         let Some(&first) = queue.first() else {
             return Response::said("no agent is waiting");
         };
-        // Pressed again from a terminal in the queue, it moves on to the next
-        // one, wrapping at the end: three waiting agents are three presses.
-        let target = match queue.iter().position(|&w| w == window::foreground()) {
+        // Pressed again from the terminal it brought up, it moves on to the
+        // next one, wrapping at the end: three waiting agents are three
+        // presses. Only from that one: a waiting terminal that is in front
+        // for any other reason, such as the last one a fleet opened, is no
+        // place in the queue, and moving on from it skipped the agent that
+        // had waited longest. Measured on a demo, where it landed on a
+        // failed agent that Enter cannot approve.
+        let front = window::foreground();
+        let from = self
+            .last_next
+            .filter(|&w| w == front)
+            .and_then(|w| queue.iter().position(|&q| q == w));
+        let target = match from {
             Some(i) => queue[(i + 1) % queue.len()],
             None => first,
         };
         if window::focus(target) {
+            self.last_next = Some(target);
             Response::said(format!("focused {}", window::title(target)))
         } else {
             Response::error("Windows refused to switch to that terminal")
