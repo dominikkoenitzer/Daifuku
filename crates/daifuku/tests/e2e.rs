@@ -293,6 +293,38 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
     );
     steps += 1;
 
+    // A terminal closed by hand comes back in its own cell, and the others
+    // stay where they are.
+    let before = fleet.windows.clone();
+    let second = before[1];
+    assert!(window::close(second));
+    wait_for(
+        "the second terminal to close",
+        Duration::from_secs(15),
+        || (!window::exists(second)).then_some(()),
+    );
+    let reopened = run(&["open", "e2e"]);
+    assert!(reopened.contains("opened e2e (4 terminals"), "{reopened}");
+    let fleet = wait_for("the reopened fleet", Duration::from_secs(10), || {
+        status()?
+            .fleets
+            .into_iter()
+            .find(|f| f.name == "e2e" && f.windows.len() == 4)
+    });
+    assert_ne!(fleet.windows[1], second, "no new terminal took the slot");
+    for i in [0, 2, 3] {
+        assert_eq!(fleet.windows[i], before[i], "terminal {} moved", i + 1);
+    }
+    for (i, &w) in fleet.windows.iter().enumerate() {
+        assert_eq!(
+            window::frame(w),
+            Some(cells[i]),
+            "terminal {} is not in its cell after the reopen",
+            i + 1
+        );
+    }
+    steps += 1;
+
     // Closing the fleet takes every terminal down.
     let closed = run(&["close", "e2e"]);
     assert!(closed.contains("closed 4 terminals"), "{closed}");
