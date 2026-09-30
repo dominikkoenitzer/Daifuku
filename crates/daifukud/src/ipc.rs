@@ -20,6 +20,15 @@ pub const WM_INBOX: u32 = WM_APP + 1;
 /// for Windows Terminal to show its windows, which takes seconds.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a hook has, from its connect, to deliver its line. A hook writes
+/// the moment it connects; one that stays silent past this is cut off, so a
+/// process holding every hook instance open cannot keep real hooks out.
+const HOOK_READ: Duration = Duration::from_millis(500);
+
+/// How long a control client has to send its request, and then to read the
+/// reply.
+const CONTROL_IO: Duration = Duration::from_secs(5);
+
 /// What a pipe thread hands to the main thread.
 pub enum Inbound {
     /// An agent's hook reported.
@@ -95,7 +104,7 @@ fn serve_hook(
     sender: &Sender<Inbound>,
     main_thread: u32,
 ) {
-    let Ok(line) = connection.read_line() else {
+    let Ok(line) = connection.read_line(HOOK_READ) else {
         return;
     };
     match from_line::<HookMessage>(&line) {
@@ -115,7 +124,7 @@ fn serve_control(
     sender: &Sender<Inbound>,
     main_thread: u32,
 ) {
-    let Ok(line) = connection.read_line() else {
+    let Ok(line) = connection.read_line(CONTROL_IO) else {
         return;
     };
     let response = match from_line::<Request>(&line) {
@@ -134,6 +143,6 @@ fn serve_control(
         Err(error) => Response::error(format!("not a request: {error}")),
     };
     if let Ok(line) = to_line(&response) {
-        let _ = connection.write_line(&line);
+        let _ = connection.write_line(&line, CONTROL_IO);
     }
 }
