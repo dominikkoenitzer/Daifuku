@@ -88,8 +88,8 @@ the gaps are exact.
 
 | Key | Default | |
 |---|---|---|
-| `outer` | `24` | Pixels between the outermost terminals and the edge of the screen. |
-| `inner` | `20` | Pixels between two neighbouring terminals. |
+| `outer` | `24` | Pixels between the outermost terminals and the edge of the screen, up to 1000. |
+| `inner` | `20` | Pixels between two neighbouring terminals, up to 1000. |
 
 ## `border`
 
@@ -97,7 +97,7 @@ the gaps are exact.
 |---|---|---|
 | `enabled` | `true` | Draw status borders at all. |
 | `width` | `4` | Thickness in physical pixels. |
-| `offset` | `0` | How far outside the window's edge the border sits; negative overlaps it. |
+| `offset` | `0` | How far outside the window's edge the border sits, -64 to 64; negative overlaps it. |
 | `palette` | `"catppuccin"` | `"catppuccin"` or `"colorblind"` (Okabe-Ito). |
 | `colours` | the palette's | Your own four colours, see below. |
 | `state_widths` | `true` | Each state at its own width, so a state reads without its colour. |
