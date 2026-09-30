@@ -69,6 +69,10 @@
 - A fleet command with double quotes in it runs as written: Windows
   Terminal used to hand it to PowerShell with its quotes broken.
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
+- `daifuku doctor` also checks that the hooks call the installed copy, that
+  the daemon runs the same version, and that the config can be read, and it
+  says where the logs are. A daemon busy with another command is called
+  busy, not "not running".
 - `daifuku doctor` no longer reports a hotkey as refused because a fleet is
   called `refused`.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
