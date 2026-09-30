@@ -53,7 +53,8 @@ full path:
 & "$env:ProgramFiles\Daifuku\daifuku.exe" doctor
 ```
 
-checks the whole setup and says how to fix anything that is wrong. To see it
+checks the whole setup and says how to fix anything that is wrong. The daemon
+logs to `C:\ProgramData\Daifuku\logs`, a file a day. To see it
 work without a real agent, `demo` in place of `doctor` opens six scripted
 ones. Below, `daifuku` stands for that full path.
 
