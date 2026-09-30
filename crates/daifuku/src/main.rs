@@ -263,12 +263,11 @@ fn control(request: &Request, raw: bool) -> ExitCode {
     let reply = match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
         Ok(Some(reply)) => reply,
         Ok(None) => return ExitCode::FAILURE,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            eprintln!("daifuku: {e}. Run it from an administrator terminal.");
-            return ExitCode::FAILURE;
-        }
         Err(e) => {
-            eprintln!("daifuku: {e}");
+            eprintln!(
+                "daifuku: {}",
+                control_error(&e, daifuku_win::process::current_is_elevated())
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -295,6 +294,18 @@ fn control(request: &Request, raw: bool) -> ExitCode {
             eprintln!("daifuku: unreadable reply: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What to say when the daemon could not be asked. Only an elevated process
+/// may open the control pipe, so for any other process every failure but a
+/// missing daemon means Windows refused it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn control_error(e: &std::io::Error, elevated: bool) -> String {
+    if !elevated && e.kind() != std::io::ErrorKind::NotFound {
+        "daemon commands need an administrator terminal".to_owned()
+    } else {
+        e.to_string()
     }
 }
 
@@ -385,6 +396,25 @@ mod tests {
         assert_eq!(since(59), "59s");
         assert_eq!(since(192), "3m 12s");
         assert_eq!(since(7500), "2h 5m");
+    }
+
+    #[test]
+    fn a_refused_control_pipe_asks_for_an_administrator_terminal() {
+        // What the pipe client returns when Windows refuses the open.
+        let denied = std::io::Error::other("Access is denied. (0x80070005)");
+        assert_eq!(
+            control_error(&denied, false),
+            "daemon commands need an administrator terminal"
+        );
+        // A daemon that is not running is said as it is.
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "Daifuku is not running");
+        assert_eq!(control_error(&missing, false), "Daifuku is not running");
+        // Elevated already, the terminal is not the problem.
+        let spoofed = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the process answering on Daifuku's control pipe is not the elevated daemon",
+        );
+        assert_eq!(control_error(&spoofed, true), spoofed.to_string());
     }
 
     #[test]
