@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    MB_ICONASTERISK, SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST,
+    MB_ICONASTERISK, MB_OK, SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
 };
 
@@ -75,10 +75,16 @@ pub fn high_contrast_colours() -> StateColours {
     }
 }
 
-/// Plays the system's notification sound.
+/// Plays Windows' Asterisk sound, from the user's own sound scheme.
 pub fn chime() {
     // SAFETY: no pointers; the sound plays asynchronously.
     let _ = unsafe { MessageBeep(MB_ICONASTERISK) };
+}
+
+/// Plays Windows' default beep, the sound of a key that did nothing.
+pub fn refused() {
+    // SAFETY: no pointers; the sound plays asynchronously.
+    let _ = unsafe { MessageBeep(MB_OK) };
 }
 
 #[cfg(test)]
