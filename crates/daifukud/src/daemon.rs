@@ -659,11 +659,13 @@ impl Daemon {
     }
 }
 
-/// How bright a waiting border is at `t` seconds: a slow breath between 45 %
-/// and full, never off, so the state stays readable at every moment.
+/// How bright a waiting border is at `t` seconds: a slow breath between 70 %
+/// and full, never off, so the state stays readable at every moment. Dimmer
+/// than 70 % takes the colour-blind palette's orange below 3:1 against a dark
+/// background.
 fn breath(t: f64) -> f64 {
     let phase = (t / PULSE_PERIOD) * std::f64::consts::TAU;
-    0.45 + 0.55 * (0.5 + 0.5 * phase.cos())
+    0.70 + 0.30 * (0.5 + 0.5 * phase.cos())
 }
 
 /// A colour at `k` of its brightness.
@@ -751,11 +753,15 @@ mod tests {
     fn the_breath_never_goes_dark() {
         for i in 0..1000 {
             let k = breath(f64::from(i) * 0.013);
-            assert!((0.45..=1.0).contains(&k), "{k}");
+            assert!((0.70..=1.0).contains(&k), "{k}");
         }
         assert!(
             (breath(0.0) - 1.0).abs() < 1e-9,
             "starts at full brightness"
+        );
+        assert!(
+            (breath(PULSE_PERIOD / 2.0) - 0.70).abs() < 1e-9,
+            "bottoms out at 70 %"
         );
     }
 
