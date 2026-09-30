@@ -228,12 +228,23 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
     daifuku_win::dpi::per_monitor_v2();
     let dir = scratch();
     let config = dir.join("daifuku.json");
-    std::fs::write(
-        &config,
-        r#"{"fleets":[{"name":"e2e","count":4,"monitor":"primary","command":null,"admin":true,"no_profile":true,"hotkey":null}],
-            "hotkeys":{"next_waiting":null,"snap":null}}"#,
-    )
-    .unwrap();
+    // Each terminal writes a file through a command with the characters that
+    // have to survive two command lines, Windows Terminal's and PowerShell's:
+    // double quotes, a semicolon and `{n}`.
+    let said = dir.join("said");
+    std::fs::create_dir_all(&said).unwrap();
+    let command = format!(
+        r#"Set-Content -LiteralPath '{}\said-{{n}}.txt' -Value "terminal {{n}}; ""quoted""""#,
+        said.display()
+    );
+    let fleets = serde_json::json!({
+        "fleets": [{
+            "name": "e2e", "count": 4, "monitor": "primary", "command": command,
+            "admin": true, "no_profile": true, "hotkey": null
+        }],
+        "hotkeys": { "next_waiting": null, "snap": null }
+    });
+    std::fs::write(&config, fleets.to_string()).unwrap();
     let mut steps = 0;
     let daemon = Command::new(daemon_exe())
         .arg("--config")
@@ -251,6 +262,23 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
             .into_iter()
             .find(|f| f.name == "e2e" && f.windows.len() == 4)
     });
+    steps += 1;
+
+    // Every terminal ran its command as written, with its own number.
+    for n in 1..=4 {
+        let file = said.join(format!("said-{n}.txt"));
+        let text = wait_for(
+            "a terminal's command to run",
+            Duration::from_secs(30),
+            || {
+                // Only a whole file: Set-Content ends it with a line break.
+                std::fs::read_to_string(&file)
+                    .ok()
+                    .filter(|t| t.ends_with('\n'))
+            },
+        );
+        assert_eq!(text.trim_end(), format!(r#"terminal {n}; "quoted""#));
+    }
     steps += 1;
 
     // Every terminal exactly in its cell, by its visible frame.
