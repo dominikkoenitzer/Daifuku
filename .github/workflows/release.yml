@@ -53,8 +53,11 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      # The same toolchain CI uses: stable, plus rust-toolchain.toml.
+      # The same toolchain CI uses: stable, plus rust-toolchain.toml, and the
+      # ARM64 target for the second zip.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -174,6 +177,35 @@ jobs:
           [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE/$zip.sha256", $line, [System.Text.UTF8Encoding]::new($false))
           Get-Content "$zip.sha256"
 
+      # The same package for Windows on ARM. It cannot be run on this x64
+      # runner, so instead of running it the check reads each binary's PE
+      # header and insists on the ARM64 machine type; everything else in the
+      # zip is the x64 package's own, already checked above.
+      - name: Build, check and package for ARM64
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          cargo build --locked --release --workspace --target aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "the ARM64 build failed" }
+          $name = $env:PACKAGE_NAME.Replace($env:TARGET, 'aarch64-pc-windows-msvc')
+          $stage = "dist/$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          foreach ($exe in 'daifuku.exe', 'daifukud.exe') {
+              Copy-Item "target/aarch64-pc-windows-msvc/release/$exe" $stage
+              $bytes = [System.IO.File]::ReadAllBytes("$stage/$exe")
+              $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+              $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+              if ($machine -ne 0xAA64) { throw ('{0} is machine 0x{1:X4}, not ARM64' -f $exe, $machine) }
+          }
+          Copy-Item LICENSE, "$env:STAGE_DIR/daifuku.schema.json" $stage
+          $zip = "dist/$name.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+          [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE/$zip.sha256", "$hash  $name.zip`n", [System.Text.UTF8Encoding]::new($false))
+          Get-Content "$zip.sha256"
+          "ARM_PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # Always available, so a workflow_dispatch without a tag still produces a
       # zip that can be downloaded and tried.
       - name: Upload the zip as a workflow artifact
@@ -183,6 +215,8 @@ jobs:
           path: |
             dist/${{ env.PACKAGE_NAME }}.zip
             dist/${{ env.PACKAGE_NAME }}.zip.sha256
+            dist/${{ env.ARM_PACKAGE_NAME }}.zip
+            dist/${{ env.ARM_PACKAGE_NAME }}.zip.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -196,3 +230,5 @@ jobs:
           files: |
             dist/${{ env.PACKAGE_NAME }}.zip
             dist/${{ env.PACKAGE_NAME }}.zip.sha256
+            dist/${{ env.ARM_PACKAGE_NAME }}.zip
+            dist/${{ env.ARM_PACKAGE_NAME }}.zip.sha256
