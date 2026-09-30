@@ -630,12 +630,14 @@ impl Daemon {
     }
 
     /// Starts the pulse timer when an agent waits and the pulse is wanted and
-    /// allowed, and stops it otherwise.
+    /// allowed, and stops it otherwise. A high contrast theme holds it still:
+    /// dimming the theme's own colours takes away the contrast it is for.
     fn update_pulse(&mut self) {
         let b = &self.config.border;
         let wanted = b.enabled
             && b.pulse
             && self.animations
+            && !self.high_contrast
             && self
                 .agents
                 .windows()
