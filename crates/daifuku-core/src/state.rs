@@ -261,6 +261,58 @@ impl<W: Ord + Copy> Agents<W> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn waiting_again_goes_to_the_back_of_the_queue() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("a", "PermissionRequest"));
+        a.apply(2, &ev("b", "PermissionRequest"));
+        a.apply(1, &ev("a", "PostToolUse"));
+        a.apply(1, &ev("a", "PermissionRequest"));
+        assert_eq!(a.needs_you(), vec![2, 1]);
+    }
+
+    #[test]
+    fn a_session_that_moves_window_starts_waiting_anew() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("a", "PermissionRequest"));
+        a.apply(2, &ev("b", "PermissionRequest"));
+        a.apply(3, &ev("a", "PermissionRequest"));
+        assert_eq!(a.needs_you(), vec![2, 3]);
+    }
+
+    #[test]
+    fn leaving_a_window_is_a_change_even_where_it_lands_looks_the_same() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "PermissionRequest"));
+        a.apply(2, &ev("t", "PermissionRequest"));
+        assert!(
+            a.apply(2, &ev("s", "PermissionRequest")),
+            "window 1 lost its session"
+        );
+        assert_eq!(a.window_state(1), None);
+    }
+
+    #[test]
+    fn a_windows_wait_is_timed_from_its_waiting_sessions_only() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("old-failure", "StopFailure"));
+        a.apply(2, &ev("c", "PermissionRequest"));
+        a.apply(1, &ev("b", "PermissionRequest"));
+        // Window 1 has waited since after window 2 did; its older failure
+        // does not count towards how long it has been waiting.
+        assert_eq!(a.needs_you(), vec![2, 1]);
+    }
+
+    #[test]
+    fn len_counts_sessions() {
+        let mut a = Agents::new();
+        assert_eq!(a.len(), 0);
+        a.apply(1, &ev("a", "PreToolUse"));
+        a.apply(1, &ev("b", "PreToolUse"));
+        a.apply(2, &ev("c", "PreToolUse"));
+        assert_eq!(a.len(), 3);
+    }
+
     fn ev(session: &str, name: &str) -> HookEvent {
         HookEvent {
             session_id: session.into(),
