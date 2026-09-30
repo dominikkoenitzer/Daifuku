@@ -137,6 +137,35 @@ jobs:
       # Thin LTO with one codegen unit breaks in ways a debug build does not.
       - run: cargo build --locked --release --workspace
 
+  # Windows on ARM: Snapdragon laptops run x64 programs only through
+  # emulation, and a window manager's hooks and timers are the last thing to
+  # want emulated. Compile only: a hosted x64 runner cannot run ARM64 code.
+  arm64:
+    name: build (arm64)
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: arm64
+      - run: cargo build --locked --release --workspace --target aarch64-pc-windows-msvc
+      - name: The binaries really are ARM64
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          foreach ($exe in 'daifuku.exe', 'daifukud.exe') {
+              $bytes = [System.IO.File]::ReadAllBytes("target/aarch64-pc-windows-msvc/release/$exe")
+              $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+              $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+              if ($machine -ne 0xAA64) { throw ('{0} is machine 0x{1:X4}, not ARM64' -f $exe, $machine) }
+              Write-Output "$exe is ARM64"
+          }
+
   # Only on the timer: it compiles against the Rust that is coming, so a
   # failure here is weeks of warning rather than a broken build.
   beta:
