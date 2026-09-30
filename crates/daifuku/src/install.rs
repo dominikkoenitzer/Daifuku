@@ -72,7 +72,7 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
 
     let sid = setup::user_sid().context("could not read this user's SID")?;
     let daemon = to.join("daifukud.exe");
-    setup::create_task(TASK_NAME, &xml(&daemon.to_string_lossy(), &sid))
+    setup::create_task(TASK_NAME, &xml(&daemon.to_string_lossy(), &sid), &data)
         .context("could not register the logon task")?;
     println!("logon task   {TASK_NAME}");
     if !options.no_start {
