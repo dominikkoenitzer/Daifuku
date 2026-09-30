@@ -151,6 +151,8 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     if let Some(borders) = d.borders.take() {
         borders.stop();
     }
+    // `daifuku stop` waits for its "stopping"; exiting first would cut it off.
+    inbox.wait_for_stop_reply(std::time::Duration::from_secs(1));
     tracing::info!("daifukud stopped");
     Ok(())
 }
