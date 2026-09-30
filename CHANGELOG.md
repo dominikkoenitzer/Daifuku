@@ -23,7 +23,8 @@
   just before the daemon was ready is no longer lost.
 - Daemon commands from a normal terminal say they need an administrator one,
   instead of "Access is denied".
-- `settings.json` files saved with a byte order mark are read.
+- The config and the agents' settings files are read when saved with a byte
+  order mark.
 - `daifuku hook` is hidden from the help, and counts of one read "1 terminal".
 
 ## 0.1.1, 2026-09-30
