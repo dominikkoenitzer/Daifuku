@@ -243,15 +243,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
-      - name: List what will be published
+      # The binaries as a user gets them out of the zip, so each one can be
+      # checked with `gh attestation verify` on its own, not only the zip.
+      - name: Take the binaries out of the zips
         shell: bash
-        run: ls -l dist
+        run: |
+          set -euo pipefail
+          for zip in dist/*.zip; do
+              unzip -q -o "$zip" daifuku.exe daifukud.exe -d "${zip%.zip}"
+          done
+          ls -lR dist
+
+      # Signed SLSA provenance: which workflow, commit and run built each zip
+      # and each binary. Only for a release, never for a branch build.
+      - name: Attest build provenance
+        if: github.ref_type == 'tag' || inputs.tag != ''
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*/daifuku.exe
+            dist/*/daifukud.exe
 
       - name: Publish release
         if: github.ref_type == 'tag' || inputs.tag != ''
