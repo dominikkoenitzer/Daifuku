@@ -4,7 +4,7 @@
 //!
 //! | pipe | who may connect | why |
 //! |---|---|---|
-//! | hook | the signed-in user, at any integrity | a hook runs at whatever level its agent runs at, and the most it can do is colour a border |
+//! | hook | the signed-in user, at medium integrity or above | a hook runs at its agent's level, the medium label keeps low-integrity processes out, and the most a hook can do is colour a border |
 //! | control | Administrators, elevated | a request can open administrator terminals |
 //!
 //! A pipe created by an elevated process carries a high mandatory label, and
