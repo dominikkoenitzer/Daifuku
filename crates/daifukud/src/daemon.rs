@@ -516,6 +516,7 @@ impl Daemon {
             return;
         }
         let mut refresh = false;
+        let mut restack = false;
         for e in events {
             match e {
                 Event::Destroyed(w) => {
@@ -529,10 +530,20 @@ impl Daemon {
                 Event::Moved(w) | Event::Visibility(w) => {
                     refresh |= self.agents.window_state(w).is_some();
                 }
+                // Any window, not only an agent's: a terminal also comes up
+                // when one of its own dialogs takes the foreground.
+                Event::Foreground(_) => restack = true,
             }
         }
         if refresh {
             self.refresh_borders();
+        }
+        if restack && let Some(borders) = &self.borders {
+            // A raised window keeps its rectangle and colour, so the pass
+            // above sends nothing for it, yet its frame is now underneath it.
+            if let Err(e) = borders.restack() {
+                tracing::warn!(error = %e, "could not restack borders");
+            }
         }
     }
 

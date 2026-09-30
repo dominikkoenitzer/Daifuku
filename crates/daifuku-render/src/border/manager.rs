@@ -29,6 +29,8 @@ enum BorderMessage {
     Clear,
     /// New configuration; everything repaints.
     Config(BorderConfig),
+    /// Put every frame on screen back directly above its window.
+    Restack,
 }
 
 /// A handle to the border thread.
@@ -116,6 +118,25 @@ impl BorderManager {
             return Ok(());
         }
         self.worker.send(BorderMessage::Apply(Box::new(changes)))
+    }
+
+    /// Puts every border back directly above its window in the z-order,
+    /// without moving or repainting any of them.
+    ///
+    /// The daemon calls this when a window comes to the foreground. Raising a
+    /// window changes neither its rectangle nor its colour, so
+    /// [`BorderManager::update`] sends nothing, yet the raised window now
+    /// sits above its own frame and every window it passed covers that frame.
+    /// Sends nothing when there are no borders.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::RenderError::ThreadGone`] when the border thread has stopped.
+    pub fn restack(&self) -> Result<()> {
+        if self.with_diff(|diff| BorderDiff::is_empty(diff)) {
+            return Ok(());
+        }
+        self.worker.send(BorderMessage::Restack)
     }
 
     /// Declares the complete set of borders that should be on screen.
@@ -226,6 +247,7 @@ impl Borders {
             BorderMessage::Apply(changes) => self.apply(&changes),
             BorderMessage::Clear => self.clear(),
             BorderMessage::Config(config) => self.reconfigure(config),
+            BorderMessage::Restack => self.restack(),
         }
     }
 
@@ -301,6 +323,20 @@ impl Borders {
         }
         if let Some(duplicate) = self.active.insert(key, window) {
             self.recycle(duplicate);
+        }
+    }
+
+    /// Puts every frame on screen back directly above its target.
+    fn restack(&mut self) {
+        for (&key, window) in &mut self.active {
+            if let Err(error) = window.restack_above(WindowHandle(key).hwnd()) {
+                // Taken down, so the next pass has to hand it over again.
+                self.diff
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .forget(WindowHandle(key));
+                tracing::warn!(target = %WindowHandle(key), %error, "could not restack a border");
+            }
         }
     }
 

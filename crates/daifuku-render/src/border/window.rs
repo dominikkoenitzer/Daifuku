@@ -195,6 +195,28 @@ impl BorderWindow {
         Ok(())
     }
 
+    /// Slots a frame that is on screen back in directly above `target`,
+    /// without moving or repainting it.
+    ///
+    /// Raising a window leaves its frame behind, under the window and under
+    /// whatever was above it, while its rectangle and colour stay the same.
+    /// A hidden frame is left hidden.
+    ///
+    /// # Errors
+    ///
+    /// When the window manager refuses. The frame is taken down first, for the
+    /// same reason as in [`BorderWindow::track`].
+    pub fn restack_above(&mut self, target: HWND) -> Result<()> {
+        if !self.visible {
+            return Ok(());
+        }
+        if let Err(error) = self.restack(target) {
+            self.hide();
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Paints the frame into the off-screen surface.
     fn paint(&mut self, geometry: &FrameGeometry, colour: Colour) -> Result<()> {
         let width = geometry.window.width();

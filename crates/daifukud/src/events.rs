@@ -18,8 +18,9 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, OBJID_WINDOW,
-    PostThreadMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_SYSTEM_MINIMIZESTART, OBJID_WINDOW, PostThreadMessageW, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
 
 /// Posted to the main thread when the event queue goes from empty to not.
@@ -34,6 +35,8 @@ pub enum Event {
     Moved(u64),
     /// It was shown, hidden, cloaked, uncloaked, minimised or restored.
     Visibility(u64),
+    /// It came to the foreground, and with it to the top of the z-order.
+    Foreground(u64),
 }
 
 thread_local! {
@@ -57,6 +60,7 @@ impl Hooks {
             (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
             (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
             (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
+            (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
         ];
         let mut hooks = Vec::new();
         for (min, max) in ranges {
@@ -112,6 +116,7 @@ unsafe extern "system" fn callback(
     let e = match event {
         EVENT_OBJECT_DESTROY => Event::Destroyed(w),
         EVENT_OBJECT_LOCATIONCHANGE => Event::Moved(w),
+        EVENT_SYSTEM_FOREGROUND => Event::Foreground(w),
         _ => Event::Visibility(w),
     };
     let first = QUEUE.with(|q| {
