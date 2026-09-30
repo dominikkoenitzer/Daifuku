@@ -40,6 +40,16 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     if !process::current_is_elevated() {
         bail!("installing needs an administrator terminal");
     }
+    // A standard user's prompt answered with an administrator's password
+    // runs this as the administrator: the task, the hooks and the settings
+    // would all be theirs, and the user at the desktop would get nothing.
+    if let Err(e) = process::as_shell_user(|| ())
+        && e.kind() == std::io::ErrorKind::PermissionDenied
+    {
+        bail!(
+            "this terminal runs as another account than the one signed in: install from an administrator terminal of the account that runs the agents"
+        );
+    }
     let from = std::env::current_exe()?
         .parent()
         .map(Path::to_path_buf)
@@ -354,13 +364,29 @@ fn edit_agent_file(
     edit: impl FnOnce(&mut serde_json::Value) -> anyhow::Result<usize>,
 ) -> anyhow::Result<usize> {
     let profile = paths::profile_dir().context("no profile folder")?;
-    if !stays_inside(path, &profile) {
-        bail!(
-            "{} leads outside your profile, left untouched",
-            path.display()
-        );
+    let run = || {
+        if !stays_inside(path, &profile) {
+            bail!(
+                "{} leads outside your profile, left untouched",
+                path.display()
+            );
+        }
+        edit_json(path, edit)
+    };
+    // With the user's own rights, so a link swapped in while the file is
+    // edited cannot lead the write anywhere the user may not write. Without
+    // a desktop shell to borrow them from, as on a build server, the checks
+    // above are all there is.
+    let mut run = Some(run);
+    match process::as_shell_user(|| run.take().map(|r| r())) {
+        Ok(Some(result)) => result,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match run.take() {
+            Some(r) => r(),
+            None => bail!("the edit of {} did not run", path.display()),
+        },
+        Ok(None) => bail!("the edit of {} did not run", path.display()),
+        Err(e) => Err(e).with_context(|| format!("could not edit {}", path.display())),
     }
-    edit_json(path, edit)
 }
 
 /// Whether `path`, with every link on the way followed, is inside `root`.
