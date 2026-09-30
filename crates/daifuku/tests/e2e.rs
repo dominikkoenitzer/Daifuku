@@ -423,28 +423,59 @@ fn describe(w: u64) -> String {
     format!("{w:#x} {} {:?}{focus}", window::class(w), window::title(w))
 }
 
-/// Presses and releases Enter, with its scan code as a keyboard sends it:
-/// Windows Terminal reads the scan code and drops a key without one.
-fn press_enter() -> u32 {
+/// Presses (`true`) or releases keys, each with its scan code as a keyboard
+/// sends it: Windows Terminal reads the scan code and drops a key without
+/// one. Returns how many of the events Windows took.
+fn keys(strokes: &[(u16, u16, bool)]) -> u32 {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-        VK_RETURN,
+        VIRTUAL_KEY,
     };
 
-    let key = |flags: KEYBD_EVENT_FLAGS| INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VK_RETURN,
-                wScan: 0x1C,
-                dwFlags: flags,
-                ..Default::default()
+    let inputs: Vec<INPUT> = strokes
+        .iter()
+        .map(|&(vk, scan, down)| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: scan,
+                    dwFlags: if down {
+                        KEYBD_EVENT_FLAGS(0)
+                    } else {
+                        KEYEVENTF_KEYUP
+                    },
+                    ..Default::default()
+                },
             },
-        },
-    };
-    let inputs = [key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)];
+        })
+        .collect();
     // SAFETY: inputs is a valid array of INPUT with the right size.
     unsafe { SendInput(&inputs, i32::try_from(size_of::<INPUT>()).unwrap()) }
+}
+
+/// Virtual key and scan code of the keys the tests press.
+const ENTER: (u16, u16) = (0x0D, 0x1C);
+const CTRL: (u16, u16) = (0x11, 0x1D);
+const ALT: (u16, u16) = (0x12, 0x38);
+const F11: (u16, u16) = (0x7A, 0x57);
+
+fn press_enter() -> u32 {
+    keys(&[(ENTER.0, ENTER.1, true), (ENTER.0, ENTER.1, false)])
+}
+
+/// Ctrl+Alt+F11 the way a hand plays it: the chord goes down, F11 comes up,
+/// and the modifiers only a moment later, after the hotkey has fired.
+fn press_hotkey() -> u32 {
+    let mut sent = keys(&[
+        (CTRL.0, CTRL.1, true),
+        (ALT.0, ALT.1, true),
+        (F11.0, F11.1, true),
+    ]);
+    std::thread::sleep(Duration::from_millis(60));
+    sent += keys(&[(F11.0, F11.1, false)]);
+    std::thread::sleep(Duration::from_millis(120));
+    sent + keys(&[(ALT.0, ALT.1, false), (CTRL.0, CTRL.1, false)])
 }
 
 /// The windows whose agents wait, by what `status` says.
@@ -471,7 +502,7 @@ fn print_agents() {
 }
 
 #[test]
-fn next_twice_brings_each_waiting_agent_up_and_enter_approves_it() {
+fn next_brings_each_waiting_agent_up_and_enter_approves_it() {
     if !enabled() {
         eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
         return;
@@ -482,9 +513,11 @@ fn next_twice_brings_each_waiting_agent_up_and_enter_approves_it() {
     }
     let dir = scratch();
     let config = dir.join("daifuku.json");
+    // A next key nobody else uses, so a developer's own daemon keeps its
+    // Ctrl+Alt+N while this runs.
     std::fs::write(
         &config,
-        r#"{"fleets":[],"hotkeys":{"next_waiting":null,"snap":null}}"#,
+        r#"{"fleets":[],"hotkeys":{"next_waiting":"ctrl + alt + f11","snap":null}}"#,
     )
     .unwrap();
     let mut steps = 0;
@@ -494,10 +527,11 @@ fn next_twice_brings_each_waiting_agent_up_and_enter_approves_it() {
         .spawn()
         .unwrap();
     let mut cleanup = Cleanup(vec![daemon]);
-    wait_for("the daemon to answer", Duration::from_secs(15), status);
+    let first = wait_for("the daemon to answer", Duration::from_secs(15), status);
+    println!("hotkeys: {:?}", first.hotkeys);
 
     // The demo: six scripted agents, two of which ask for approval in their
-    // first task and then wait for Enter.
+    // first task and then wait for Enter, and two more in their second.
     let opened = run(&["demo"]);
     assert!(opened.contains("opened demo"), "{opened}");
     wait_for("two waiting agents", Duration::from_secs(60), || {
@@ -505,23 +539,44 @@ fn next_twice_brings_each_waiting_agent_up_and_enter_approves_it() {
     });
     steps += 1;
 
-    // Twice: `next` brings a waiting agent's terminal to the front, and
-    // Enter typed there approves it.
-    let mut approved = Vec::new();
-    for round in 1..=2 {
+    // Four times: `next` brings a waiting agent's terminal to the front, and
+    // Enter typed there approves it. Twice from the command line, then twice
+    // from the key, which fires while its modifiers are still held down.
+    let mut previous = None;
+    for round in 1..=4 {
+        let by_key = round > 2;
+        if round == 3 {
+            wait_for("two more waiting agents", Duration::from_secs(60), || {
+                (waiting().len() >= 2).then_some(())
+            });
+        }
         let queue = waiting();
         println!("round {round}: waiting {queue:#x?}");
         print_agents();
-        println!("  before next: {}", describe(window::foreground()));
-        let reply = run(&["next"]);
-        println!("  next: {}", reply.trim());
-        let target = window::foreground();
+        let before = window::foreground();
+        println!("  before next: {}", describe(before));
+        let target = if by_key {
+            let sent = press_hotkey();
+            println!("  key: sent {sent} of 6 key events");
+            let start = Instant::now();
+            while window::foreground() == before && start.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            // The daemon checks that the switch settled for 80 ms.
+            std::thread::sleep(Duration::from_millis(200));
+            window::foreground()
+        } else {
+            let reply = run(&["next"]);
+            println!("  next: {}", reply.trim());
+            window::foreground()
+        };
         println!("  after next: {}", describe(target));
         assert!(
-            queue.contains(&target) && !approved.contains(&target),
+            queue.contains(&target) && previous != Some(target),
             "round {round}: next left {} in front, not a waiting agent's terminal",
             describe(target)
         );
+        previous = Some(target);
         steps += 1;
 
         let sent = press_enter();
@@ -541,7 +596,6 @@ fn next_twice_brings_each_waiting_agent_up_and_enter_approves_it() {
             left,
             "round {round}: Enter did not reach the agent in {target:#x}"
         );
-        approved.push(target);
         steps += 1;
     }
 
