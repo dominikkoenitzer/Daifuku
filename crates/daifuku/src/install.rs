@@ -364,9 +364,29 @@ fn edit_json(
         }
         let mut out = serde_json::to_string_pretty(&settings)?;
         out.push('\n');
-        std::fs::write(path, out)?;
+        write_whole(path, &out).with_context(|| format!("could not write {}", path.display()))?;
     }
     Ok(changed)
+}
+
+/// Writes `text` into a new file next to `path` and renames it over `path`,
+/// so a crash half way leaves the old file, never one cut short. A link at
+/// `path` is followed, so the file it points to is the one replaced.
+fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".daifuku-new");
+    let new = path.with_file_name(name);
+    let written = std::fs::File::create(&new).and_then(|mut f| {
+        f.write_all(text.as_bytes())?;
+        f.sync_all()
+    });
+    let result = written.and_then(|()| std::fs::rename(&new, &path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&new);
+    }
+    result
 }
 
 /// The config a fresh install starts with: the defaults, spelled out, with
@@ -422,5 +442,39 @@ mod tests {
         assert_eq!(edited.unwrap(), 1);
         let settings: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(settings["theme"], "dark");
+    }
+
+    /// A second link to the file shows whether it was rewritten in place,
+    /// which a crash half way through would leave cut short, or replaced
+    /// whole.
+    #[test]
+    fn a_settings_file_is_replaced_whole_and_only_when_changed() {
+        let dir = std::env::temp_dir().join(format!("daifuku-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        let link = dir.join("link.json");
+        std::fs::write(&file, "{ \"theme\": \"dark\" }").unwrap();
+        std::fs::hard_link(&file, &link).unwrap();
+        let unchanged = edit_json(&file, |_| Ok(0));
+        let text_unchanged = std::fs::read_to_string(&file).unwrap();
+        let changed = edit_json(&file, |s| {
+            s["hooks"] = serde_json::json!({});
+            Ok(1)
+        });
+        let text = std::fs::read_to_string(&file).unwrap();
+        let linked = std::fs::read_to_string(&link).unwrap();
+        let created = edit_json(&dir.join("new.json"), |_| Ok(1));
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(unchanged.unwrap(), 0);
+        assert_eq!(text_unchanged, "{ \"theme\": \"dark\" }", "not written");
+        assert_eq!(changed.unwrap(), 1);
+        assert!(text.contains("\"hooks\""));
+        assert_eq!(linked, "{ \"theme\": \"dark\" }", "replaced, not rewritten");
+        created.unwrap();
+        assert_eq!(names.len(), 3, "no file left behind: {names:?}");
     }
 }
