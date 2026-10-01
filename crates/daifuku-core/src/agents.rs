@@ -83,8 +83,36 @@ pub const CODEX: Agent = Agent {
     style: Style::CommandLine,
 };
 
+/// The longest Codex lets a `SessionEnd` or `Interrupt` hook run, in seconds.
+const CODEX_SHORT_TIMEOUT: u64 = 3;
+
+/// Brings a Codex hook on `event` within what Codex allows there, which it
+/// otherwise warns about at every session start: at most
+/// [`CODEX_SHORT_TIMEOUT`] on `SessionEnd` and `Interrupt`, and no `async` on
+/// `SessionEnd`, which Codex always runs in the foreground. A shorter
+/// timeout stays. Says whether anything changed.
+fn fit_codex_limits(event: &str, hook: &mut Value) -> bool {
+    let Some(hook) = hook.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    let too_long = hook
+        .get("timeout")
+        .and_then(Value::as_u64)
+        .is_some_and(|t| t > CODEX_SHORT_TIMEOUT);
+    if matches!(event, "SessionEnd" | "Interrupt") && too_long {
+        hook.insert("timeout".to_owned(), json!(CODEX_SHORT_TIMEOUT));
+        changed = true;
+    }
+    if event == "SessionEnd" && hook.get("async") == Some(&Value::Bool(true)) {
+        hook.shift_remove("async");
+        changed = true;
+    }
+    changed
+}
+
 impl Agent {
-    fn entry(&self, exe: &str) -> Value {
+    fn entry(&self, event: &str, exe: &str) -> Value {
         match self.style {
             Style::ProgramAndArgs => json!({
                 "type": "command",
@@ -93,12 +121,16 @@ impl Agent {
                 "async": true,
                 "timeout": 10
             }),
-            Style::CommandLine => json!({
-                "type": "command",
-                "command": command_line(exe),
-                "async": true,
-                "timeout": 10
-            }),
+            Style::CommandLine => {
+                let mut entry = json!({
+                    "type": "command",
+                    "command": command_line(exe),
+                    "async": true,
+                    "timeout": 10
+                });
+                fit_codex_limits(event, &mut entry);
+                entry
+            }
         }
     }
 
@@ -107,7 +139,10 @@ impl Agent {
     /// had them all.
     ///
     /// The hook runs `async`, so the agent never waits for it, with a short
-    /// timeout for the case where something does go wrong.
+    /// timeout for the case where something does go wrong. Codex runs
+    /// `SessionEnd` hooks in the foreground whatever they say, and gives
+    /// them and `Interrupt` ones three seconds at most, so its hooks there
+    /// ask for just that.
     ///
     /// # Errors
     ///
@@ -140,7 +175,7 @@ impl Agent {
             if present {
                 continue;
             }
-            groups.push(json!({ "hooks": [self.entry(exe)] }));
+            groups.push(json!({ "hooks": [self.entry(event, exe)] }));
             added += 1;
         }
         Ok(added)
@@ -184,25 +219,31 @@ fn is_daifuku(path: &str) -> bool {
 /// Points every Daifuku hook at `exe`, the `daifuku.exe` being installed, so
 /// hooks an earlier install left calling another copy work again. Each
 /// keeps its form and everything else in it, and hooks that are not
-/// Daifuku's are not touched. Returns how many were rewritten. The same for
-/// both agents.
+/// Daifuku's are not touched. Codex's, the one-command-line form, are also
+/// brought within the timeouts Codex allows, as a new install writes them.
+/// Returns how many were rewritten. The same for both agents.
 pub fn update_hooks(settings: &mut Value, exe: &str) -> usize {
     let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return 0;
     };
     let mut updated = 0;
-    let groups = hooks.values_mut().filter_map(Value::as_array_mut).flatten();
-    let all = groups.filter_map(|g| g.get_mut("hooks").and_then(Value::as_array_mut));
-    for hook in all.flatten() {
-        let wanted = match style_of_ours(hook) {
-            Some(Style::ProgramAndArgs) => exe.to_owned(),
-            Some(Style::CommandLine) => command_line(exe),
-            None => continue,
-        };
-        let current = hook.get("command").and_then(Value::as_str).unwrap_or("");
-        if !current.eq_ignore_ascii_case(&wanted) {
-            hook["command"] = Value::String(wanted);
-            updated += 1;
+    for (event, groups) in hooks.iter_mut() {
+        let groups = groups.as_array_mut().into_iter().flatten();
+        let all = groups.filter_map(|g| g.get_mut("hooks").and_then(Value::as_array_mut));
+        for hook in all.flatten() {
+            let (wanted, fitted) = match style_of_ours(hook) {
+                Some(Style::ProgramAndArgs) => (exe.to_owned(), false),
+                Some(Style::CommandLine) => (command_line(exe), fit_codex_limits(event, hook)),
+                None => continue,
+            };
+            let current = hook.get("command").and_then(Value::as_str).unwrap_or("");
+            let moved = !current.eq_ignore_ascii_case(&wanted);
+            if moved {
+                hook["command"] = Value::String(wanted);
+            }
+            if moved || fitted {
+                updated += 1;
+            }
         }
     }
     updated
@@ -428,6 +469,44 @@ mod tests {
         assert!(stop.get("args").is_none());
         assert_eq!(CODEX.add_hooks(&mut s, EXE), Ok(0), "idempotent");
         assert_eq!(remove_hooks(&mut s), CODEX.events.len());
+    }
+
+    #[test]
+    fn codex_hooks_ask_for_no_more_than_codex_allows() {
+        let mut s = json!({});
+        CODEX.add_hooks(&mut s, EXE).unwrap();
+        let hook = |e: &str| s["hooks"][e][0]["hooks"][0].clone();
+        assert_eq!(hook("SessionEnd")["timeout"], 3);
+        assert!(hook("SessionEnd").get("async").is_none(), "never async");
+        assert_eq!(hook("Interrupt")["timeout"], 3);
+        assert_eq!(hook("Interrupt")["async"], true);
+        assert_eq!(hook("Stop")["timeout"], 10);
+        // Claude Code has no such limits.
+        let mut c = json!({});
+        CLAUDE.add_hooks(&mut c, EXE).unwrap();
+        assert_eq!(c["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 10);
+        assert_eq!(update_hooks(&mut c, EXE), 0);
+    }
+
+    #[test]
+    fn an_update_brings_codex_hooks_written_before_within_its_limits() {
+        let old = json!({"type": "command", "command": format!("& \"{EXE}\" hook"),
+            "async": true, "timeout": 10});
+        let mut s = json!({"hooks": {
+            "SessionEnd": [{"hooks": [old.clone()]}],
+            "Interrupt": [{"hooks": [old.clone()]}],
+            "Stop": [{"hooks": [old]}]
+        }});
+        assert_eq!(update_hooks(&mut s, EXE), 2);
+        let mut fresh = json!({});
+        CODEX.add_hooks(&mut fresh, EXE).unwrap();
+        for e in ["SessionEnd", "Interrupt", "Stop"] {
+            assert_eq!(s["hooks"][e], fresh["hooks"][e], "{e}");
+        }
+        assert_eq!(update_hooks(&mut s, EXE), 0, "nothing left to update");
+        // A shorter timeout of the user's own stays.
+        s["hooks"]["Interrupt"][0]["hooks"][0]["timeout"] = json!(2);
+        assert_eq!(update_hooks(&mut s, EXE), 0);
     }
 
     #[test]
