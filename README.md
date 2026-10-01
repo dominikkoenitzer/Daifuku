@@ -54,16 +54,18 @@ real agent, `demo` in place of `doctor` opens six scripted ones. Below,
 `daifuku` stands for that full path.
 
 To update, unzip the new release and run `.\daifuku.exe install` there; your
-config and hooks are kept. Only a `ProgramData\Daifuku` folder that no Daifuku
-install locked, such as one another program made, is deleted and made anew,
-with any config in it (after 0.1.1).
+config and hooks are kept. A `ProgramData\Daifuku` folder that is not locked
+to administrators the way install leaves it, such as one another program made
+or one whose owner or access list was changed since, is deleted with any
+config in it and made anew (after 0.1.1).
 
 ## Configure
 
 `C:\ProgramData\Daifuku\daifuku.json`, then `daifuku reload` (from 0.1.1 on,
 saving is enough). Only administrators may write that folder, so edit the file
 from an administrator editor, such as `notepad` in an administrator terminal.
-Every key is optional; an editor that reads the linked schema completes and
+Do not take ownership of the folder or give your account write access to it:
+the next install would delete it, config and all. Every key is optional; an editor that reads the linked schema completes and
 checks them. [docs/configuration.md](docs/configuration.md) has every key.
 
 ```json
