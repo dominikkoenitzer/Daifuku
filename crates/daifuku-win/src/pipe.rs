@@ -466,7 +466,9 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
     let h = match open() {
         Ok(h) => h,
         Err(_) => loop {
-            let left = deadline.saturating_duration_since(Instant::now()).as_millis();
+            let left = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis();
             // At least one: zero would mean the pipe's default wait instead.
             let ms = u32::try_from(left).unwrap_or(u32::MAX).max(1);
             // SAFETY: name is NUL terminated.
