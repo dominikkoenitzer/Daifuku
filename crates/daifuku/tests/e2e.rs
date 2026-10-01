@@ -11,6 +11,11 @@
 //! cargo test -p daifuku --test e2e -- --nocapture --test-threads 1
 //! ```
 //!
+//! A daemon that already runs in this session, an installed one included,
+//! has to be stopped first with `daifuku stop`; the tests refuse to start
+//! beside it. While they run, the hooks of every agent in this session report
+//! to the test's daemon, so run them where no agent of your own is at work.
+//!
 //! CI runs it on a hosted Windows runner and fails the job unless the final
 //! tally line is printed, because a test that returns early still passes.
 
@@ -78,16 +83,59 @@ fn event(dir: &Path, name: &str) -> PathBuf {
     file
 }
 
-struct Cleanup(Vec<Child>);
+/// The status of the daemon that answers, if it is the one started on
+/// `config`.
+fn ours(config: &str) -> Option<Status> {
+    status().filter(|s| s.config.starts_with(config))
+}
+
+/// Starts a daemon on `config` and waits until it is the one that answers.
+///
+/// Another daemon in this session, such as an installed one, holds the
+/// pipes: the new one exits at once, and every command and key of the test
+/// would go to the other one and the real agents it watches. So the test
+/// refuses to start beside one, before there is anything to clean up.
+fn start(config: &Path) -> (Cleanup, Status) {
+    assert!(
+        status().is_none(),
+        "a daifukud already runs in this session; stop it first with `daifuku stop`"
+    );
+    let daemon = Command::new(daemon_exe())
+        .arg("--config")
+        .arg(config)
+        .spawn()
+        .unwrap();
+    let mut cleanup = Cleanup(vec![daemon], config.display().to_string());
+    let first = wait_for(
+        "this test's daemon to answer",
+        Duration::from_secs(15),
+        || {
+            assert!(
+                cleanup.0[0].try_wait().unwrap().is_none(),
+                "this test's daifukud exited; another one holds the pipes"
+            );
+            ours(&cleanup.1)
+        },
+    );
+    (cleanup, first)
+}
+
+/// What a test started, undone even when it fails half way. The second
+/// field is the test's config file, as its daemon names it in `status`.
+struct Cleanup(Vec<Child>, String);
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
         // A test that failed half way leaves its terminals open, and the
-        // demo's agents in them run until they are closed.
-        for fleet in ["e2e", "demo"] {
-            let _ = Command::new(cli()).args(["close", fleet]).output();
+        // demo's agents in them run until they are closed. Only the test's
+        // own daemon gets these commands: any other keeps its fleets and
+        // runs on.
+        if ours(&self.1).is_some() {
+            for fleet in ["e2e", "demo"] {
+                let _ = Command::new(cli()).args(["close", fleet]).output();
+            }
+            let _ = Command::new(cli()).arg("stop").output();
         }
-        let _ = Command::new(cli()).arg("stop").output();
         for c in &mut self.0 {
             let _ = c.kill();
             let _ = c.wait();
@@ -117,13 +165,7 @@ fn a_hook_in_a_real_console_colours_its_window_and_the_border_follows_it_away() 
     .unwrap();
     let mut steps = 0;
 
-    let daemon = Command::new(daemon_exe())
-        .arg("--config")
-        .arg(&config)
-        .spawn()
-        .unwrap();
-    let mut cleanup = Cleanup(vec![daemon]);
-    let first = wait_for("the daemon to answer", Duration::from_secs(15), status);
+    let (mut cleanup, first) = start(&config);
     assert!(first.agents.is_empty() && first.fleets.is_empty());
     steps += 1;
 
@@ -253,13 +295,7 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
     });
     std::fs::write(&config, fleets.to_string()).unwrap();
     let mut steps = 0;
-    let daemon = Command::new(daemon_exe())
-        .arg("--config")
-        .arg(&config)
-        .spawn()
-        .unwrap();
-    let mut cleanup = Cleanup(vec![daemon]);
-    wait_for("the daemon to answer", Duration::from_secs(15), status);
+    let (mut cleanup, _) = start(&config);
 
     let opened = run(&["open", "e2e"]);
     assert!(opened.contains("opened e2e (4 terminals"), "{opened}");
@@ -485,14 +521,29 @@ fn press_hotkey() -> u32 {
     sent + keys(&[(ALT.0, ALT.1, false), (CTRL.0, CTRL.1, false)])
 }
 
-/// The windows whose agents wait, by what `status` says.
-/// The windows whose agents wait. A daemon that stopped answering fails the
-/// test: an empty answer would read as "every agent was approved".
+/// The demo's windows whose agents wait. A daemon that stopped answering
+/// fails the test: an empty answer would read as "every agent was approved".
 fn waiting() -> Vec<u64> {
-    let s = wait_for("the daemon to answer", Duration::from_secs(5), status);
+    demo_waiting(wait_for(
+        "the daemon to answer",
+        Duration::from_secs(5),
+        status,
+    ))
+}
+
+/// The windows in `s` whose agents wait and that belong to the demo. Only
+/// the demo's: an agent of the developer's own in this session reports to
+/// the test's daemon as well, and Enter must never reach it.
+fn demo_waiting(s: Status) -> Vec<u64> {
+    let demo: Vec<u64> = s
+        .fleets
+        .into_iter()
+        .filter(|f| f.name == "demo")
+        .flat_map(|f| f.windows)
+        .collect();
     s.agents
         .into_iter()
-        .filter(|a| a.state.name() == "waiting")
+        .filter(|a| a.state.name() == "waiting" && demo.contains(&a.window))
         .map(|a| a.window)
         .collect()
 }
@@ -529,13 +580,7 @@ fn next_brings_each_waiting_agent_up_and_enter_approves_it() {
     )
     .unwrap();
     let mut steps = 0;
-    let daemon = Command::new(daemon_exe())
-        .arg("--config")
-        .arg(&config)
-        .spawn()
-        .unwrap();
-    let mut cleanup = Cleanup(vec![daemon]);
-    let first = wait_for("the daemon to answer", Duration::from_secs(15), status);
+    let (mut cleanup, first) = start(&config);
     println!("hotkeys: {:?}", first.hotkeys);
 
     // The demo: six scripted agents, two of which ask for approval in their
@@ -615,4 +660,35 @@ fn next_brings_each_waiting_agent_up_and_enter_approves_it() {
     });
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
+}
+
+/// Without a desktop, so it runs in every `cargo test`: the rounds above only
+/// ever count, bring up and press Enter in the demo's own terminals.
+#[test]
+fn only_the_demos_waiting_agents_count() {
+    use daifuku_core::protocol::{AgentWindow, FleetStatus};
+    use daifuku_core::state::AgentState;
+
+    let agent = |window, state| AgentWindow {
+        window,
+        title: String::new(),
+        state,
+        for_seconds: 0,
+    };
+    let s = Status {
+        fleets: vec![FleetStatus {
+            name: "demo".into(),
+            monitor: String::new(),
+            windows: vec![1, 2, 3],
+        }],
+        agents: vec![
+            agent(1, AgentState::Waiting),
+            agent(2, AgentState::Working),
+            // A real agent beside the test, waiting longest.
+            agent(9, AgentState::Waiting),
+            agent(3, AgentState::Waiting),
+        ],
+        ..Status::default()
+    };
+    assert_eq!(demo_waiting(s), vec![1, 3]);
 }
