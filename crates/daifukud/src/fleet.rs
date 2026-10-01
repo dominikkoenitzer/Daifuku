@@ -175,28 +175,43 @@ pub fn open(
     if let Some(first) = record.windows().next() {
         window::focus(first);
     }
-    let open_now = record.windows().count();
-    let message = if empty.is_empty() {
-        format!(
-            "brought back {} ({})",
-            fleet.name,
-            terminals_count(open_now)
-        )
-    } else if open_now < cells.len() {
-        format!(
-            "opened {open_now} of {} for {}: Windows Terminal did not show the rest in time",
-            terminals_count(cells.len()),
-            fleet.name
-        )
-    } else {
-        format!(
-            "opened {} ({} on {})",
-            fleet.name,
-            terminals_count(open_now),
-            m.device
-        )
-    };
-    Ok(message)
+    outcome(
+        &fleet.name,
+        &m.device,
+        cells.len(),
+        !empty.is_empty(),
+        record.windows().count(),
+    )
+}
+
+/// What opening fleet `name` with `cells` cells on `device` says, with
+/// `open` of its terminals open now and whether any had to be `launched`.
+/// No terminal at all is a failure, so a key that opened nothing says so.
+fn outcome(
+    name: &str,
+    device: &str,
+    cells: usize,
+    launched: bool,
+    open: usize,
+) -> anyhow::Result<String> {
+    if !launched {
+        return Ok(format!("brought back {name} ({})", terminals_count(open)));
+    }
+    if open == 0 {
+        return Err(anyhow!(
+            "Windows Terminal did not show a terminal for {name} in time"
+        ));
+    }
+    if open < cells {
+        return Ok(format!(
+            "opened {open} of {} for {name}: Windows Terminal did not show the rest in time",
+            terminals_count(cells)
+        ));
+    }
+    Ok(format!(
+        "opened {name} ({} on {device})",
+        terminals_count(open)
+    ))
 }
 
 /// Brings a record in line with where its fleet is now.
@@ -302,6 +317,24 @@ mod tests {
         assert_eq!(
             numbered(Path::new(r"C:\src\site"), 3),
             PathBuf::from(r"C:\src\site")
+        );
+    }
+
+    #[test]
+    fn opening_no_terminal_at_all_fails() {
+        let d = r"\\.\DISPLAY1";
+        assert!(outcome("agents", d, 6, true, 0).is_err());
+        assert_eq!(
+            outcome("agents", d, 6, true, 2).unwrap(),
+            "opened 2 of 6 terminals for agents: Windows Terminal did not show the rest in time"
+        );
+        assert_eq!(
+            outcome("agents", d, 6, true, 6).unwrap(),
+            r"opened agents (6 terminals on \\.\DISPLAY1)"
+        );
+        assert_eq!(
+            outcome("agents", d, 1, false, 1).unwrap(),
+            "brought back agents (1 terminal)"
         );
     }
 
