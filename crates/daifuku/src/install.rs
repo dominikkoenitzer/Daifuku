@@ -154,23 +154,31 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         }
     }
     if let Some(dir) = paths::install_dir() {
-        let me = std::env::current_exe().ok();
-        for name in BINARIES {
-            let file = dir.join(name);
-            if Some(&file) == me.as_ref() {
-                // A running program cannot delete itself: rename it out of
-                // the way so the folder can go, and let the rename's target
-                // be cleaned up with the temp folder.
-                let _ = std::fs::rename(
-                    &file,
-                    std::env::temp_dir().join(format!("daifuku-old-{}.exe", std::process::id())),
-                );
-            } else {
-                let _ = std::fs::remove_file(&file);
+        let (left, removed) = remove_binaries(&dir, &std::env::temp_dir());
+        match removed {
+            Ok(()) => println!("removed      {}", dir.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                for file in &left {
+                    println!("left         {}", file.display());
+                }
+                println!("left         {} ({e})", dir.display());
+                // Only when the folder holds nothing but what this left
+                // behind: nothing someone else put there is deleted, and the
+                // folder is empty by the time its turn comes.
+                let ours = std::fs::read_dir(&dir).is_ok_and(|entries| {
+                    entries.flatten().all(|entry| left.contains(&entry.path()))
+                });
+                if ours
+                    && left
+                        .iter()
+                        .chain([&dir])
+                        .all(|p| setup::delete_at_restart(p).is_ok())
+                {
+                    println!("             Windows deletes what is left at the next restart");
+                }
             }
         }
-        let _ = std::fs::remove_dir(&dir);
-        println!("removed      {}", dir.display());
     }
     if purge && let Some(dir) = paths::data_dir() {
         std::fs::remove_dir_all(&dir)
@@ -360,6 +368,31 @@ fn stop_daemon() {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Deletes the installed binaries and then their folder, and returns the
+/// files that stayed and what became of the folder.
+///
+/// A program that runs cannot be deleted, only renamed: this one, run from
+/// there, or a daemon that did not stop. Such a file is moved into `aside`,
+/// the temp folder, to be cleaned up with it, so the folder can still go.
+/// Tried on every file that will not go, not just on this program's own
+/// path, which may be spelled in another case or as a short name. A rename
+/// fails when `aside` is on another drive, and then the file stays.
+fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<()>) {
+    let mut left = Vec::new();
+    for name in BINARIES {
+        let file = dir.join(name);
+        if let Err(e) = std::fs::remove_file(&file)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            let old = aside.join(format!("daifuku-old-{}-{name}", std::process::id()));
+            if std::fs::rename(&file, old).is_err() {
+                left.push(file);
+            }
+        }
+    }
+    (left, std::fs::remove_dir(dir))
 }
 
 /// Copies, retrying for a few seconds while a stopping daemon still holds the
@@ -561,6 +594,52 @@ mod tests {
             status_reply(Ok(Some(line))),
             StatusReply::Status(_)
         ));
+    }
+
+    /// A file held open without leave to delete it can be neither deleted
+    /// nor renamed, so it and the folder stay, and say so.
+    #[test]
+    fn a_binary_that_cannot_go_is_named_and_keeps_its_folder() {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_SHARE_READ`.
+        const FILE_SHARE_READ: u32 = 1;
+        let base = std::env::temp_dir().join(format!("daifuku-remove-{}", std::process::id()));
+        let dir = base.join("Daifuku");
+        let aside = base.join("aside");
+        std::fs::create_dir_all(&aside).unwrap();
+        let fill = || {
+            std::fs::create_dir_all(&dir).unwrap();
+            for name in BINARIES {
+                std::fs::write(dir.join(name), "").unwrap();
+            }
+        };
+
+        fill();
+        let (left, removed) = remove_binaries(&dir, &aside);
+        let gone = !dir.exists();
+
+        fill();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(dir.join("daifukud.exe"))
+            .unwrap();
+        let (held_left, held_removed) = remove_binaries(&dir, &aside);
+        let stayed = dir.join("daifukud.exe").is_file() && !dir.join("daifuku.exe").exists();
+        drop(held);
+
+        let (_, again) = remove_binaries(&dir, &aside);
+        let (_, nothing) = remove_binaries(&dir, &aside);
+        std::fs::remove_dir_all(&base).unwrap();
+
+        assert!(left.is_empty() && removed.is_ok() && gone);
+        assert_eq!(held_left, [dir.join("daifukud.exe")]);
+        assert!(held_removed.is_err() && stayed);
+        assert!(again.is_ok(), "{again:?}");
+        assert_eq!(
+            nothing.map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::NotFound)
+        );
     }
 
     #[test]
