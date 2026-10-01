@@ -311,8 +311,9 @@ jobs:
         with:
           key: mutants
       - run: cargo install cargo-mutants --locked --version 27.1.0
+      # A surviving mutant or a baseline that fails marks this job failed;
+      # the job's continue-on-error keeps the run itself green.
       - run: cargo mutants --package daifuku-core --no-shuffle --timeout 120
-        continue-on-error: true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
