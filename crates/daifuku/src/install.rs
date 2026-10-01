@@ -204,20 +204,6 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
                     println!("left         {}", file.display());
                 }
                 println!("left         {} ({e})", dir.display());
-                // Only when the folder holds nothing but what this left
-                // behind: nothing someone else put there is deleted, and the
-                // folder is empty by the time its turn comes.
-                let ours = std::fs::read_dir(&dir).is_ok_and(|entries| {
-                    entries.flatten().all(|entry| left.contains(&entry.path()))
-                });
-                if ours
-                    && left
-                        .iter()
-                        .chain([&dir])
-                        .all(|p| setup::delete_at_restart(p).is_ok())
-                {
-                    println!("             Windows deletes what is left at the next restart");
-                }
             }
         }
     }
@@ -464,9 +450,12 @@ fn stop_daemon() {
 /// A program that runs cannot be deleted, only renamed: this one, run from
 /// there, or a daemon that did not stop. Such a file is moved into `aside`,
 /// the temp folder, to be cleaned up with it, so the folder can still go.
-/// Tried on every file that will not go, not just on this program's own
-/// path, which may be spelled in another case or as a short name. A rename
-/// fails when `aside` is on another drive, and then the file stays.
+/// When `aside` is on another drive, the file is renamed next to the folder
+/// instead, under a name of its own, and Windows deletes that name at the
+/// next restart. Never the install path itself: an install before the
+/// restart would lose its new files. Tried on every file that will not go,
+/// not just on this program's own path, which may be spelled in another
+/// case or as a short name.
 fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<()>) {
     let mut left = Vec::new();
     for name in BINARIES {
@@ -474,9 +463,16 @@ fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<(
         if let Err(e) = std::fs::remove_file(&file)
             && e.kind() != std::io::ErrorKind::NotFound
         {
-            let old = aside.join(format!("daifuku-old-{}-{name}", std::process::id()));
-            if std::fs::rename(&file, old).is_err() {
-                left.push(file);
+            let old = format!("daifuku-old-{}-{name}", std::process::id());
+            if std::fs::rename(&file, aside.join(&old)).is_ok() {
+                continue;
+            }
+            let beside = dir.parent().map(|p| p.join(&old));
+            match beside {
+                Some(b) if std::fs::rename(&file, &b).is_ok() => {
+                    let _ = setup::delete_at_restart(&b);
+                }
+                _ => left.push(file),
             }
         }
     }
