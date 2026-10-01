@@ -7,7 +7,7 @@
 //! its sessions. A window with a session waiting for approval shows waiting,
 //! whatever its other tabs are doing, because that is the one that needs you.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,11 @@ pub struct HookEvent {
     /// Set on `Notification` events: `permission_prompt`, `idle_prompt`, ...
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_type: Option<String>,
+    /// Set when the event comes from a subagent rather than the session's
+    /// main thread. Subagents run alongside it and ask for permission on
+    /// their own, under the same session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// Set on `Stop` events: why the model stopped. `tool_use` is a pause in
     /// the middle of a turn, not its end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +82,9 @@ pub enum Transition {
     To(AgentState),
     /// The session is over; forget it.
     End,
+    /// One subagent of the session finished; whatever it waited for is no
+    /// longer asked.
+    ThreadEnd,
     /// The event says nothing about the state (a config change, a file
     /// watcher, an event this version does not know).
     Ignore,
@@ -128,6 +136,7 @@ impl HookEvent {
             "SessionStart" | "Stop" | "Interrupt" => Transition::To(AgentState::Done),
             "StopFailure" => Transition::To(AgentState::Failed),
             "SessionEnd" => Transition::End,
+            "SubagentStop" => Transition::ThreadEnd,
             _ => Transition::Ignore,
         }
     }
@@ -148,14 +157,30 @@ pub struct Agents<W: Ord + Copy> {
     tick: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Session<W> {
     window: W,
+    /// What the session's threads did last, apart from waiting.
     state: AgentState,
-    /// The tick the session entered its current state.
+    /// The threads with a prompt up, by agent id; the main thread is "".
+    /// A session waits while any of them does, whatever the others do in
+    /// the meantime.
+    waiting: BTreeSet<String>,
+    /// The tick the session entered the state it shows.
     since: u64,
     /// The hook time of the latest event applied, when hooks stamp one.
     at: Option<u64>,
+}
+
+impl<W> Session<W> {
+    /// The state the session shows.
+    fn shown(&self) -> AgentState {
+        if self.waiting.is_empty() {
+            self.state
+        } else {
+            AgentState::Waiting
+        }
+    }
 }
 
 /// How many ended sessions [`Agents`] remembers to turn away their late
@@ -198,6 +223,20 @@ impl<W: Ord + Copy> Agents<W> {
                     self.ended.push_back((event.session_id.clone(), at));
                 }
             }
+            Transition::ThreadEnd => {
+                let (Some(id), Some(s)) =
+                    (&event.agent_id, self.sessions.get_mut(&event.session_id))
+                else {
+                    return false;
+                };
+                let shown = s.shown();
+                s.waiting.remove(id);
+                s.at = s.at.max(event.daifuku_at);
+                if s.shown() != shown {
+                    self.tick += 1;
+                    s.since = self.tick;
+                }
+            }
             Transition::To(state) => {
                 self.tick += 1;
                 let tick = self.tick;
@@ -206,15 +245,31 @@ impl<W: Ord + Copy> Agents<W> {
                     .entry(event.session_id.clone())
                     .or_insert(Session {
                         window,
-                        state,
+                        state: AgentState::Working,
+                        waiting: BTreeSet::new(),
                         since: tick,
                         at: None,
                     });
-                if entry.state != state || entry.window != window {
+                let shown = entry.shown();
+                let thread = event.agent_id.clone().unwrap_or_default();
+                if state == AgentState::Waiting {
+                    // A notification names no thread: it is the reminder of a
+                    // prompt already counted, or the only sign of one.
+                    if event.hook_event_name != "Notification" || entry.waiting.is_empty() {
+                        entry.waiting.insert(thread);
+                    }
+                } else {
+                    entry.waiting.remove(&thread);
+                    // A prompt typed on the main thread means none is up.
+                    if thread.is_empty() && event.hook_event_name == "UserPromptSubmit" {
+                        entry.waiting.clear();
+                    }
+                    entry.state = state;
+                }
+                if entry.shown() != shown || entry.window != window {
                     entry.since = tick;
                 }
                 entry.window = window;
-                entry.state = state;
                 entry.at = entry.at.max(event.daifuku_at);
             }
         }
@@ -256,7 +311,7 @@ impl<W: Ord + Copy> Agents<W> {
         self.sessions
             .values()
             .filter(|s| s.window == window)
-            .map(|s| s.state)
+            .map(Session::shown)
             .max()
     }
 
@@ -266,8 +321,8 @@ impl<W: Ord + Copy> Agents<W> {
         let mut out: BTreeMap<W, AgentState> = BTreeMap::new();
         for s in self.sessions.values() {
             out.entry(s.window)
-                .and_modify(|e| *e = (*e).max(s.state))
-                .or_insert(s.state);
+                .and_modify(|e| *e = (*e).max(s.shown()))
+                .or_insert(s.shown());
         }
         out
     }
@@ -282,7 +337,7 @@ impl<W: Ord + Copy> Agents<W> {
                 let since = self
                     .sessions
                     .values()
-                    .filter(|s| s.window == window && s.state == state)
+                    .filter(|s| s.window == window && s.shown() == state)
                     .map(|s| s.since)
                     .min()
                     .unwrap_or(0);
@@ -399,6 +454,61 @@ mod tests {
             daifuku_at: Some(at),
             ..event
         }
+    }
+
+    fn sub(session: &str, name: &str, agent: &str) -> HookEvent {
+        HookEvent {
+            agent_id: Some(agent.into()),
+            ..ev(session, name)
+        }
+    }
+
+    #[test]
+    fn a_subagent_waiting_stays_waiting_while_another_thread_works() {
+        let mut a = Agents::new();
+        a.apply(1, &sub("s", "PermissionRequest", "A"));
+        assert!(!a.apply(1, &sub("s", "PreToolUse", "B")));
+        assert!(!a.apply(1, &ev("s", "PostToolUse")));
+        assert_eq!(a.window_state(1), Some(AgentState::Waiting));
+        assert_eq!(a.needs_you(), vec![1]);
+        // The thread that asked carries on: it was approved.
+        a.apply(1, &sub("s", "PostToolUse", "A"));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
+    }
+
+    #[test]
+    fn a_subagent_that_ends_takes_its_question_with_it() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "UserPromptSubmit"));
+        a.apply(1, &sub("s", "PermissionRequest", "A"));
+        assert!(a.apply(1, &sub("s", "SubagentStop", "A")));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
+        // A stop without a subagent says nothing.
+        assert!(!a.apply(1, &ev("s", "SubagentStop")));
+    }
+
+    #[test]
+    fn a_new_prompt_means_no_question_is_still_up() {
+        let mut a = Agents::new();
+        a.apply(1, &sub("s", "PermissionRequest", "A"));
+        a.apply(1, &ev("s", "PermissionRequest"));
+        a.apply(1, &ev("s", "UserPromptSubmit"));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
+    }
+
+    #[test]
+    fn a_reminder_counts_only_when_nothing_is_waiting_yet() {
+        let mut a = Agents::new();
+        a.apply(1, &sub("s", "PermissionRequest", "A"));
+        a.apply(1, &note("s", "permission_prompt"));
+        a.apply(1, &sub("s", "PostToolUse", "A"));
+        assert_eq!(
+            a.window_state(1),
+            Some(AgentState::Working),
+            "the reminder was A's"
+        );
+        a.apply(1, &note("s", "permission_prompt"));
+        assert_eq!(a.window_state(1), Some(AgentState::Waiting));
     }
 
     #[test]
