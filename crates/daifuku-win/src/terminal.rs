@@ -263,12 +263,7 @@ pub fn open(wt: &Path, launch: &Launch) -> std::io::Result<()> {
 ///
 /// When there is no shell (a session without Explorer) or the start fails.
 pub fn open_unelevated(wt: &Path, launch: &Launch) -> std::io::Result<()> {
-    let mut line = quote(wt.as_os_str());
-    for arg in launch.args(shell().as_deref()) {
-        line.push(' ');
-        line.push_str(&quote(&arg));
-    }
-    let mut line_w = to_wide(&line);
+    let mut line_w = token_command_line(wt, &launch.args(shell().as_deref()))?;
     let app = to_wide(&wt.to_string_lossy());
     // SAFETY: every handle opened here is closed before returning; the
     // strings are NUL terminated and outlive the call.
@@ -327,6 +322,35 @@ pub fn open_unelevated(wt: &Path, launch: &Launch) -> std::io::Result<()> {
         let _ = CloseHandle(pi.hProcess);
     }
     Ok(())
+}
+
+/// The most UTF-16 units, the terminating NUL included, that
+/// `CreateProcessWithTokenW` takes as a command line. An ordinary start takes
+/// 32767.
+const MAX_TOKEN_COMMAND_LINE: usize = 1024;
+
+/// The NUL-terminated command line that starts `wt` with `args` through a
+/// borrowed token.
+///
+/// The encoded command takes nearly three characters for each one of the
+/// fleet's command, so a command of a few hundred characters already passes
+/// what `CreateProcessWithTokenW` takes. Such a line is refused here, with
+/// the reason, instead of failing in Windows or reaching PowerShell cut short.
+fn token_command_line(wt: &Path, args: &[OsString]) -> std::io::Result<Vec<u16>> {
+    let mut line = quote(wt.as_os_str());
+    for arg in args {
+        line.push(' ');
+        line.push_str(&quote(arg));
+    }
+    let line = to_wide(&line);
+    if line.len() > MAX_TOKEN_COMMAND_LINE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the command line for a terminal without administrator rights is longer than the \
+             1024 characters Windows allows there; shorten the fleet's command",
+        ));
+    }
+    Ok(line)
 }
 
 /// Quotes one argument the way the Microsoft C runtime splits a command line:
@@ -524,6 +548,37 @@ mod tests {
         assert_eq!(q(r#"say "hi""#), r#""say \"hi\"""#);
         assert_eq!(q(r"ends in \"), r#""ends in \\""#);
         assert_eq!(q(r#"a\"b c"#), r#""a\\\"b c""#);
+    }
+
+    #[test]
+    fn a_borrowed_token_takes_1024_characters_with_the_nul() {
+        let line = |n: usize| token_command_line(Path::new("w"), &["a".repeat(n).into()]);
+        // `w`, a space and the argument, then the NUL.
+        assert_eq!(line(1021).unwrap().len(), 1024);
+        assert_eq!(
+            line(1022).map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn a_command_of_a_few_hundred_characters_is_too_long_for_a_borrowed_token() {
+        let wt = Path::new(
+            r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.23.12811.0_x64__8wekyb3d8bbwe\wt.exe",
+        );
+        let shell = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
+        let args = |n: usize| {
+            Launch {
+                command: Some("c".repeat(n)),
+                ..Launch::default()
+            }
+            .args(Some(shell))
+        };
+        let short = token_command_line(wt, &args(100)).unwrap();
+        assert_eq!(short.last(), Some(&0));
+        let long = token_command_line(wt, &args(400)).unwrap_err();
+        assert_eq!(long.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(long.to_string().contains("shorten"), "{long}");
     }
 
     #[test]
