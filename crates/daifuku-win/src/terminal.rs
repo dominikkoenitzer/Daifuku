@@ -14,7 +14,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_SERVICE_DISABLED, HANDLE, WIN32_ERROR};
 use windows::Win32::Security::{
     DuplicateTokenEx, SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT,
     TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY, TokenPrimary,
@@ -317,11 +317,28 @@ pub fn open_unelevated(wt: &Path, launch: &Launch) -> std::io::Result<()> {
             &raw mut pi,
         );
         let _ = CloseHandle(primary);
-        started.map_err(std::io::Error::other)?;
+        started.map_err(start_error)?;
         let _ = CloseHandle(pi.hThread);
         let _ = CloseHandle(pi.hProcess);
     }
     Ok(())
+}
+
+/// Why `CreateProcessWithTokenW` failed, in words that lead somewhere.
+///
+/// Windows starts a process with a borrowed token through the Secondary
+/// Logon service, which hardening scripts often disable. Its own message then
+/// names no service, and administrator fleets, which do not need it, keep
+/// working, so the cause is hard to guess.
+fn start_error(e: windows::core::Error) -> std::io::Error {
+    if WIN32_ERROR::from_error(&e) == Some(ERROR_SERVICE_DISABLED) {
+        return std::io::Error::other(
+            "terminals without administrator rights are started through the Secondary Logon \
+             service (seclogon), which is disabled: set its startup type to Manual, or give the \
+             fleet \"admin\": true",
+        );
+    }
+    std::io::Error::other(e)
 }
 
 /// The most UTF-16 units, the terminating NUL included, that
@@ -579,6 +596,14 @@ mod tests {
         let long = token_command_line(wt, &args(400)).unwrap_err();
         assert_eq!(long.kind(), std::io::ErrorKind::InvalidInput);
         assert!(long.to_string().contains("shorten"), "{long}");
+    }
+
+    #[test]
+    fn a_disabled_secondary_logon_service_is_named() {
+        let disabled = start_error(windows::core::Error::from(ERROR_SERVICE_DISABLED));
+        assert!(disabled.to_string().contains("(seclogon)"), "{disabled}");
+        let other = windows::core::Error::from(windows::Win32::Foundation::ERROR_ACCESS_DENIED);
+        assert_eq!(start_error(other.clone()).to_string(), other.to_string());
     }
 
     #[test]
