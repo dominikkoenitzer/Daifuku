@@ -56,6 +56,7 @@ pub const CLAUDE: Agent = Agent {
         "SubagentStart",
         "SubagentStop",
         "PreCompact",
+        "PostCompact",
         "Stop",
         "StopFailure",
         "SessionEnd",
@@ -74,6 +75,7 @@ pub const CODEX: Agent = Agent {
         "PermissionRequest",
         "SubagentStart",
         "PreCompact",
+        "PostCompact",
         "Stop",
         "Interrupt",
         "SessionEnd",
@@ -426,6 +428,15 @@ mod tests {
         assert!(stop.get("args").is_none());
         assert_eq!(CODEX.add_hooks(&mut s, EXE), Ok(0), "idempotent");
         assert_eq!(remove_hooks(&mut s), CODEX.events.len());
+    }
+
+    #[test]
+    fn both_agents_say_when_a_compact_is_over() {
+        // A session start after a compaction says nothing, so this is the
+        // only sign that a `/compact` you ran is finished.
+        for agent in [&CLAUDE, &CODEX] {
+            assert!(agent.events.contains(&"PostCompact"), "{}", agent.name);
+        }
     }
 
     #[test]
