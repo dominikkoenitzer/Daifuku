@@ -150,7 +150,7 @@ A hotkey is modifiers and one key, joined by `+`: `ctrl`, `alt`, `shift`,
 `bracketright`. At least one modifier is required. `null` turns a key off.
 `semicolon`, `slash`, `backslash`, `grave`, `quote`, `bracketleft` and
 `bracketright` name keys by what they type on a US keyboard; on another
-layout each is a key with other characters on it.
+layout it can be a key with other characters on it.
 
 A combination another program already holds cannot be registered; `daifuku
 status` and `daifuku doctor` list it as refused. On German, Swiss and French

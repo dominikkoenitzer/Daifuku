@@ -95,8 +95,9 @@ administrator terminals that result.
   borrowed from the desktop shell, so a link swapped in half way cannot
   lead the write anywhere the user may not write. With no desktop shell to
   borrow them from, as on a build server or while Explorer is not running,
-  it makes the edit with its own rights, and only the check that the file
-  is inside the profile guards it.
+  it makes the edit with its own rights: the check that the file is inside
+  the profile and the fresh file that cannot be a link still hold, the
+  user's rights do not.
 
 ## Checked on every push
 

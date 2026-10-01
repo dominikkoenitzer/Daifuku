@@ -44,7 +44,8 @@ says so (after 0.1.1); make it a real file in your profile and install again.
 Install adds hooks to these two files only. If `CLAUDE_CONFIG_DIR` or
 `CODEX_HOME` moves an agent's settings elsewhere, copy Daifuku's hooks into
 the file there yourself, and remove them there when you uninstall; install
-and doctor name that file (after 0.1.1).
+names that file, and doctor names it when the hooks there are missing (after
+0.1.1).
 
 The installer does not add Daifuku to `PATH`, so run its commands by their
 full path:
@@ -61,7 +62,8 @@ real agent, `demo` in place of `doctor` opens six scripted ones. Below,
 To update, unzip the new release and run `.\daifuku.exe install` there; your
 config and hooks are kept. A `ProgramData\Daifuku` folder that is not locked
 to administrators the way install leaves it, such as one another program made
-or one whose owner or access list was changed since, is deleted with any
+or one whose owner or access list was changed so that someone else may write
+it, is deleted with any
 config in it and made anew (after 0.1.1).
 
 ## Configure

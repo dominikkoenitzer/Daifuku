@@ -96,7 +96,7 @@
   characters Windows takes for a terminal without administrator rights, as
   a `command` of about 250 characters makes it, is refused with a message
   that names the limit. With the Secondary Logon service (seclogon)
-  disabled, such a fleet says that it needs this service.
+  disabled, an `"admin": false` fleet says that it needs this service.
 - The config and the agents' settings files are read when saved with a byte
   order mark.
 - The installer points Daifuku's hooks at the installed `daifuku.exe` when
