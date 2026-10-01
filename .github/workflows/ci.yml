@@ -394,7 +394,8 @@ jobs:
       - uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
 
   # Every link in the README and the docs resolves, including the schema URL
-  # the starter config writes into every user's file.
+  # the starter config writes into every user's file. That one only appears
+  # in a code block, which lychee skips unless told to read them.
   links:
     name: links
     timeout-minutes: 10
@@ -405,7 +406,7 @@ jobs:
           persist-credentials: false
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
-          args: --no-progress --include-fragments README.md docs
+          args: --no-progress --include-fragments --include-verbatim README.md docs
           fail: true
 
   # The release workflow's packaging, on every push, without publishing: a
