@@ -216,23 +216,6 @@ jobs:
           key: doc
       - run: cargo doc --locked --workspace --all-features --no-deps
 
-  build:
-    name: build release
-    timeout-minutes: 30
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: release
-      # Thin LTO with one codegen unit breaks in ways a debug build does not.
-      - run: cargo build --locked --release --workspace
-
   # Windows on ARM: Snapdragon laptops run x64 programs only through
   # emulation, and a window manager's hooks and timers are the last thing to
   # want emulated. Compile only: a hosted x64 runner cannot run ARM64 code.
@@ -426,6 +409,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: release
+      # Thin LTO with one codegen unit breaks in ways a debug build does not.
       - run: cargo build --locked --release --workspace
       - name: Stage, run and zip
         shell: pwsh
