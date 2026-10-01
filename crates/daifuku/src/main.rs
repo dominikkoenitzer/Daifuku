@@ -267,7 +267,9 @@ fn control(request: &Request, raw: bool) -> ExitCode {
         }
     };
     if raw {
-        print!("{reply}");
+        // A script reads this through a pipe, which PowerShell decodes in the
+        // console's code page, not UTF-8; escaped, a title arrives intact.
+        print!("{}", ascii_json(&reply));
         // A script checks the exit code before it reads the JSON.
         return if done(&reply) {
             ExitCode::SUCCESS
@@ -295,6 +297,25 @@ fn control(request: &Request, raw: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `json` with every character past ASCII written as a `\u` escape. JSON has
+/// such characters only inside strings, where the escape means the same, so
+/// any parser reads the same value, in whatever code page it arrives.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ascii_json(json: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            for unit in c.encode_utf16(&mut [0; 2]) {
+                let _ = write!(out, "\\u{unit:04x}");
+            }
+        }
+    }
+    out
 }
 
 /// Whether a reply says the request was done: readable, and not an error.
@@ -476,6 +497,18 @@ mod tests {
         ));
         assert!(!done(""));
         assert!(!done("{\"result\""));
+    }
+
+    #[test]
+    fn json_for_a_script_is_ascii_and_reads_the_same() {
+        let reply = "{\"title\":\"\u{2733} Gr\u{fc}ezi \u{1f600}\",\"a\\\\b\":1}\n";
+        let ascii = ascii_json(reply);
+        assert_eq!(
+            ascii,
+            "{\"title\":\"\\u2733 Gr\\u00fcezi \\ud83d\\ude00\",\"a\\\\b\":1}\n"
+        );
+        let read = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        assert_eq!(read(&ascii), read(reply));
     }
 
     #[test]
