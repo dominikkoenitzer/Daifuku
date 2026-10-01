@@ -21,7 +21,7 @@ use anyhow::{Context, anyhow, bail};
 use daifuku_core::agents::{self, Agent, CLAUDE, CODEX};
 use daifuku_core::config;
 use daifuku_core::config::Config;
-use daifuku_core::protocol::{Request, to_line};
+use daifuku_core::protocol::{Request, Response, Status, from_line, to_line};
 use daifuku_core::task::{TASK_NAME, xml};
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{paths, process, setup, terminal};
@@ -263,46 +263,43 @@ pub fn doctor() -> bool {
     if !running {
         // Nothing more to ask a daemon that is not there.
     } else if process::current_is_elevated() {
-        let status = to_line(&Request::Status)
-            .ok()
-            .and_then(|l| {
-                send(Pipe::Control, &l, Duration::from_secs(2))
-                    .ok()
-                    .flatten()
-            })
-            .and_then(|r| {
-                daifuku_core::protocol::from_line::<daifuku_core::protocol::Response>(&r).ok()
-            });
-        if let Some(daifuku_core::protocol::Response::Status(s)) = status {
-            check(
-                s.elevated,
-                "daemon elevated",
-                "start it through the logon task, not by hand",
-            );
-            check(
-                s.version == env!("CARGO_PKG_VERSION"),
-                "daemon up to date",
-                &format!(
-                    "the daemon runs {} and this daifuku is {}: run `daifuku install` from the newer one, which also restarts the daemon",
-                    s.version,
-                    env!("CARGO_PKG_VERSION")
-                ),
-            );
-            let refused = refused_hotkeys(&s.hotkeys);
-            check(
-                refused.is_empty(),
-                "hotkeys registered",
-                &format!(
-                    "another program holds {}; pick others in the config",
-                    refused.join(", ")
-                ),
-            );
-        } else {
-            check(
+        let reply = to_line(&Request::Status)
+            .map_err(std::io::Error::other)
+            .and_then(|l| send(Pipe::Control, &l, Duration::from_secs(2)));
+        match status_reply(reply) {
+            StatusReply::Status(s) => {
+                check(
+                    s.elevated,
+                    "daemon elevated",
+                    "start it through the logon task, not by hand",
+                );
+                check(
+                    s.version == env!("CARGO_PKG_VERSION"),
+                    "daemon up to date",
+                    &format!(
+                        "the daemon runs {} and this daifuku is {}: run `daifuku install` from the newer one, which also restarts the daemon",
+                        s.version,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                );
+                let refused = refused_hotkeys(&s.hotkeys);
+                check(
+                    refused.is_empty(),
+                    "hotkeys registered",
+                    &format!(
+                        "another program holds {}; pick others in the config",
+                        refused.join(", ")
+                    ),
+                );
+            }
+            StatusReply::Busy => println!(
+                "--    daemon busy with another command, such as opening a fleet: run doctor again in a moment"
+            ),
+            StatusReply::Silent => check(
                 false,
                 "daemon answers",
                 r"restart it: `daifuku stop`, then `schtasks /Run /TN \Daifuku\Daemon`",
-            );
+            ),
         }
     } else {
         println!(
@@ -313,6 +310,30 @@ pub fn doctor() -> bool {
         println!("logs  {}", logs.display());
     }
     ok
+}
+
+/// What came back when doctor asked the daemon for its status.
+enum StatusReply {
+    /// The status.
+    Status(Status),
+    /// Nothing yet: another command, such as opening a fleet, holds the one
+    /// control pipe, and the daemon itself is fine.
+    Busy,
+    /// No answer, or one that does not read.
+    Silent,
+}
+
+/// Reads what [`send`] returned for `status`. A wait that timed out is how
+/// it reports a daemon busy with another command.
+fn status_reply(reply: std::io::Result<Option<String>>) -> StatusReply {
+    match reply {
+        Ok(Some(line)) => match from_line::<Response>(&line) {
+            Ok(Response::Status(s)) => StatusReply::Status(s),
+            _ => StatusReply::Silent,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => StatusReply::Busy,
+        _ => StatusReply::Silent,
+    }
 }
 
 /// The combinations the daemon's status lists as refused. Matched on the
@@ -524,6 +545,22 @@ mod tests {
             "Ctrl+Alt+S: refused, another program holds it".to_owned(),
         ];
         assert_eq!(refused_hotkeys(&hotkeys), ["Ctrl+Alt+S"]);
+    }
+
+    /// What `send` returns while another command holds the control pipe.
+    #[test]
+    fn a_daemon_busy_with_another_command_is_busy_not_silent() {
+        let busy = std::io::Error::new(std::io::ErrorKind::TimedOut, "busy");
+        assert!(matches!(status_reply(Err(busy)), StatusReply::Busy));
+        let gone = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        assert!(matches!(status_reply(Err(gone)), StatusReply::Silent));
+        let garbled = Ok(Some("not json\n".to_owned()));
+        assert!(matches!(status_reply(garbled), StatusReply::Silent));
+        let line = to_line(&Response::Status(Status::default())).unwrap();
+        assert!(matches!(
+            status_reply(Ok(Some(line))),
+            StatusReply::Status(_)
+        ));
     }
 
     #[test]
