@@ -286,12 +286,16 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: echo "::warning::No provenance for $RELEASE_TAG, this run is on $GITHUB_REF. Run the workflow from the tag itself (Use workflow from $RELEASE_TAG) to attest it."
 
+      # A version with a pre-release part, such as v0.2.0-rc.1, is published
+      # as a pre-release, so it never becomes the latest release the README's
+      # download link leads to.
       - name: Publish release
         if: github.ref_type == 'tag' || inputs.tag != ''
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: ${{ inputs.tag || github.ref_name }}
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           generate_release_notes: true
           files: |
             dist/*.zip
