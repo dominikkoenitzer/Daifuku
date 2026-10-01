@@ -22,9 +22,10 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
-    ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
-    HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_TIMEOUT, WIN32_ERROR,
+    ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA,
+    ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
+    GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+    WAIT_TIMEOUT, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -461,28 +462,34 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
             )
         }
     };
+    let deadline = Instant::now() + wait;
     let h = match open() {
         Ok(h) => h,
-        Err(_) => {
-            let ms = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX);
+        Err(_) => loop {
+            let left = deadline.saturating_duration_since(Instant::now()).as_millis();
+            // At least one: zero would mean the pipe's default wait instead.
+            let ms = u32::try_from(left).unwrap_or(u32::MAX).max(1);
             // SAFETY: name is NUL terminated.
             if !unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), ms) }.as_bool() {
-                // The pipe is there but every instance stayed taken: the
-                // daemon runs and is busy, for one with opening a fleet.
                 // SAFETY: no arguments.
                 if unsafe { GetLastError() } == ERROR_SEM_TIMEOUT {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Daifuku is busy with another command; try again in a moment",
-                    ));
+                    return Err(busy());
                 }
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "Daifuku is not running; `daifuku doctor` says why",
-                ));
+                return Err(not_running());
             }
-            open().map_err(io::Error::other)?
-        }
+            // A free instance wakes every client waiting for one, and only
+            // the first to open it gets it. The others find the pipe busy
+            // again and wait for the next one, until the deadline.
+            match open().map_err(win32) {
+                Ok(h) => break h,
+                Err(e) => match os_error(&e) {
+                    Some(ERROR_PIPE_BUSY) if Instant::now() < deadline => {}
+                    Some(ERROR_PIPE_BUSY) => return Err(busy()),
+                    Some(ERROR_FILE_NOT_FOUND) => return Err(not_running()),
+                    _ => return Err(e),
+                },
+            }
+        },
     };
     // SAFETY: h is a fresh, owned, valid handle, closed when this returns.
     let _handle = unsafe { OwnedHandle::from_raw_handle(h.0) };
@@ -508,10 +515,27 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
     read_line(h, raw(&event), None).map(Some)
 }
 
+/// The pipe is there but every instance stayed taken: the daemon runs and is
+/// busy, for one with opening a fleet.
+fn busy() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "Daifuku is busy with another command; try again in a moment",
+    )
+}
+
+/// There is no pipe to wait for.
+fn not_running() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        "Daifuku is not running; `daifuku doctor` says why",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY};
+    use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
 
     /// A pipe name no daemon uses, different for every call.
     fn private_name() -> String {
@@ -658,6 +682,50 @@ mod tests {
         assert!(sent.is_ok(), "the hook found no free instance: {sent:?}");
         let line = received.recv_timeout(Duration::from_secs(3));
         assert_eq!(line.as_deref(), Ok("{\"late\":1}\n"));
+    }
+
+    #[test]
+    fn hooks_that_wait_for_the_same_instance_all_get_through() {
+        let name = private_name();
+        let sddl = &Pipe::Hook.sddl(process::current_is_elevated());
+        let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
+        // Holds the only instance until the server gives up on it, so every
+        // hook below waits for it and all of them are woken at once.
+        let _idle = idle_client(&name);
+        let (lines, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            loop {
+                if let Ok(mut connection) = instance.accept()
+                    && let Ok(line) = connection.read_line(Duration::from_millis(500))
+                    && lines.send(line).is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let hooks: Vec<_> = (0..4)
+            .map(|i| {
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    send_to(
+                        &name,
+                        Pipe::Hook,
+                        &format!("{{\"hook\":{i}}}\n"),
+                        Duration::from_secs(5),
+                    )
+                })
+            })
+            .collect();
+        for hook in hooks {
+            let sent = hook.join().unwrap();
+            assert!(sent.is_ok(), "a hook lost the race for the pipe: {sent:?}");
+        }
+        let mut got: Vec<String> = (0..4)
+            .map(|_| received.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        got.sort();
+        let want: Vec<String> = (0..4).map(|i| format!("{{\"hook\":{i}}}\n")).collect();
+        assert_eq!(got, want);
     }
 
     #[test]
