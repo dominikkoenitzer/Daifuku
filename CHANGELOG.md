@@ -135,6 +135,17 @@
 - A fleet command with double quotes in it runs as written: Windows
   Terminal used to hand it to PowerShell with its quotes broken.
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
+- At a `border.width` of 1, or 0, which draws as 1, the states are 1, 2, 3
+  and 4 pixels wide, in high contrast too; done, working and failed were
+  all 1.
+- A fleet `monitor` that is neither a keyword nor a device name such as
+  `\\.\DISPLAY2` is an error, which `daifuku status` and `doctor` show,
+  instead of opening the fleet on the primary monitor. A config with such a
+  typo is no longer used, so check `daifuku doctor` after updating. The
+  schema flags it in editors.
+- `border.colours` with only some states set keeps the palette's colours
+  for the others: with `"palette": "colorblind"` they stay Okabe-Ito instead
+  of turning Catppuccin.
 - `daifuku doctor` also checks that the hooks call the installed copy, that
   the daemon runs the same version, and that the config can be read, and it
   says where the logs are.
