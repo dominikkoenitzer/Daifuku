@@ -14,9 +14,8 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, HTTRANSPARENT, RegisterClassExW, SW_HIDE,
-    SW_SHOWNA, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos, ShowWindow,
-    WM_ERASEBKGND, WM_NCHITTEST, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    SW_SHOWNA, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WM_ERASEBKGND, WM_NCHITTEST,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -291,6 +290,11 @@ impl BorderWindow {
     }
 
     /// Moves the window without touching its pixels.
+    ///
+    /// A hidden frame stays hidden: the restack that follows both slots it in
+    /// above its target and shows it. Shown here, it would come up at its old
+    /// place in the z-order without being marked visible, and a failed
+    /// restack after that could not take it down again.
     fn move_to(&mut self, window: Rect) -> Result<()> {
         // SAFETY: the window belongs to this struct and this thread. No size
         // change, no activation, no z-order change: restack does that. A null
@@ -304,7 +308,7 @@ impl BorderWindow {
                 window.top,
                 window.width(),
                 window.height(),
-                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+                SWP_NOACTIVATE | SWP_NOZORDER,
             )
         }?;
         self.position = Some((window.left, window.top));
