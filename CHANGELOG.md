@@ -37,12 +37,13 @@
   itself, never follows a link there, finds ProgramData without the
   environment, and registers the logon task from inside that locked folder.
 - The hook pipe lets the signed-in user write, not listen, and no one else:
-  while the daemon runs, no other process can add a server to it. Clients connect for identification only, and a report sent
-  just before the daemon was ready is no longer lost.
+  while the daemon runs, no other process can add a server to it. Clients
+  connect for identification only, and a report sent just before the daemon
+  was ready is no longer lost.
 - A client that connects to a pipe and stays silent, or never reads its
-  reply, is cut off after a deadline, so it cannot block real hooks; a hook
-  gives up on a pipe that does not take its line in time; `daifuku stop` always
-  gets its reply.
+  reply, is cut off after a deadline, so one connection holds a pipe only
+  briefly; a hook gives up on a pipe that does not take its line in time;
+  `daifuku stop` always gets its reply.
 - Daemon commands from a normal terminal say they need an administrator one,
   instead of "Access is denied".
 - The config and the agents' settings files are read when saved with a byte
