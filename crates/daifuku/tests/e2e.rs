@@ -1,12 +1,14 @@
 //! End to end, on a real desktop: the real daemon, a real console window, the
 //! real hook reporting from inside it, and the border that results.
 //!
-//! Opt-in, because it starts a daemon and opens a window:
+//! Opt-in, because it starts a daemon and opens windows. One test at a time,
+//! as CI runs them: each starts a daemon of its own, a session has room for
+//! one, and all of them write the same config file. In PowerShell:
 //!
 //! ```text
 //! cargo build --workspace
-//! set DAIFUKU_E2E=1
-//! cargo test -p daifuku --test e2e -- --nocapture
+//! $env:DAIFUKU_E2E = '1'
+//! cargo test -p daifuku --test e2e -- --nocapture --test-threads 1
 //! ```
 //!
 //! CI runs it on a hosted Windows runner and fails the job unless the final
