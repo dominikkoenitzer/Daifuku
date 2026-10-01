@@ -213,6 +213,12 @@ impl Daemon {
         }
     }
 
+    /// Whether the config in use is the built-in one, as it is when the
+    /// daemon started with a config file it could not use.
+    fn on_defaults(&self) -> bool {
+        self.config == Config::default()
+    }
+
     fn hotkey(&mut self, action: &Action) {
         tracing::info!(?action, "hotkey");
         let result = match action {
@@ -259,6 +265,9 @@ impl Daemon {
                 }
                 self.refresh_borders();
                 match &self.config_error {
+                    Some(e) if self.on_defaults() => {
+                        Response::error(format!("kept the defaults: {e}"))
+                    }
                     Some(e) => Response::error(format!("kept the previous config: {e}")),
                     None => Response::said("config reloaded"),
                 }
@@ -518,7 +527,12 @@ impl Daemon {
             .collect();
         let mut config = self.config_path.display().to_string();
         if let Some(e) = &self.config_error {
-            config.push_str(&format!(" (invalid, using the last good one: {e})"));
+            let using = if self.on_defaults() {
+                "the defaults"
+            } else {
+                "the last good one"
+            };
+            config.push_str(&format!(" (invalid, using {using}: {e})"));
         }
         let mut hotkeys = self.hotkeys.describe();
         hotkeys.extend(
@@ -885,6 +899,31 @@ mod tests {
         assert_eq!(d.close(None), Response::said("that fleet is not open"));
         d.config.fleets.clear();
         assert_eq!(d.close(None), Response::error("the config has no fleets"));
+    }
+
+    #[test]
+    fn an_invalid_config_says_whether_the_defaults_are_in_use() {
+        let dir = std::env::temp_dir().join(format!("daifukud-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daifuku.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let mut d = Daemon::new(path.clone(), false, events::Hooks::none());
+        d.load_config();
+        let started_invalid = d.status().config;
+        std::fs::write(&path, r#"{"sound": true}"#).unwrap();
+        d.load_config();
+        std::fs::write(&path, "{ not json").unwrap();
+        d.load_config();
+        let broken_later = d.status().config;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            started_invalid.contains("(invalid, using the defaults: "),
+            "{started_invalid}"
+        );
+        assert!(
+            broken_later.contains("(invalid, using the last good one: "),
+            "{broken_later}"
+        );
     }
 
     #[test]
