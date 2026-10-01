@@ -49,10 +49,10 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `count` | `6` | 1 to 16 terminals. |
 | `monitor` | `"portrait"` | See below. |
 | `shape` | automatic | `{ "columns": 3, "rows": 2 }` to force a grid. A shape too small for `count` grows rows. |
-| `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree (in releases after 0.1.1). A folder that does not exist falls back to your profile folder. |
+| `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree (in releases after 0.1.1). A folder that does not exist falls back to your profile folder. An `"admin": false` fleet looks for the folder as you, so a drive you mapped or made with `subst` counts (after 0.1.1). |
 | `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it: PowerShell 7 when it is installed in Program Files, else Windows PowerShell, started with `-ExecutionPolicy RemoteSigned` so a `claude` installed with npm runs. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | Windows Terminal's default | A Windows Terminal profile, by name. |
-| `admin` | `true` | Open the terminals as administrator. |
+| `admin` | `true` | Open the terminals as administrator. With `false`, Windows starts them as you through its Secondary Logon service (seclogon), which must not be disabled, and takes at most 1024 characters for their whole command line. The encoded `command` uses almost three of those for each of its own, so keep it under about 250 characters. |
 | `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
 
@@ -72,8 +72,14 @@ closed are opened again, each in its own cell with its own number (after
 | `"\\\\.\\DISPLAY2"` | A monitor by its device name. |
 
 Every pick falls back to the primary monitor, so a fleet always opens
-somewhere. From version 0.1.1 on, when monitors change, open fleets move into the
-grid of the monitor they belong on now.
+somewhere. A value that is neither a keyword nor a device name, which starts
+with `\\.\`, is an error (after 0.1.1), so a misspelt keyword does not
+quietly become the primary monitor.
+
+From version 0.1.1 on, when monitors change, open fleets move into the grid
+of the monitor they belong on now. After 0.1.1, only the fleets whose cells
+the change moved, or whose monitor's scale it changed, are put back, and a
+terminal you minimised or maximised stays that way.
 
 ### The grid
 
