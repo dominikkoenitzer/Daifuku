@@ -81,6 +81,11 @@ pub enum Transition {
     /// One subagent of the session finished; whatever it waited for is no
     /// longer asked.
     ThreadEnd,
+    /// The session has sat at its prompt for a while: its main thread is
+    /// neither working nor asking anything. Claude Code sends no `Stop` for
+    /// a turn you interrupt, so this is how such a turn ends. A failure
+    /// stays, and so does a subagent's question.
+    Idle,
     /// The event says nothing about the state (a config change, a file
     /// watcher, an event this version does not know).
     Ignore,
@@ -107,6 +112,8 @@ impl HookEvent {
     ///   **waiting**. A denied permission puts it back to work.
     /// - The turn ended: **done**. It ended on an error: **failed**. A
     ///   rate-limited session that resumed by itself is working again.
+    /// - Nothing has happened at the prompt for about a minute: see
+    ///   [`Transition::Idle`].
     /// - The session closed: forget it.
     #[must_use]
     pub fn transition(&self) -> Transition {
@@ -124,6 +131,7 @@ impl HookEvent {
                     Transition::To(AgentState::Waiting)
                 }
                 Some("quota_auto_resume_fired") => Transition::To(AgentState::Working),
+                Some("idle_prompt") => Transition::Idle,
                 _ => Transition::Ignore,
             },
             // Codex reports a turn the user interrupted as an event of its
@@ -226,6 +234,21 @@ impl<W: Ord + Copy> Agents<W> {
                 };
                 let shown = s.shown();
                 s.waiting.remove(id);
+                s.at = s.at.max(event.daifuku_at);
+                if s.shown() != shown {
+                    self.tick += 1;
+                    s.since = self.tick;
+                }
+            }
+            Transition::Idle => {
+                let Some(s) = self.sessions.get_mut(&event.session_id) else {
+                    return false;
+                };
+                let shown = s.shown();
+                s.waiting.remove("");
+                if s.state == AgentState::Working {
+                    s.state = AgentState::Done;
+                }
                 s.at = s.at.max(event.daifuku_at);
                 if s.shown() != shown {
                     self.tick += 1;
@@ -603,6 +626,39 @@ mod tests {
         assert_eq!(a.window_state(1), Some(AgentState::Done));
         a.apply(1, &note("s", "permission_prompt"));
         assert_eq!(a.window_state(1), Some(AgentState::Waiting));
+    }
+
+    #[test]
+    fn a_turn_you_interrupt_is_done_once_the_prompt_sits_idle() {
+        let mut a = Agents::new();
+        // Esc in the middle of a turn: Claude Code sends no Stop.
+        a.apply(1, &ev("s", "UserPromptSubmit"));
+        assert!(a.apply(1, &note("s", "idle_prompt")));
+        assert_eq!(a.window_state(1), Some(AgentState::Done));
+        // Esc, or no, at a permission prompt: nothing says so either.
+        a.apply(1, &ev("s", "PreToolUse"));
+        a.apply(1, &ev("s", "PermissionRequest"));
+        assert!(a.apply(1, &note("s", "idle_prompt")));
+        assert_eq!(a.window_state(1), Some(AgentState::Done));
+    }
+
+    #[test]
+    fn an_idle_prompt_keeps_failures_and_subagent_questions() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("f", "StopFailure"));
+        assert!(!a.apply(1, &note("f", "idle_prompt")));
+        assert_eq!(a.window_state(1), Some(AgentState::Failed));
+        // A subagent in the background may ask after the main turn is over.
+        a.apply(2, &ev("s", "Stop"));
+        a.apply(2, &sub("s", "PreToolUse", "A"));
+        a.apply(2, &sub("s", "PermissionRequest", "A"));
+        assert!(!a.apply(2, &note("s", "idle_prompt")));
+        assert_eq!(a.window_state(2), Some(AgentState::Waiting));
+        a.apply(2, &sub("s", "SubagentStop", "A"));
+        assert_eq!(a.window_state(2), Some(AgentState::Done));
+        // A session never seen is not one to start tracking now.
+        assert!(!a.apply(3, &note("t", "idle_prompt")));
+        assert!(!a.knows("t"));
     }
 
     #[test]
