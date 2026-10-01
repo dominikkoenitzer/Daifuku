@@ -5,7 +5,9 @@
 //! gone the moment it has written. The control thread waits for the main
 //! thread's reply and writes it back.
 
-use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::time::Duration;
 
 use daifuku_core::protocol::{HookMessage, Request, Response, from_line, to_line};
@@ -16,9 +18,21 @@ use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 /// The message the pipe threads post to wake the main loop.
 pub const WM_INBOX: u32 = WM_APP + 1;
 
-/// How long a control client waits for the main thread. Opening a fleet waits
-/// for Windows Terminal to show its windows, which takes seconds.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a command waits for the main thread to take it up. Past this the
+/// main thread is busy with something long, such as a fleet a hotkey opens,
+/// and the command is withdrawn: it never runs after its client was told it
+/// did not.
+const QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a command the main thread has taken up may run. Opening a fleet
+/// is the longest: each of up to [`MAX_FLEET`] terminals may take its whole
+/// [`SHOW_TIMEOUT`] to show.
+///
+/// [`MAX_FLEET`]: daifuku_core::config::MAX_FLEET
+/// [`SHOW_TIMEOUT`]: crate::fleet::SHOW_TIMEOUT
+const RUN_TIMEOUT: Duration = crate::fleet::SHOW_TIMEOUT
+    .saturating_mul(daifuku_core::config::MAX_FLEET)
+    .saturating_add(Duration::from_secs(30));
 
 /// How long a hook has, from its connect, to deliver its line. A hook writes
 /// the moment it connects; one that stays silent past this is cut off, so a
@@ -33,8 +47,16 @@ const CONTROL_IO: Duration = Duration::from_secs(5);
 pub enum Inbound {
     /// An agent's hook reported.
     Hook(HookMessage),
-    /// A command, and where to send the answer.
-    Control(Request, SyncSender<Response>),
+    /// A command, where to send the answer, and the claim on it: see
+    /// [`claim`].
+    Control(Request, SyncSender<Response>, Arc<AtomicBool>),
+}
+
+/// Claims a command for whoever asks first: the main thread, to run it, or
+/// its pipe thread, to give up waiting for it. True for the first only, so a
+/// command runs exactly when its client is told the answer.
+pub fn claim(claimed: &AtomicBool) -> bool {
+    !claimed.swap(true, Ordering::SeqCst)
 }
 
 /// The main thread's end: drained after every wake-up.
@@ -138,13 +160,17 @@ fn serve_control(
             tracing::info!(?request, client = connection.client, "control request");
             stop = matches!(request, Request::Stop);
             let (reply, answer) = sync_channel(1);
-            if sender.send(Inbound::Control(request, reply)).is_err() {
+            let claimed = Arc::new(AtomicBool::new(false));
+            if sender
+                .send(Inbound::Control(request, reply, Arc::clone(&claimed)))
+                .is_err()
+            {
                 Response::error("the daemon is shutting down")
             } else {
                 wake(main_thread);
-                answer
-                    .recv_timeout(REPLY_TIMEOUT)
-                    .unwrap_or_else(|_| Response::error("the daemon did not answer in time"))
+                let (response, ran) = await_reply(&answer, &claimed, QUEUE_TIMEOUT, RUN_TIMEOUT);
+                stop &= ran;
+                response
             }
         }
         Err(error) => Response::error(format!("not a request: {error}")),
@@ -154,5 +180,78 @@ fn serve_control(
     }
     if stop {
         let _ = stop_replied.try_send(());
+    }
+}
+
+/// Waits for the main thread's answer to a command, and says whether the
+/// command ran. One still waiting to be taken up after `queued` is withdrawn
+/// and never runs; one the main thread has taken up gets its real answer,
+/// for which it waits up to `running` more.
+fn await_reply(
+    answer: &Receiver<Response>,
+    claimed: &AtomicBool,
+    queued: Duration,
+    running: Duration,
+) -> (Response, bool) {
+    match answer.recv_timeout(queued) {
+        Ok(response) => (response, true),
+        Err(RecvTimeoutError::Timeout) if claim(claimed) => (
+            Response::error(
+                "the daemon was busy with an earlier command; nothing was done, try again",
+            ),
+            false,
+        ),
+        Err(RecvTimeoutError::Timeout) => (
+            answer
+                .recv_timeout(running)
+                .unwrap_or_else(|_| Response::error("the daemon did not answer in time")),
+            true,
+        ),
+        Err(RecvTimeoutError::Disconnected) => {
+            (Response::error("the daemon is shutting down"), false)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHORT: Duration = Duration::from_millis(50);
+    const LONG: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn a_command_still_queued_at_the_deadline_is_withdrawn() {
+        let (_reply, answer) = sync_channel::<Response>(1);
+        let claimed = AtomicBool::new(false);
+        let (response, ran) = await_reply(&answer, &claimed, SHORT, LONG);
+        assert!(!ran);
+        assert!(
+            matches!(&response, Response::Error { message } if message.contains("nothing was done")),
+            "{response:?}"
+        );
+        assert!(!claim(&claimed), "the main thread must not run it now");
+    }
+
+    #[test]
+    fn a_command_taken_up_before_the_deadline_gets_its_real_answer() {
+        let (reply, answer) = sync_channel::<Response>(1);
+        let claimed = Arc::new(AtomicBool::new(false));
+        let main = {
+            let claimed = Arc::clone(&claimed);
+            std::thread::spawn(move || {
+                assert!(claim(&claimed), "the main thread takes it up first");
+                // Busy past the queue deadline, as opening a fleet can be.
+                std::thread::sleep(SHORT * 4);
+                let _ = reply.send(Response::said("opened agents"));
+            })
+        };
+        while !claimed.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        let (response, ran) = await_reply(&answer, &claimed, SHORT, LONG);
+        main.join().unwrap();
+        assert!(ran);
+        assert_eq!(response, Response::said("opened agents"));
     }
 }
