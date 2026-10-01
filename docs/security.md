@@ -93,7 +93,10 @@ administrator terminals that result.
   is inside the profile, writes the new version into a fresh file that
   cannot be a link, and makes the whole edit with the user's own rights,
   borrowed from the desktop shell, so a link swapped in half way cannot
-  lead the write anywhere the user may not write.
+  lead the write anywhere the user may not write. With no desktop shell to
+  borrow them from, as on a build server or while Explorer is not running,
+  it makes the edit with its own rights, and only the check that the file
+  is inside the profile guards it.
 
 ## Checked on every push
 
