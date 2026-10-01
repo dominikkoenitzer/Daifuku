@@ -195,7 +195,9 @@ pub fn open(
                 terminal::open_unelevated(&wt, &launch)
             };
             r.with_context(|| format!("could not start Windows Terminal at {}", wt.display()))?;
-            match wait_for_new(&before, record) {
+            // The launch above runs at the daemon's level for an
+            // administrator fleet and as the desktop user otherwise.
+            match wait_for_new(&before, record, elevated && fleet.admin) {
                 Some(w) => {
                     record.slots[slot] = Some(w);
                     window::place(w, cells[slot]);
@@ -219,26 +221,29 @@ pub fn open(
 }
 
 /// What opening fleet `name` with `cells` cells on `device` says, with
-/// `open` of its terminals open now and whether any had to be `launched`.
+/// `open` of its terminals open now and whether any had to be `started`.
 /// No terminal at all is a failure, so a key that opened nothing says so.
+/// A terminal that shows after its wait is not the fleet's, and opening the
+/// fleet again would start another in its place: the message says so.
 fn outcome(
     name: &str,
     device: &str,
     cells: usize,
-    launched: bool,
+    started: bool,
     open: usize,
 ) -> anyhow::Result<String> {
-    if !launched {
+    const LATE: &str = "close any that show up late, they are not part of the fleet";
+    if !started {
         return Ok(format!("brought back {name} ({})", terminals_count(open)));
     }
     if open == 0 {
         return Err(anyhow!(
-            "Windows Terminal did not show a terminal for {name} in time"
+            "Windows Terminal did not show a terminal for {name} in time; {LATE}"
         ));
     }
     if open < cells {
         return Ok(format!(
-            "opened {open} of {} for {name}: Windows Terminal did not show the rest in time",
+            "opened {open} of {} for {name}: Windows Terminal did not show the rest in time; {LATE}",
             terminals_count(cells)
         ));
     }
@@ -265,14 +270,16 @@ fn settle(fleet: &Fleet, record: &mut OpenFleet, m: &MonitorInfo, count: usize) 
     record.slots.resize(count, None);
 }
 
-/// Waits for one new terminal window: shown, not there before, not already
-/// one of the fleet's, and taking messages, so it is placed and measured
-/// like any other window rather than by a queued move.
-fn wait_for_new(before: &BTreeSet<u64>, record: &OpenFleet) -> Option<u64> {
+/// Waits for the terminal window a launch `elevated` or not opens, as
+/// [`launched`] tells it, until it takes messages, so it is placed and
+/// measured like any other window rather than by a queued move.
+fn wait_for_new(before: &BTreeSet<u64>, record: &OpenFleet, elevated: bool) -> Option<u64> {
     let start = Instant::now();
     while start.elapsed() < SHOW_TIMEOUT {
-        if let Some(w) = terminals().into_iter().find(|w| {
-            !before.contains(w) && !record.slots.contains(&Some(*w)) && window::is_shown(*w)
+        if let Some(w) = terminals().into_iter().find(|&w| {
+            launched(w, before, record, elevated, window::is_shown, |w| {
+                daifuku_win::process::is_elevated(window::pid(w))
+            })
         }) {
             while !window::answers(w) && start.elapsed() < SHOW_TIMEOUT {
                 std::thread::sleep(Duration::from_millis(25));
@@ -282,6 +289,24 @@ fn wait_for_new(before: &BTreeSet<u64>, record: &OpenFleet) -> Option<u64> {
         std::thread::sleep(Duration::from_millis(25));
     }
     None
+}
+
+/// Whether terminal window `w` can be the one a launch `elevated` or not
+/// just opened: not there before, in none of the fleet's slots, shown, and
+/// running as elevated as the launch. A terminal of the other kind that
+/// shows meanwhile, such as one a person opens, is not taken for it.
+fn launched(
+    w: u64,
+    before: &BTreeSet<u64>,
+    record: &OpenFleet,
+    elevated: bool,
+    shown: impl Fn(u64) -> bool,
+    elevation: impl Fn(u64) -> Option<bool>,
+) -> bool {
+    !before.contains(&w)
+        && !record.slots.contains(&Some(w))
+        && shown(w)
+        && elevation(w) == Some(elevated)
 }
 
 /// Puts every terminal of the fleet in its cell. A minimised or maximised one
@@ -382,7 +407,7 @@ mod tests {
         assert!(outcome("agents", d, 6, true, 0).is_err());
         assert_eq!(
             outcome("agents", d, 6, true, 2).unwrap(),
-            "opened 2 of 6 terminals for agents: Windows Terminal did not show the rest in time"
+            "opened 2 of 6 terminals for agents: Windows Terminal did not show the rest in time; close any that show up late, they are not part of the fleet"
         );
         assert_eq!(
             outcome("agents", d, 6, true, 6).unwrap(),
@@ -392,6 +417,27 @@ mod tests {
             outcome("agents", d, 1, false, 1).unwrap(),
             "brought back agents (1 terminal)"
         );
+    }
+
+    #[test]
+    fn only_a_new_shown_terminal_of_the_launch_s_kind_is_taken() {
+        let before = BTreeSet::from([1]);
+        let r = record("", vec![Some(2), None]);
+        let elevated = |w| match w {
+            3..=5 => Some(true),
+            6 => Some(false),
+            _ => None,
+        };
+        let shown = |w| w != 4;
+        let take = |w, admin| launched(w, &before, &r, admin, shown, elevated);
+        assert!(take(3, true), "new, shown and elevated");
+        assert!(!take(1, true), "there before");
+        assert!(!take(2, true), "already in the fleet");
+        assert!(!take(4, true), "not shown yet");
+        assert!(!take(6, true), "a terminal of the user's own");
+        assert!(take(6, false), "the user's, for an unelevated fleet");
+        assert!(!take(3, false), "an administrator's");
+        assert!(!take(7, false), "one that cannot be asked");
     }
 
     #[test]
