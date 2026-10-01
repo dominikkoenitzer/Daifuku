@@ -196,8 +196,14 @@ pub fn open(
             };
             r.with_context(|| format!("could not start Windows Terminal at {}", wt.display()))?;
             // The launch above runs at the daemon's level for an
-            // administrator fleet and as the desktop user otherwise.
-            match wait_for_new(&before, record, elevated && fleet.admin) {
+            // administrator fleet and as the desktop user otherwise, which
+            // is elevated too when UAC is turned off.
+            let expect = if fleet.admin || !elevated {
+                elevated
+            } else {
+                daifuku_win::process::shell_is_elevated().unwrap_or(false)
+            };
+            match wait_for_new(&before, record, expect) {
                 Some(w) => {
                     record.slots[slot] = Some(w);
                     window::place(w, cells[slot]);

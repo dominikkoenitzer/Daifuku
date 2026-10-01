@@ -115,6 +115,24 @@ pub fn current_is_elevated() -> bool {
     token_elevated(unsafe { GetCurrentProcess() }).unwrap_or(false)
 }
 
+/// Whether the desktop shell runs elevated, as it does with UAC turned off,
+/// `None` when there is no shell or it cannot be asked. A program started
+/// with the shell's rights runs the same way.
+#[must_use]
+pub fn shell_is_elevated() -> Option<bool> {
+    // SAFETY: plain calls; the pid is read into a local.
+    let pid = unsafe {
+        let shell = GetShellWindow();
+        if shell.is_invalid() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(shell, Some(&raw mut pid));
+        pid
+    };
+    is_elevated(pid)
+}
+
 /// Whether another process runs elevated, `None` if it cannot be asked.
 #[must_use]
 pub fn is_elevated(pid: u32) -> Option<bool> {
