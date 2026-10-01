@@ -512,7 +512,21 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
         return Ok(None);
     }
     // The elevated daemon bounds how long it takes to answer.
-    read_line(h, raw(&event), None).map(Some)
+    read_reply(h, raw(&event)).map(Some)
+}
+
+/// Reads the daemon's reply, which is one whole line. A line cut short means
+/// the daemon exited while it answered: a broken pipe ends a read as the end
+/// of the line does, and what came before it is not a reply.
+fn read_reply(handle: HANDLE, event: HANDLE) -> io::Result<String> {
+    let reply = read_line(handle, event, None)?;
+    if !reply.ends_with('\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Daifuku stopped before it answered",
+        ));
+    }
+    Ok(reply)
 }
 
 /// The pipe is there but every instance stayed taken: the daemon runs and is
@@ -659,6 +673,53 @@ mod tests {
         .unwrap();
         // SAFETY: h is a fresh, owned, valid handle.
         unsafe { OwnedHandle::from_raw_handle(h.0) }
+    }
+
+    /// Opens `name` as the control client does, to send a request and read
+    /// the reply.
+    fn control_client(name: &str) -> OwnedHandle {
+        let name = to_wide(name);
+        // SAFETY: name is NUL terminated.
+        let h = unsafe {
+            CreateFileW(
+                PCWSTR(name.as_ptr()),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
+                None,
+            )
+        }
+        .unwrap();
+        // SAFETY: h is a fresh, owned, valid handle.
+        unsafe { OwnedHandle::from_raw_handle(h.0) }
+    }
+
+    #[test]
+    fn a_reply_cut_short_by_a_daemon_that_stopped_is_an_error() {
+        let sddl = &Pipe::Hook.sddl(process::current_is_elevated());
+        for (sent, whole) in [
+            ("{\"result\":\"ok\"}\n", true),
+            ("{\"result\":", false),
+            ("", false),
+        ] {
+            let name = private_name();
+            let server = create(&name, sddl, true, 1).unwrap();
+            let client = control_client(&name);
+            let written = event().unwrap();
+            write_all(raw(&server), raw(&written), sent.as_bytes(), None).unwrap();
+            // The daemon exits: its end is closed, and the client reads what
+            // was written and then a broken pipe.
+            drop(server);
+            let reply = read_reply(raw(&client), raw(&event().unwrap()));
+            if whole {
+                assert_eq!(reply.unwrap(), sent);
+            } else {
+                let e = reply.unwrap_err();
+                assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{sent:?}: {e}");
+            }
+        }
     }
 
     #[test]
