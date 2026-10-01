@@ -28,6 +28,29 @@
 - A fleet on the `cursor` monitor stays on that monitor when it is snapped,
   and goes back to it when it was unplugged and returns. Snap also lets go
   of terminals past a lowered `count`, as opening does.
+- After a monitor change, only the fleets whose cells it moved, or whose
+  monitor's scale it changed, go back into their grid, and terminals you
+  minimised or maximised stay that way.
+- Opening a fleet fails when Windows Terminal shows no terminal for it in
+  time, so its key beeps and `daifuku open` exits 1. Only a new terminal as
+  elevated as the fleet's is taken into it, and the message says to close
+  any that show up late, as they are not part of the fleet.
+- `daifuku close` with a fleet name the config does not know, or with no
+  fleets in the config, fails as `open` does. It counts only the terminals
+  that went; one that Windows Terminal keeps open, to ask about closing its
+  tabs, stays in the fleet.
+- A fleet whose terminals were all closed by hand is no longer listed as
+  open.
+- An `"admin": false` fleet finds its folder on a mapped or `subst` drive.
+- A command that waits more than 30 seconds behind a long one, such as a
+  fleet a hotkey opens, is withdrawn and says nothing was done, instead of
+  running later; a slow `daifuku open` gets its real result instead of "did
+  not answer in time".
+- `daifuku demo` says when daifuku.exe is missing next to the daemon, and
+  works from a folder with an apostrophe in its path. A demo agent stopped
+  with Ctrl+C ends its session, so its border goes.
+- `daifuku status` and `daifuku reload` say the defaults are in use when the
+  daemon started with an invalid config.
 - The config is read again after a save the daemon could not read at once.
 - `daifuku demo` says so when a fleet in the config is called `demo`.
 - `daifuku status` times a window right after a tab moves out of it.
