@@ -19,6 +19,7 @@ design, and what each part defends against, is in
   runs.
 - Anything that lets an ordinary process send the daemon a command, or answer
   in its place.
-- A hook message that does more than colour a border.
+- A hook message that does more than set the state Daifuku shows for a
+  window: its border, the chime, its place in the next key's queue.
 - A settings file the installer or uninstaller damages, or a hook of the user's
   own it removes.

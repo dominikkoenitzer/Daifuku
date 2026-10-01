@@ -41,13 +41,20 @@ it sends anything, so a process that squatted the name cannot collect
 commands.
 
 **The hook pipe** takes state reports from agent hooks. The signed-in user,
-by their own SID, may write data to it from a normal process (a medium
-label), and nothing more; another person signed in at the same time may not: not create server instances of it, so no other process can listen in
-and collect the hooks' reports. Processes below medium integrity cannot write
-to it. A message names a window and an event, and the worst a forged one can
-do is colour or clear a border: the daemon only accepts a live, visible
-top-level window, never starts anything because of a hook, and stops tracking
-new sessions past 512.
+by their own SID, may open it to read and to write data from a normal process
+(a medium label), and nothing more: not create server instances of it, so no
+other process can listen in and collect the hooks' reports. The daemon never
+writes on it, so there is nothing to read. Another person signed in at the
+same time is not let in at all. Processes below medium integrity cannot
+write to it.
+
+A message names a window and an event. A forged one can set the state
+Daifuku shows for any live top-level window: draw, recolour or remove its
+border, play the chime when sound is on, list it in `daifuku status`, and put
+it in the next key's queue, so that key brings it to the front. The daemon
+never starts anything because of a hook, ignores session and subagent ids
+longer than 128 bytes, lets one session have at most 32 threads waiting, and
+stops tracking new sessions past 512.
 
 Both pipes are created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, allow exactly
 as many instances as the daemon creates, and keep them for the daemon's whole
@@ -66,8 +73,9 @@ a process posing as the daemon cannot make agents wait.
 
 Hotkeys are registered with `RegisterHotKey`. Any process can synthesise the
 key press, and the most it achieves is what the key does: open the configured
-fleet, focus a terminal, snap the grid. It cannot change what a fleet runs, and
-Windows does not let it type into the administrator terminals that result.
+fleet, focus a window a hook reported as waiting or failed, snap the grid. It
+cannot change what a fleet runs, and Windows does not let it type into the
+administrator terminals that result.
 
 ## What Daifuku does not do
 
