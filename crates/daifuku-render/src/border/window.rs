@@ -176,7 +176,16 @@ impl BorderWindow {
                 self.move_to(geometry.window)?;
             }
         } else {
-            self.paint(&geometry, colour)?;
+            if let Err(error) = self.paint(&geometry, colour) {
+                // A lost device takes the surface with it, and `paint` has
+                // already let go of that one, so a second call draws on a
+                // fresh one. Leaving it to the next pass could take a long
+                // time: nothing may change on screen for minutes.
+                if !error.is_device_loss() {
+                    return Err(error);
+                }
+                self.paint(&geometry, colour)?;
+            }
             self.present(geometry.window)?;
             self.painted = Some(wanted);
         }

@@ -142,12 +142,33 @@ impl RenderError {
             false
         }
     }
+
+    /// True when Direct2D lost its device, after a driver update or a GPU
+    /// reset.
+    ///
+    /// The surface that was being drawn is gone for good, but a fresh one
+    /// draws fine, so a paint that fails this way is worth one more try
+    /// straight away.
+    #[must_use]
+    pub fn is_device_loss(&self) -> bool {
+        #[cfg(windows)]
+        {
+            matches!(
+                self,
+                Self::Win32(e) if e.code() == windows::Win32::Foundation::D2DERR_RECREATE_TARGET
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
 }
 
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
-    use windows::Win32::Foundation::{E_ACCESSDENIED, E_INVALIDARG};
+    use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, E_ACCESSDENIED, E_INVALIDARG};
 
     #[test]
     fn only_access_denied_counts_as_a_refusal() {
@@ -157,6 +178,21 @@ mod tests {
         assert!(!RenderError::Win32(windows::core::Error::from_hresult(E_INVALIDARG)).is_refusal());
         assert!(!RenderError::ThreadGone("border").is_refusal());
         assert!(!RenderError::ThreadStart("border", "nope".into()).is_refusal());
+    }
+
+    #[test]
+    fn only_recreate_target_counts_as_a_lost_device() {
+        let lost = RenderError::Win32(windows::core::Error::from_hresult(D2DERR_RECREATE_TARGET));
+        assert!(lost.is_device_loss());
+        assert!(!lost.is_refusal(), "a lost device is worth a retry");
+        assert!(
+            !RenderError::Win32(windows::core::Error::from_hresult(E_ACCESSDENIED))
+                .is_device_loss()
+        );
+        assert!(
+            !RenderError::Win32(windows::core::Error::from_hresult(E_INVALIDARG)).is_device_loss()
+        );
+        assert!(!RenderError::ThreadGone("border").is_device_loss());
     }
 
     #[test]
