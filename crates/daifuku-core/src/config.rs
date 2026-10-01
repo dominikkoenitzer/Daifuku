@@ -70,7 +70,7 @@ impl Default for Config {
 pub struct Border {
     /// Draw status borders at all.
     pub enabled: bool,
-    /// Thickness in physical pixels.
+    /// Thickness in physical pixels, 1 to 64. `enabled: false` draws none.
     pub width: i32,
     /// How far outside the visible frame the border sits, -64 to 64 pixels;
     /// negative overlaps the window's own edge.
@@ -113,18 +113,24 @@ impl Border {
         self.colours.unwrap_or_else(|| self.palette.colours())
     }
 
-    /// The thickness a state is drawn at.
+    /// The thickness a state is drawn at. With state widths each state is
+    /// thicker than the one before it, done, working, failed, waiting, even
+    /// at a width of 1, where halving alone would give three of them 1.
     #[must_use]
     pub fn width_for(&self, state: AgentState) -> i32 {
         let w = self.width.max(1);
         if !self.state_widths {
             return w;
         }
+        let done = (w / 2).max(1);
+        let working = w.max(done + 1);
+        let failed = (w + w / 2).max(working + 1);
+        let waiting = (w * 2).max(failed + 1);
         match state {
-            AgentState::Done => (w / 2).max(1),
-            AgentState::Working => w,
-            AgentState::Failed => w + w / 2,
-            AgentState::Waiting => w * 2,
+            AgentState::Done => done,
+            AgentState::Working => working,
+            AgentState::Failed => failed,
+            AgentState::Waiting => waiting,
         }
     }
 }
@@ -526,9 +532,9 @@ impl Config {
         if !(0..=1000).contains(&self.gaps.outer) || !(0..=1000).contains(&self.gaps.inner) {
             return Err(ConfigError::Size("gaps must be 0 to 1000 pixels".into()));
         }
-        if !(0..=64).contains(&self.border.width) {
+        if !(1..=64).contains(&self.border.width) {
             return Err(ConfigError::Size(
-                "border width must be 0 to 64 pixels".into(),
+                "border width must be 1 to 64 pixels; set enabled to false for no border".into(),
             ));
         }
         // Past this a border's bitmap grows without bound, and near the end
@@ -776,11 +782,24 @@ mod tests {
             ..Border::default()
         };
         assert!(AgentState::ALL.iter().all(|&s| flat.width_for(s) == 4));
-        let thin = Border {
+        for width in 1..=64 {
+            let b = Border {
+                width,
+                ..Border::default()
+            };
+            let widths: Vec<_> = AgentState::ALL.iter().map(|&s| b.width_for(s)).collect();
+            assert!(widths[0] >= 1, "width {width}: {widths:?}");
+            assert!(
+                widths.windows(2).all(|w| w[0] < w[1]),
+                "width {width}: {widths:?}"
+            );
+        }
+        let b = Border {
             width: 1,
             ..Border::default()
         };
-        assert!(AgentState::ALL.iter().all(|&s| thin.width_for(s) >= 1));
+        let widths: Vec<_> = AgentState::ALL.iter().map(|&s| b.width_for(s)).collect();
+        assert_eq!(widths, vec![1, 2, 3, 4], "a thin border keeps four widths");
     }
 
     #[test]
@@ -817,7 +836,7 @@ mod tests {
             r#"{"border":{"offset":64}}"#,
             r#"{"border":{"offset":-64}}"#,
             r#"{"gaps":{"outer":1000,"inner":1000}}"#,
-            r#"{"border":{"width":0}}"#,
+            r#"{"border":{"width":1}}"#,
             r#"{"border":{"width":64}}"#,
         ] {
             assert!(Config::from_json(text).is_ok(), "{text}");
@@ -827,6 +846,7 @@ mod tests {
             r#"{"border":{"offset":-65}}"#,
             r#"{"gaps":{"outer":1001,"inner":0}}"#,
             r#"{"gaps":{"outer":0,"inner":1001}}"#,
+            r#"{"border":{"width":0}}"#,
             r#"{"border":{"width":-1}}"#,
             r#"{"border":{"width":65}}"#,
         ] {
