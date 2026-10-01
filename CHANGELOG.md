@@ -49,13 +49,13 @@
   fleet a hotkey opens, is withdrawn and says nothing was done, instead of
   running later; a slow `daifuku open` gets its real result instead of "did
   not answer in time".
-- `daifuku demo` says when daifuku.exe is missing next to the daemon, and
-  works from a folder with an apostrophe in its path. A demo agent stopped
-  with Ctrl+C ends its session, so its border goes.
+- `daifuku demo` says so when a fleet in the config is called `demo` or
+  daifuku.exe is missing next to the daemon, and works from a folder with
+  an apostrophe in its path. A demo agent stopped with Ctrl+C ends its
+  session, so its border goes.
 - `daifuku status` and `daifuku reload` say the defaults are in use when the
   daemon started with an invalid config.
 - The config is read again after a save the daemon could not read at once.
-- `daifuku demo` says so when a fleet in the config is called `demo`.
 - `daifuku status` times a window right after a tab moves out of it.
 - The limit of 512 tracked agent sessions counts sessions, so one window can
   no longer add them without end. The daemon also ignores a report whose
