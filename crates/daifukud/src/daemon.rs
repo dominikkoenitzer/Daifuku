@@ -29,6 +29,10 @@ const DEMO: &str = "demo";
 /// of the work; this catches the ones Windows did not deliver.
 const SWEEP_MS: u32 = 2000;
 
+/// How long `close` waits for its terminals to go. Windows Terminal closes a
+/// window at once, unless it asks first whether to close all its tabs.
+const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How often a waiting border's pulse repaints: twenty times a second, which
 /// is smooth for a slow breath and nothing for the compositor.
 const PULSE_MS: u32 = 50;
@@ -449,23 +453,24 @@ impl Daemon {
                 _ => Response::said("that fleet is not open"),
             };
         };
-        let record = self.fleets.remove(index);
-        let mut closed = 0;
-        for w in record.windows() {
-            // Only a window that is still one of our terminals: a handle can
-            // have been reused by anything since.
-            if window::exists(w)
-                && window::class(w) == daifuku_win::terminal::WINDOW_CLASS
-                && window::close(w)
-            {
-                closed += 1;
-            }
+        let record = &mut self.fleets[index];
+        // Only a window that is still one of our terminals: a handle can
+        // have been reused by anything since.
+        record.prune();
+        let asked: Vec<u64> = record.windows().filter(|&w| window::close(w)).collect();
+        // Windows Terminal asks before it closes a window with several
+        // tabs. A terminal still open after that stays in the fleet, in its
+        // own cell, and is counted as open rather than closed.
+        let start = std::time::Instant::now();
+        while asked.iter().any(|&w| window::exists(w)) && start.elapsed() < CLOSE_WAIT {
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        Response::said(format!(
-            "closed {} of {}",
-            fleet::terminals_count(closed),
-            record.name
-        ))
+        record.prune();
+        let open = record.windows().count();
+        let closed = asked.iter().filter(|&&w| !window::exists(w)).count();
+        let message = closed_message(&record.name, closed, open);
+        self.drop_closed_fleets();
+        Response::said(message)
     }
 
     fn next(&mut self) -> Response {
@@ -748,6 +753,19 @@ fn width_for(border: &Border, state: AgentState, high_contrast: bool) -> i32 {
     .width_for(state)
 }
 
+/// What `close` says about fleet `name`: how many of its terminals closed,
+/// and how many are still `open`.
+fn closed_message(name: &str, closed: usize, open: usize) -> String {
+    if open == 0 {
+        return format!("closed {} of {name}", fleet::terminals_count(closed));
+    }
+    format!(
+        "closed {closed} of {} of {name}; Windows Terminal kept {} open, perhaps to ask about closing tabs",
+        fleet::terminals_count(closed + open),
+        fleet::terminals_count(open)
+    )
+}
+
 /// A colour at `k` of its brightness.
 fn dim(c: daifuku_core::config::Colour, k: f64) -> daifuku_core::config::Colour {
     let f = |v: u8| {
@@ -867,6 +885,15 @@ mod tests {
         assert_eq!(d.close(None), Response::said("that fleet is not open"));
         d.config.fleets.clear();
         assert_eq!(d.close(None), Response::error("the config has no fleets"));
+    }
+
+    #[test]
+    fn close_counts_only_the_terminals_that_went() {
+        assert_eq!(closed_message("e2e", 4, 0), "closed 4 terminals of e2e");
+        assert_eq!(
+            closed_message("agents", 5, 1),
+            "closed 5 of 6 terminals of agents; Windows Terminal kept 1 terminal open, perhaps to ask about closing tabs"
+        );
     }
 
     #[test]
