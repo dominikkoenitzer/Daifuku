@@ -115,13 +115,14 @@ impl HookEvent {
             | "PostToolBatch" | "PermissionDenied" | "SubagentStart" | "PreCompact"
             | "PostCompact" | "ElicitationResult" => Transition::To(AgentState::Working),
             "PermissionRequest" | "Elicitation" => Transition::To(AgentState::Waiting),
+            // Not `agent_needs_input`: that is a background session asking
+            // while agent view is open. It runs apart from this window and
+            // never reports from it, so nothing would clear the wait once
+            // it is answered.
             "Notification" => match self.notification_type.as_deref() {
-                Some(
-                    "permission_prompt"
-                    | "elicitation_dialog"
-                    | "elicitation_url_dialog"
-                    | "agent_needs_input",
-                ) => Transition::To(AgentState::Waiting),
+                Some("permission_prompt" | "elicitation_dialog" | "elicitation_url_dialog") => {
+                    Transition::To(AgentState::Waiting)
+                }
                 Some("quota_auto_resume_fired") => Transition::To(AgentState::Working),
                 _ => Transition::Ignore,
             },
@@ -605,17 +606,21 @@ mod tests {
     }
 
     #[test]
-    fn every_documented_kind_of_question_means_waiting() {
-        for kind in [
-            "elicitation_dialog",
-            "elicitation_url_dialog",
-            "agent_needs_input",
-        ] {
+    fn every_kind_of_question_asked_in_the_window_means_waiting() {
+        for kind in ["elicitation_dialog", "elicitation_url_dialog"] {
             let mut a = Agents::new();
             a.apply(1, &ev("s", "PreToolUse"));
             a.apply(1, &note("s", kind));
             assert_eq!(a.window_state(1), Some(AgentState::Waiting), "{kind}");
         }
+    }
+
+    #[test]
+    fn a_background_session_asking_in_agent_view_is_not_this_windows_question() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "Stop"));
+        assert!(!a.apply(1, &note("s", "agent_needs_input")));
+        assert_eq!(a.window_state(1), Some(AgentState::Done));
     }
 
     #[test]
