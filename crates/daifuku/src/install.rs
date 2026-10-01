@@ -131,8 +131,31 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
             "\nWindows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)."
         );
     }
-    println!("\nPress Ctrl+Alt+Enter to open your first fleet.");
+    // From the config on disk, which an update keeps, so the key named is
+    // the one the daemon registers.
+    let kept = std::fs::read(&config)
+        .and_then(|b| config::decode(&b))
+        .map_err(|e| e.to_string())
+        .and_then(|t| Config::from_json(&t).map_err(|e| e.to_string()));
+    match kept.map(|c| how_to_open(&c)) {
+        Ok(Some(how)) if options.no_start => {
+            println!("\nAfter your next sign-in, {how} to open your first fleet.");
+        }
+        Ok(Some(how)) => println!("\nTo open your first fleet, {how}."),
+        Ok(None) => {}
+        Err(e) => println!("\nThe config does not read, so the daemon runs on its defaults: {e}"),
+    }
     Ok(())
+}
+
+/// How to open the first fleet in `config`: its key, or the command when it
+/// has none. `None` when there is no fleet.
+fn how_to_open(config: &Config) -> Option<String> {
+    let fleet = config.fleets.first()?;
+    Some(match fleet.hotkey.as_ref().and_then(|h| h.parse().ok()) {
+        Some(key) => format!("press {key}"),
+        None => "run `daifuku open`".to_owned(),
+    })
 }
 
 pub fn uninstall(purge: bool) -> anyhow::Result<()> {
@@ -602,6 +625,21 @@ mod tests {
         let c = Config::from_json(&text).unwrap();
         assert!(c.schema.is_some());
         assert_eq!(c.fleets.len(), 1);
+    }
+
+    #[test]
+    fn the_installer_names_the_key_the_config_binds() {
+        let mut c = Config::default();
+        assert_eq!(
+            how_to_open(&c).as_deref(),
+            Some("press ctrl + alt + return")
+        );
+        c.fleets[0].hotkey = Some(config::HotkeyText::new("Alt+CTRL+A"));
+        assert_eq!(how_to_open(&c).as_deref(), Some("press ctrl + alt + a"));
+        c.fleets[0].hotkey = None;
+        assert_eq!(how_to_open(&c).as_deref(), Some("run `daifuku open`"));
+        c.fleets.clear();
+        assert_eq!(how_to_open(&c), None);
     }
 
     #[test]
