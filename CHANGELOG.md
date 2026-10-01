@@ -53,8 +53,11 @@
   rewriting it in place, and edits it only when it really is in your
   profile, not behind a link out of it.
 - The installer edits Claude Code's and Codex's settings with your own
-  rights, not an administrator's, and refuses to run when the terminal
-  belongs to another account than the one signed in.
+  rights, borrowed from the desktop shell, not an administrator's; with no
+  desktop shell, as on a build server, it edits them with its own. It
+  refuses to run when the terminal belongs to another account than the
+  desktop, and names Windows Administrator protection, which Daifuku does
+  not support, as one cause.
 - Uninstall removes only hooks that run a program called `daifuku.exe`, and
   keeps the empty hook groups and lists you had.
 - Windows Terminal counts only when the system installed it from a signed
