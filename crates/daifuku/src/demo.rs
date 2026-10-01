@@ -12,12 +12,27 @@
 //! agent's number, so six agents never move in step.
 
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use daifuku_core::protocol::{HookMessage, to_line};
 use daifuku_core::state::HookEvent;
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{console, process};
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    /// Adds a function Windows calls, on a thread of its own, when the
+    /// console is told to stop: Ctrl+C, Ctrl+Break, or its window closing.
+    fn SetConsoleCtrlHandler(
+        handler: Option<unsafe extern "system" fn(u32) -> i32>,
+        add: i32,
+    ) -> i32;
+}
+
+/// Set once the agent stops. Nothing but the end of the session is reported
+/// after it, so no report still on its way can bring the session back.
+static STOPPING: AtomicBool = AtomicBool::new(false);
 
 const TASKS: [(&str, &[&str]); 6] = [
     (
@@ -102,7 +117,24 @@ struct Reporter {
 }
 
 impl Reporter {
+    fn new() -> Self {
+        Self {
+            window: std::cell::Cell::new(console::own_terminal_window()),
+            session: format!("demo-{}", process::current()),
+        }
+    }
+
     fn report(&self, event: &str) {
+        // Stamped before the stop is checked, as the hook stamps its events:
+        // a report that gets past the check is older than the end of the
+        // session, and the daemon drops it should it arrive after.
+        let at = now();
+        if !STOPPING.load(Ordering::SeqCst) {
+            self.send(event, at);
+        }
+    }
+
+    fn send(&self, event: &str, at: Option<u64>) {
         // Looked up again until found: the agent can start before its
         // terminal window exists.
         if self.window.get().is_none() {
@@ -116,6 +148,7 @@ impl Reporter {
             event: HookEvent {
                 session_id: self.session.clone(),
                 hook_event_name: event.to_owned(),
+                daifuku_at: at,
                 ..HookEvent::default()
             },
         };
@@ -123,6 +156,30 @@ impl Reporter {
             let _ = send(Pipe::Hook, &line, Duration::from_millis(200));
         }
     }
+}
+
+/// Now, as the hook stamps its events: 100 ns ticks since 1970.
+fn now() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_nanos() / 100).ok())
+}
+
+/// Reports that the session is over, once. A real agent says so when it
+/// exits; without it the daemon would keep the demo's last state on a
+/// terminal that stays open after the agent in it stopped.
+fn end() {
+    if !STOPPING.swap(true, Ordering::SeqCst) {
+        Reporter::new().send("SessionEnd", now());
+    }
+}
+
+/// Called by Windows when the agent is told to stop. Ending the session
+/// does not handle the stop: Windows goes on to end the process as before.
+unsafe extern "system" fn on_stop(_kind: u32) -> i32 {
+    end();
+    0
 }
 
 fn pause(ms: u64) {
@@ -143,10 +200,12 @@ pub fn run(number: Option<usize>) {
         || usize::try_from(me % 6).unwrap_or(0),
         |n| n.saturating_sub(1),
     );
-    let reporter = Reporter {
-        window: std::cell::Cell::new(console::own_terminal_window()),
-        session: format!("demo-{me}"),
-    };
+    let reporter = Reporter::new();
+    // SAFETY: the handler is a plain function that lives as long as the
+    // process.
+    unsafe {
+        SetConsoleCtrlHandler(Some(on_stop), 1);
+    }
     say("\x1b[2mdaifuku demo agent: scripted, not a real one. Ctrl+C to stop.\x1b[0m");
     say("");
     reporter.report("SessionStart");
@@ -170,6 +229,7 @@ pub fn run(number: Option<usize>) {
                 reporter.report("PermissionRequest");
                 let mut line = String::new();
                 if stdin.lock().read_line(&mut line).is_err() {
+                    end();
                     return;
                 }
                 reporter.report("PostToolUse");
