@@ -5,6 +5,10 @@
 //! at logon with no prompt. The task runs only while the user is signed in
 //! (`InteractiveToken`): the daemon draws on that user's desktop, and a task
 //! that runs whether or not anyone is signed in gets no desktop at all.
+//!
+//! It runs at normal priority. Task Scheduler's default is below normal, and
+//! Windows passes that on to every program the daemon starts: the terminals
+//! of an administrator fleet, and every agent and build run in them.
 
 /// Where the task lives in Task Scheduler.
 pub const TASK_NAME: &str = r"\Daifuku\Daemon";
@@ -50,7 +54,7 @@ pub fn xml(exe: &str, user_sid: &str) -> String {
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <Priority>4</Priority>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
       <Count>3</Count>
@@ -89,6 +93,13 @@ mod tests {
         assert!(x.contains("<LogonTrigger>") && x.matches("S-1-5-21-1-2-3-1001").count() == 2);
         assert!(x.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
         assert!(x.contains(r"<Command>C:\Program Files\Daifuku\daifukud.exe</Command>"));
+    }
+
+    /// 4 to 6 are the normal class; 7, the default, is below normal.
+    #[test]
+    fn runs_at_normal_priority() {
+        let x = xml(r"C:\Program Files\Daifuku\daifukud.exe", "S");
+        assert!(x.contains("<Priority>4</Priority>"));
     }
 
     #[test]
