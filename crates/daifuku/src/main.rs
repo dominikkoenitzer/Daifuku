@@ -89,7 +89,8 @@ enum Command {
         /// Leave Claude Code's and Codex's settings alone.
         #[arg(long)]
         no_hooks: bool,
-        /// Do not start the daemon now; it starts at the next logon.
+        /// Stop a running daemon and do not start it again; it starts at the
+        /// next logon.
         #[arg(long)]
         no_start: bool,
     },
