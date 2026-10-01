@@ -64,10 +64,6 @@ pub struct HookEvent {
     /// their own, under the same session id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    /// Set on `Stop` events: why the model stopped. `tool_use` is a pause in
-    /// the middle of a turn, not its end.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop_reason: Option<String>,
     /// When the hook started, in 100 ns ticks since 1970, stamped by
     /// `daifuku hook` itself. Agents run their hooks in the background and
     /// they may finish out of order; this puts them back in order.
@@ -109,9 +105,8 @@ impl HookEvent {
     ///   the agent carries on and tries something else.
     /// - A permission prompt is up, or an MCP server is asking a question:
     ///   **waiting**. A denied permission puts it back to work.
-    /// - The turn ended: **done**, unless the model only paused to call
-    ///   tools. It ended on an error: **failed**. A rate-limited session
-    ///   that resumed by itself is working again.
+    /// - The turn ended: **done**. It ended on an error: **failed**. A
+    ///   rate-limited session that resumed by itself is working again.
     /// - The session closed: forget it.
     #[must_use]
     pub fn transition(&self) -> Transition {
@@ -130,7 +125,6 @@ impl HookEvent {
                 Some("quota_auto_resume_fired") => Transition::To(AgentState::Working),
                 _ => Transition::Ignore,
             },
-            "Stop" if self.stop_reason.as_deref() == Some("tool_use") => Transition::Ignore,
             // Codex reports a turn the user interrupted as an event of its
             // own; the agent is idle either way.
             "SessionStart" | "Stop" | "Interrupt" => Transition::To(AgentState::Done),
@@ -537,17 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_to_call_tools_is_not_the_end_of_the_turn() {
-        let pause = HookEvent {
-            stop_reason: Some("tool_use".into()),
-            ..ev("s", "Stop")
-        };
-        assert_eq!(pause.transition(), Transition::Ignore);
-        let end = HookEvent {
-            stop_reason: Some("end_turn".into()),
-            ..ev("s", "Stop")
-        };
-        assert_eq!(end.transition(), Transition::To(AgentState::Done));
+    fn a_rate_limit_that_resumes_by_itself_is_working_again() {
         assert_eq!(
             note("s", "quota_auto_resume_fired").transition(),
             Transition::To(AgentState::Working)
