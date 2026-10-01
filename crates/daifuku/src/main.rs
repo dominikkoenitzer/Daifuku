@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn a_refused_control_pipe_asks_for_an_administrator_terminal() {
         // What the pipe client returns when Windows refuses the open.
-        let denied = std::io::Error::other("Access is denied. (0x80070005)");
+        let denied = std::io::Error::from_raw_os_error(5);
         assert_eq!(
             control_error(&denied, false),
             "daemon commands need an administrator terminal"
