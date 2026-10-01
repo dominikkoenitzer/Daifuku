@@ -376,14 +376,19 @@ impl Daemon {
                 "the config has a fleet called `{DEMO}`: rename it to run the demo"
             ));
         }
-        let Some(fleet) = self.demo_fleet() else {
+        // Checked here, not in `demo_fleet`, which snap uses too: an open
+        // demo still snaps when the file has gone since.
+        let Some(fleet) = self
+            .demo_fleet()
+            .filter(|_| demo_exe().is_some_and(|exe| exe.is_file()))
+        else {
             return Response::error("cannot find daifuku.exe next to the daemon");
         };
         self.open_fleet(&fleet)
     }
 
     fn demo_fleet(&self) -> Option<daifuku_core::config::Fleet> {
-        let exe = std::env::current_exe().ok()?.parent()?.join("daifuku.exe");
+        let exe = demo_exe()?;
         Some(daifuku_core::config::Fleet {
             name: DEMO.to_owned(),
             count: 6,
@@ -395,7 +400,7 @@ impl Daemon {
                 .unwrap_or_default(),
             // The drive root: nothing personal in the path if a prompt shows.
             directory: Some(std::path::PathBuf::from(r"C:\")),
-            command: Some(format!("& '{}' demo-agent {{n}}", exe.display())),
+            command: Some(demo_command(&exe)),
             // Administrator terminals when the daemon can open them, like the
             // fleets people run for real: a tiling window manager leaves those
             // alone, so the grid stays the grid.
@@ -767,6 +772,35 @@ fn width_for(border: &Border, state: AgentState, high_contrast: bool) -> i32 {
     .width_for(state)
 }
 
+/// The `daifuku.exe` in the folder this daemon runs from.
+fn demo_exe() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("daifuku.exe"))
+}
+
+/// The command a demo terminal runs, `{n}` standing for its number.
+fn demo_command(exe: &std::path::Path) -> String {
+    format!(
+        "& {} demo-agent {{n}}",
+        single_quoted(&exe.display().to_string())
+    )
+}
+
+/// `text` as a PowerShell string in single quotes, which takes everything as
+/// written but the quote itself, doubled. PowerShell also reads the
+/// typographic single quotes as one, so a folder named O’Neill needs them
+/// doubled too.
+fn single_quoted(text: &str) -> String {
+    let mut out = String::from("'");
+    for c in text.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
 /// What `close` says about fleet `name`: how many of its terminals closed,
 /// and how many are still `open`.
 fn closed_message(name: &str, closed: usize, open: usize) -> String {
@@ -923,6 +957,24 @@ mod tests {
         assert!(
             broken_later.contains("(invalid, using the last good one: "),
             "{broken_later}"
+        );
+    }
+
+    #[test]
+    fn the_demo_command_keeps_any_path_whole() {
+        assert_eq!(
+            demo_command(std::path::Path::new(
+                r"C:\Program Files\Daifuku\daifuku.exe"
+            )),
+            r"& 'C:\Program Files\Daifuku\daifuku.exe' demo-agent {n}"
+        );
+        assert_eq!(
+            single_quoted(r"C:\Users\O'Neill\bin"),
+            r"'C:\Users\O''Neill\bin'"
+        );
+        assert_eq!(
+            single_quoted("O\u{2019}Neill \u{2018}x\u{201A}\u{201B}"),
+            "'O\u{2019}\u{2019}Neill \u{2018}\u{2018}x\u{201A}\u{201A}\u{201B}\u{201B}'"
         );
     }
 
