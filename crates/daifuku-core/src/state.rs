@@ -64,6 +64,9 @@ pub struct HookEvent {
     /// their own, under the same session id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// Set on tool events: the tool's name, `Bash`, `apply_patch` and so on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
     /// Set on `SessionStart` events: how the session started, `startup`,
     /// `resume`, `compact` and so on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,8 +120,9 @@ impl HookEvent {
     ///   started, the chat is being compacted: **working**. A tool that
     ///   failed is still working, because the agent carries on and tries
     ///   something else.
-    /// - A permission prompt is up, or an MCP server is asking a question:
-    ///   **waiting**. A denied permission puts it back to work.
+    /// - A permission prompt is up, an MCP server is asking a question, or
+    ///   Codex asks one with its `request_user_input` tool: **waiting**. A
+    ///   denied permission or an answer puts it back to work.
     /// - The turn ended, or a `/compact` you ran is finished: **done**. It
     ///   ended on an error: **failed**. A rate-limited session that resumed
     ///   by itself is working again. A session that starts again after a
@@ -130,6 +134,11 @@ impl HookEvent {
     #[must_use]
     pub fn transition(&self) -> Transition {
         match self.hook_event_name.as_str() {
+            // Codex has no event for its own questions: the tool that asks
+            // one is the only sign, and it returns once you answer.
+            "PreToolUse" if self.tool_name.as_deref() == Some("request_user_input") => {
+                Transition::To(AgentState::Waiting)
+            }
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
             | "PostToolBatch" | "PermissionDenied" | "SubagentStart" | "PreCompact"
             | "ElicitationResult" => Transition::To(AgentState::Working),
@@ -741,6 +750,26 @@ mod tests {
         a.apply(1, &ev("s", "Stop"));
         assert!(!a.apply(1, &note("s", "agent_needs_input")));
         assert_eq!(a.window_state(1), Some(AgentState::Done));
+    }
+
+    #[test]
+    fn a_codex_question_waits_until_it_is_answered() {
+        let asking = |name: &str| HookEvent {
+            tool_name: Some("request_user_input".into()),
+            ..ev("s", name)
+        };
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "UserPromptSubmit"));
+        assert!(a.apply(1, &asking("PreToolUse")));
+        assert_eq!(a.window_state(1), Some(AgentState::Waiting));
+        a.apply(1, &asking("PostToolUse"));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
+        // Any other tool is work.
+        let shell = HookEvent {
+            tool_name: Some("Bash".into()),
+            ..ev("s", "PreToolUse")
+        };
+        assert_eq!(shell.transition(), Transition::To(AgentState::Working));
     }
 
     #[test]
