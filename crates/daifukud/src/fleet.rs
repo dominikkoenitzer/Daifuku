@@ -179,7 +179,7 @@ pub fn open(
         for &slot in &empty {
             let n = slot + 1;
             let launch = Launch {
-                directory: Some(directory(fleet, n)),
+                directory: Some(directory(fleet, n, elevated && !fleet.admin)),
                 profile: fleet.profile.clone(),
                 command: fleet
                     .command
@@ -332,12 +332,25 @@ pub fn terminals_count(n: usize) -> String {
 /// folder of its own: `C:\src\site-{n}` for one git worktree per agent. A
 /// folder that does not exist falls back to the profile folder rather than
 /// failing the whole fleet.
-fn directory(fleet: &Fleet, n: usize) -> PathBuf {
+///
+/// `as_user` is set for a terminal started as the desktop user from an
+/// elevated daemon. Drive letters belong to a sign-in, and an elevated
+/// process has one of its own, so a `subst` or mapped drive the user's
+/// terminal sees may not exist for the daemon: the folder is looked for as
+/// the user.
+fn directory(fleet: &Fleet, n: usize, as_user: bool) -> PathBuf {
+    let exists = |d: &PathBuf| {
+        if as_user {
+            daifuku_win::process::as_shell_user(|| d.is_dir()).unwrap_or_else(|_| d.is_dir())
+        } else {
+            d.is_dir()
+        }
+    };
     fleet
         .directory
         .as_ref()
         .map(|d| numbered(d, n))
-        .filter(|d| d.is_dir())
+        .filter(exists)
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
         .unwrap_or_else(|| Path::new(r"C:\").to_path_buf())
 }
@@ -396,7 +409,19 @@ mod tests {
             directory: Some(r"C:\no\such\place-{n}".into()),
             ..Fleet::default()
         };
-        assert!(directory(&fleet, 1).is_dir());
+        assert!(directory(&fleet, 1, false).is_dir());
+        assert!(directory(&fleet, 1, true).is_dir());
+    }
+
+    #[test]
+    fn a_folder_the_user_can_see_is_kept_when_looked_for_as_the_user() {
+        let here = std::env::current_dir().unwrap();
+        let fleet = Fleet {
+            directory: Some(here.clone()),
+            ..Fleet::default()
+        };
+        assert_eq!(directory(&fleet, 1, true), here);
+        assert_eq!(directory(&fleet, 1, false), here);
     }
 
     fn on(device: &str) -> MonitorInfo {
