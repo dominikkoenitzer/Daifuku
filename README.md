@@ -121,8 +121,8 @@ states read in greyscale and to every kind of colour vision:
   each state keeps its own width, and nothing breathes.
 - With "Show animations in Windows" off, the waiting border stops breathing.
   `"pulse": false` turns it off either way.
-- `"sound": true` for a chime when an agent needs you: the Asterisk sound of
-  your own sound scheme.
+- `"sound": true` for a chime when an agent starts waiting for you: the
+  Asterisk sound of your own sound scheme.
 - Everything works from the keyboard, and `daifuku status` lists every agent
   and its state in plain text, for a screen reader or a script
   (`--json`).
@@ -133,6 +133,11 @@ The agent calls `daifuku hook` on every change of state, in the background, so
 it never waits for it. The hook finds the terminal window it runs in and tells
 the daemon, which colours that window's border. Several agents in tabs of one
 window show the most urgent of their states.
+
+No hook reports your answer at a permission prompt, so after you approve one
+the border stays yellow until the approved tool has run. A Claude Code turn
+you interrupt, with Esc or by saying no at a permission prompt, turns green
+once Claude Code reports its prompt idle, about a minute later (after 0.1.1).
 
 ## Security
 
