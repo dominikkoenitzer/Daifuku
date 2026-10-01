@@ -435,8 +435,19 @@ impl Daemon {
                     .position(|f| f.name.eq_ignore_ascii_case(&first.name))
             }),
         };
+        // A name the config does not know is a mistake, as it is for `open`;
+        // a fleet it knows that is not open is already closed.
         let Some(index) = index else {
-            return Response::said("that fleet is not open");
+            return match name {
+                Some(n) if self.definition(n).is_none() => Response::error(format!(
+                    "no fleet called `{n}` in {}",
+                    self.config_path.display()
+                )),
+                None if self.config.fleets.is_empty() => {
+                    Response::error("the config has no fleets")
+                }
+                _ => Response::said("that fleet is not open"),
+            };
         };
         let record = self.fleets.remove(index);
         let mut closed = 0;
@@ -836,6 +847,26 @@ mod tests {
         d.fleets.push(record);
         d.sweep();
         assert!(d.status().fleets.is_empty());
+    }
+
+    #[test]
+    fn closing_a_fleet_the_config_does_not_know_is_an_error() {
+        let mut d = daemon();
+        assert!(matches!(
+            d.close(Some("agnets")),
+            Response::Error { message } if message.contains("no fleet called `agnets`")
+        ));
+        // A known fleet that is not open is closed already, demo included.
+        for name in ["agents", "Demo"] {
+            assert_eq!(
+                d.close(Some(name)),
+                Response::said("that fleet is not open"),
+                "{name}"
+            );
+        }
+        assert_eq!(d.close(None), Response::said("that fleet is not open"));
+        d.config.fleets.clear();
+        assert_eq!(d.close(None), Response::error("the config has no fleets"));
     }
 
     #[test]
