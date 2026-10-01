@@ -200,7 +200,9 @@ impl BorderWindow {
     ///
     /// Raising a window leaves its frame behind, under the window and under
     /// whatever was above it, while its rectangle and colour stay the same.
-    /// A hidden frame is left hidden.
+    /// A hidden frame is left hidden, and the frame of a window that has gone
+    /// away is taken down: with no target to stack against it would otherwise
+    /// go topmost and float over every window.
     ///
     /// # Errors
     ///
@@ -208,6 +210,10 @@ impl BorderWindow {
     /// same reason as in [`BorderWindow::track`].
     pub fn restack_above(&mut self, target: HWND) -> Result<()> {
         if !self.visible {
+            return Ok(());
+        }
+        if !target.0.is_null() && !is_window(target) {
+            self.hide();
             return Ok(());
         }
         if let Err(error) = self.restack(target) {
