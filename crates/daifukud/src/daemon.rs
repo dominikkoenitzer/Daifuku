@@ -94,27 +94,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     let config_path = config_override
         .or_else(paths::config_file)
         .context("no ProgramData folder")?;
-    let mut d = Daemon {
-        config: Config::default(),
-        config_path,
-        config_error: None,
-        agents: Agents::new(),
-        fleets: Vec::new(),
-        borders: None,
-        hotkeys: Hotkeys::default(),
-        elevated,
-        high_contrast: access::high_contrast(),
-        animations: access::animations(),
-        pulse_timer: None,
-        hooks: events::Hooks::install(),
-        framed: Vec::new(),
-        started: std::time::Instant::now(),
-        config_stamp: None,
-        config_failed: None,
-        monitors: daifuku_win::monitor::monitors(),
-        shown_since: std::collections::HashMap::new(),
-        last_next: None,
-    };
+    let mut d = Daemon::new(config_path, elevated, events::Hooks::install());
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
         .inspect_err(|e| tracing::error!(error = %e, "no borders"))
@@ -173,6 +153,32 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
 }
 
 impl Daemon {
+    /// A daemon on the default config, with no agents, fleets, borders or
+    /// hotkeys yet, that reads its config from `config_path`.
+    fn new(config_path: PathBuf, elevated: bool, hooks: events::Hooks) -> Self {
+        Self {
+            config: Config::default(),
+            config_path,
+            config_error: None,
+            agents: Agents::new(),
+            fleets: Vec::new(),
+            borders: None,
+            hotkeys: Hotkeys::default(),
+            elevated,
+            high_contrast: access::high_contrast(),
+            animations: access::animations(),
+            pulse_timer: None,
+            hooks,
+            framed: Vec::new(),
+            started: std::time::Instant::now(),
+            config_stamp: None,
+            config_failed: None,
+            monitors: daifuku_win::monitor::monitors(),
+            shown_since: std::collections::HashMap::new(),
+            last_next: None,
+        }
+    }
+
     fn load_config(&mut self) {
         self.config_stamp = stamp(&self.config_path);
         let text = match std::fs::read(&self.config_path)
@@ -412,7 +418,7 @@ impl Daemon {
                 snapped += record.windows().count();
             }
         }
-        self.fleets.retain(|f| f.windows().next().is_some());
+        self.drop_closed_fleets();
         self.refresh_borders();
         Response::said(format!("snapped {}", fleet::terminals_count(snapped)))
     }
@@ -530,6 +536,7 @@ impl Daemon {
                     for f in &mut self.fleets {
                         f.forget(w);
                     }
+                    self.drop_closed_fleets();
                     refresh |= forgot;
                 }
                 Event::Moved(w) | Event::Visibility(w) => {
@@ -605,9 +612,17 @@ impl Daemon {
         for f in &mut self.fleets {
             f.prune();
         }
+        self.drop_closed_fleets();
         if !dead.is_empty() {
             self.refresh_borders();
         }
+    }
+
+    /// Lets go of every fleet whose terminals are all closed, so it is no
+    /// longer listed as open. Its record holds nothing worth keeping: a fleet
+    /// opened again starts from its config, as a new one does.
+    fn drop_closed_fleets(&mut self) {
+        self.fleets.retain(|f| f.windows().next().is_some());
     }
 
     /// Sends the borders their end state: one frame per agent window that is
@@ -802,6 +817,26 @@ fn next_target<T: PartialEq + Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A daemon on the defaults, whose config file does not exist, with
+    /// nothing hooked, registered or drawn.
+    fn daemon() -> Daemon {
+        Daemon::new(
+            PathBuf::from(r"C:\no\such\folder\daifuku.json"),
+            false,
+            events::Hooks::none(),
+        )
+    }
+
+    #[test]
+    fn a_fleet_whose_terminals_are_all_closed_is_no_longer_open() {
+        let mut d = daemon();
+        let mut record = OpenFleet::new("agents");
+        record.slots = vec![None, None];
+        d.fleets.push(record);
+        d.sweep();
+        assert!(d.status().fleets.is_empty());
+    }
 
     #[test]
     fn the_breath_never_goes_dark() {

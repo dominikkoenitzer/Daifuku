@@ -80,6 +80,15 @@ impl Hooks {
         }
     }
 
+    /// No hooks at all, for a test that runs no message loop.
+    #[cfg(test)]
+    pub const fn none() -> Self {
+        Self {
+            always: Vec::new(),
+            following: None,
+        }
+    }
+
     /// Installs the hooks borders follow their windows by when `on`, and
     /// removes them when not. Nothing happens when they already are as asked,
     /// so it is cheap to call on every pass. Must be called on the thread
