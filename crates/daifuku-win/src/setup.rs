@@ -386,7 +386,7 @@ mod tests {
         // The US and Western European code pages, which Windows in English,
         // French or German uses, agree on these two.
         if matches!(page, 437 | 850) {
-            assert_eq!(oem_text(b"na\x8Bve caf\x82"), "naïve café");
+            assert_eq!(oem_text(b"Gr\x81\xE1e"), "Grüße");
         }
     }
 
