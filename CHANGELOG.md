@@ -93,6 +93,17 @@
   source, and a `;` in a fleet's folder no longer splits the command.
 - A border stays above its terminal when the terminal is brought to the
   front, and no longer flashes over other windows while it moves.
+- A border can no longer be left on screen when its drawing failed, or when
+  a config reload or display change came just as its terminal closed or
+  was minimised, and a frame whose terminal has gone no longer floats over
+  every window when another one comes to the front.
+- A border is drawn again at once after a graphics driver update or GPU
+  reset, and one that could not be drawn, its brush or its window included,
+  is tried again on the next pass.
+- Borders follow a contrast theme switched or edited while high contrast
+  stays on.
+- The waiting border stops breathing while the session is locked, a screen
+  saver is up or another account is switched to.
 - An agent that resumes by itself after a rate limit shows as working again.
 - A Claude Code turn you interrupt, with Esc or by saying no at a
   permission prompt, shows done once Claude Code reports its prompt idle,
