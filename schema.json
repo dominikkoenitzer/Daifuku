@@ -111,10 +111,10 @@
           "default": "catppuccin"
         },
         "colours": {
-          "description": "Colours of your own, one per state, instead of the palette's.",
+          "description": "Colours of your own, for any of the states. A state left out keeps\nthe palette's colour.",
           "anyOf": [
             {
-              "$ref": "#/$defs/StateColours"
+              "$ref": "#/$defs/OwnColours"
             },
             {
               "type": "null"
@@ -149,29 +149,53 @@
         }
       ]
     },
-    "StateColours": {
-      "description": "A colour for each agent state. The defaults are Catppuccin Mocha.",
+    "OwnColours": {
+      "description": "Colours of your own, as the file writes them. Each one is optional, so\noverriding one state keeps the palette's colour for the other three.",
       "type": "object",
       "properties": {
         "working": {
-          "description": "Thinking and calling tools. Blue.",
-          "$ref": "#/$defs/Colour",
-          "default": "#89b4fa"
+          "description": "Thinking and calling tools.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Colour"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "waiting": {
-          "description": "Blocked on you. Yellow, the one to look for.",
-          "$ref": "#/$defs/Colour",
-          "default": "#f9e2af"
+          "description": "Blocked on you, the one to look for.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Colour"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "done": {
-          "description": "Finished its turn. Green.",
-          "$ref": "#/$defs/Colour",
-          "default": "#a6e3a1"
+          "description": "Finished its turn.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Colour"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "failed": {
-          "description": "The turn ended on an error. Red.",
-          "$ref": "#/$defs/Colour",
-          "default": "#f38ba8"
+          "description": "The turn ended on an error.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Colour"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
