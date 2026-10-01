@@ -8,6 +8,7 @@ use daifuku_core::protocol::{AgentWindow, FleetStatus, HookMessage, Request, Res
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
 use daifuku_win::{access, dpi, paths, process, window};
+use windows::Win32::UI::Shell::{QUNS_NOT_PRESENT, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
     WM_HOTKEY, WM_TIMER,
@@ -52,6 +53,8 @@ struct Daemon {
     /// Windows' own settings, read at start and on every sweep.
     high_contrast: bool,
     animations: bool,
+    /// Whether nobody is at the desktop, read on every sweep: see [`away()`].
+    away: bool,
     /// The pulse timer, running only while an agent waits.
     pulse_timer: Option<usize>,
     /// The window event hooks. The ones borders follow their windows by are
@@ -171,6 +174,7 @@ impl Daemon {
             elevated,
             high_contrast: access::high_contrast(),
             animations: access::animations(),
+            away: away(),
             pulse_timer: None,
             hooks,
             framed: Vec::new(),
@@ -665,6 +669,12 @@ impl Daemon {
             // nothing to the borders.
             self.paint_borders();
         }
+        let gone = away();
+        if gone != self.away {
+            tracing::info!(away = gone, "the desktop was left or came back");
+            self.away = gone;
+            self.refresh_borders();
+        }
         let dead: Vec<u64> = self
             .agents
             .windows()
@@ -783,10 +793,12 @@ impl Daemon {
     /// Starts the pulse timer when a waiting agent has a frame on screen and
     /// the pulse is wanted and allowed, and stops it otherwise. A high
     /// contrast theme holds it still: dimming the theme's own colours takes
-    /// away the contrast it is for.
+    /// away the contrast it is for. It also rests while nobody is at the
+    /// desktop, where it would repaint for hours with no one to see it.
     fn update_pulse(&mut self, waiting: bool) {
         let b = &self.config.border;
-        let wanted = b.enabled && b.pulse && self.animations && !self.high_contrast && waiting;
+        let wanted =
+            b.enabled && b.pulse && self.animations && !self.high_contrast && !self.away && waiting;
         match (wanted, self.pulse_timer) {
             (true, None) => {
                 // SAFETY: a thread timer, killed below or at exit.
@@ -803,6 +815,14 @@ impl Daemon {
             _ => {}
         }
     }
+}
+
+/// Whether nobody is at the desktop, as Windows tells a program that wants
+/// to show a notification: the session is locked, a screen saver is up, or
+/// another account was switched to.
+fn away() -> bool {
+    // SAFETY: no arguments; only reads the state of the session.
+    unsafe { SHQueryUserNotificationState() }.is_ok_and(|state| state == QUNS_NOT_PRESENT)
 }
 
 /// How bright a waiting border is at `t` seconds: a slow breath between 70 %
@@ -1041,6 +1061,21 @@ mod tests {
         record.slots = vec![Some(1)];
         d.fleets.push(record);
         assert!(!d.idle(&Action::Snap));
+    }
+
+    #[test]
+    fn the_pulse_rests_while_nobody_is_at_the_desktop() {
+        let mut d = daemon();
+        d.animations = true;
+        d.high_contrast = false;
+        d.away = true;
+        d.update_pulse(true);
+        assert_eq!(d.pulse_timer, None);
+        d.away = false;
+        d.update_pulse(true);
+        assert!(d.pulse_timer.is_some(), "it runs again on return");
+        d.update_pulse(false);
+        assert_eq!(d.pulse_timer, None);
     }
 
     #[test]
