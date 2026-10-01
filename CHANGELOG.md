@@ -108,6 +108,24 @@
   not support, as one cause.
 - Uninstall removes only hooks that run a program called `daifuku.exe`, and
   keeps the empty hook groups and lists you had.
+- `daifuku uninstall` says what it could not remove from Program Files
+  instead of calling the folder removed. A running copy it cannot move to
+  the temp folder is renamed next to the folder and deleted at the next
+  restart.
+- The logon task starts the daemon at normal priority. Task Scheduler's
+  default, below normal, passed on to administrator fleets and everything
+  run in them. Install again to update the task.
+- `daifuku doctor` no longer sends you to `daifuku install` for a settings
+  file install leaves alone, one behind a link out of your profile or one
+  that is not valid JSON, and says what to do instead.
+- With `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set, install says the agent
+  reads another file, which it does not write, and doctor checks the hooks
+  in that file instead of reporting the default one as fine.
+- The installer's last line names the key your config binds to the first
+  fleet, or `daifuku open` when it has none, and with `--no-start` says it
+  applies after your next sign-in. The help for `--no-start` says that it
+  stops a running daemon.
+- Errors from Task Scheduler keep their accents on non-English Windows.
 - Windows Terminal counts only when the system installed it from a signed
   source, and a `;` in a fleet's folder no longer splits the command.
 - A border stays above its terminal when the terminal is brought to the
