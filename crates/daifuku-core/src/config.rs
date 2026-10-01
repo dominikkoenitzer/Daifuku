@@ -79,9 +79,10 @@ pub struct Border {
     /// Okabe-Ito palette, which stays distinct for every common kind of
     /// colour blindness.
     pub palette: Palette,
-    /// Colours of your own, one per state, instead of the palette's.
+    /// Colours of your own, for any of the states. A state left out keeps
+    /// the palette's colour.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub colours: Option<StateColours>,
+    pub colours: Option<OwnColours>,
     /// Draw each state at its own width, so a state reads without its
     /// colour: at a width of 4, done is 2, working 4, failed 6 and waiting 8.
     /// Always on with a high contrast theme.
@@ -107,10 +108,17 @@ impl Default for Border {
 }
 
 impl Border {
-    /// The colours in use: your own, else the palette's.
+    /// The colours in use: your own where you set one, else the palette's.
     #[must_use]
     pub fn colours(&self) -> StateColours {
-        self.colours.unwrap_or_else(|| self.palette.colours())
+        let palette = self.palette.colours();
+        let own = self.colours.unwrap_or_default();
+        StateColours {
+            working: own.working.unwrap_or(palette.working),
+            waiting: own.waiting.unwrap_or(palette.waiting),
+            done: own.done.unwrap_or(palette.done),
+            failed: own.failed.unwrap_or(palette.failed),
+        }
     }
 
     /// The thickness a state is drawn at. With state widths each state is
@@ -168,9 +176,27 @@ impl Palette {
     }
 }
 
-/// A colour for each agent state. The defaults are Catppuccin Mocha.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Colours of your own, as the file writes them. Each one is optional, so
+/// overriding one state keeps the palette's colour for the other three.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
+pub struct OwnColours {
+    /// Thinking and calling tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working: Option<Colour>,
+    /// Blocked on you, the one to look for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<Colour>,
+    /// Finished its turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done: Option<Colour>,
+    /// The turn ended on an error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<Colour>,
+}
+
+/// A colour for each agent state, as drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StateColours {
     /// Thinking and calling tools. Blue.
     pub working: Colour,
@@ -180,17 +206,6 @@ pub struct StateColours {
     pub done: Colour,
     /// The turn ended on an error. Red.
     pub failed: Colour,
-}
-
-impl Default for StateColours {
-    fn default() -> Self {
-        Self {
-            working: Colour::new(0x89, 0xb4, 0xfa),
-            waiting: Colour::new(0xf9, 0xe2, 0xaf),
-            done: Colour::new(0xa6, 0xe3, 0xa1),
-            failed: Colour::new(0xf3, 0x8b, 0xa8),
-        }
-    }
 }
 
 impl StateColours {
@@ -861,6 +876,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(own.border.colours().waiting.to_hex(), "#ffffff");
+        // The states left out keep the colour-blind palette.
+        assert_eq!(own.border.colours().working.to_hex(), "#56b4e9");
+        assert_eq!(own.border.colours().done.to_hex(), "#009e73");
+        assert_eq!(own.border.colours().failed.to_hex(), "#d55e00");
+        let text = serde_json::to_string(&own).unwrap();
+        assert_eq!(Config::from_json(&text).unwrap(), own);
     }
 
     #[test]
