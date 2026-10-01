@@ -268,7 +268,12 @@ fn control(request: &Request, raw: bool) -> ExitCode {
     };
     if raw {
         print!("{reply}");
-        return ExitCode::SUCCESS;
+        // A script checks the exit code before it reads the JSON.
+        return if done(&reply) {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     }
     match from_line::<Response>(&reply) {
         Ok(Response::Ok { message }) => {
@@ -290,6 +295,16 @@ fn control(request: &Request, raw: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether a reply says the request was done: readable, and not an error.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn done(reply: &str) -> bool {
+    use daifuku_core::protocol::{Response, from_line};
+    matches!(
+        from_line::<Response>(reply),
+        Ok(Response::Ok { .. } | Response::Status(_))
+    )
 }
 
 /// What to say when the daemon could not be asked. Only an elevated process
@@ -450,6 +465,17 @@ mod tests {
             "the process answering on Daifuku's control pipe is not the elevated daemon",
         );
         assert_eq!(control_error(&spoofed, true), spoofed.to_string());
+    }
+
+    #[test]
+    fn a_raw_reply_counts_as_done_only_when_it_is_not_an_error() {
+        assert!(done("{\"result\":\"ok\"}\n"));
+        assert!(done("{\"result\":\"ok\",\"message\":\"opened\"}\n"));
+        assert!(!done(
+            "{\"result\":\"error\",\"message\":\"the daemon did not answer in time\"}\n"
+        ));
+        assert!(!done(""));
+        assert!(!done("{\"result\""));
     }
 
     #[test]
