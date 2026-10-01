@@ -147,11 +147,15 @@ A hotkey is modifiers and one key, joined by `+`: `ctrl`, `alt`, `shift`,
 `end`, `insert`, `delete`, the arrows, `comma`, `period`, `minus`, `plus`,
 `semicolon`, `slash`, `backslash`, `grave`, `quote`, `bracketleft`,
 `bracketright`. At least one modifier is required. `null` turns a key off.
+`semicolon`, `slash`, `backslash`, `grave`, `quote`, `bracketleft` and
+`bracketright` name keys by what they type on a US keyboard; on another
+layout each is a key with other characters on it.
 
 A combination another program already holds cannot be registered; `daifuku
 status` and `daifuku doctor` list it as refused. On German, Swiss and French
-keyboards AltGr is Ctrl and Alt together, so avoid Ctrl+Alt with a letter that
-types a character there, such as `e` (€) or `2` (@).
+keyboards AltGr is Ctrl and Alt together, so avoid Ctrl+Alt with a letter,
+digit or punctuation key that types a character there, such as `e` (€) or `2`
+(@).
 
 ## `sound`
 
