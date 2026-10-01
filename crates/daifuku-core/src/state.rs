@@ -103,13 +103,17 @@ pub enum Transition {
 }
 
 impl HookEvent {
-    /// Reads the JSON a hook receives on standard input.
+    /// Reads the JSON a hook receives on standard input. It is read as it
+    /// comes and only the fields above are kept, so an event that carries a
+    /// whole file, as a tool event for a large edit does, is never held in
+    /// memory whole.
     ///
     /// # Errors
     ///
-    /// When the input is not JSON or lacks the session id or event name.
-    pub fn from_hook_input(input: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(input)
+    /// When the input cannot be read, is not JSON or lacks the session id or
+    /// event name.
+    pub fn from_hook_input(input: impl std::io::Read) -> Result<Self, serde_json::Error> {
+        serde_json::from_reader(input)
     }
 
     /// What this event means.
@@ -619,15 +623,31 @@ mod tests {
         let input = r#"{"session_id":"abc","prompt_id":"p","hook_event_name":"Notification",
             "cwd":"C:\\x","transcript_path":"t","permission_mode":"default",
             "notification_type":"permission_prompt","message":"Claude needs your permission"}"#;
-        let e = HookEvent::from_hook_input(input).unwrap();
+        let e = HookEvent::from_hook_input(input.as_bytes()).unwrap();
         assert_eq!(e.session_id, "abc");
         assert_eq!(e.transition(), Transition::To(AgentState::Waiting));
     }
 
     #[test]
+    fn reads_a_tool_event_that_carries_a_whole_file() {
+        // An edit of a large file, its content more than a few megabytes.
+        let content = "x".repeat(4 * 1024 * 1024);
+        let input = format!(
+            r#"{{"session_id":"abc","hook_event_name":"PermissionRequest",
+            "tool_name":"Write","tool_input":{{"file_path":"C:\\x.json","content":"{content}"}}}}"#
+        );
+        let e = HookEvent::from_hook_input(input.as_bytes()).unwrap();
+        assert_eq!(e.transition(), Transition::To(AgentState::Waiting));
+    }
+
+    #[test]
     fn input_without_a_session_is_rejected() {
-        assert!(HookEvent::from_hook_input(r#"{"hook_event_name":"Stop"}"#).is_err());
-        assert!(HookEvent::from_hook_input("not json").is_err());
+        let missing = r#"{"hook_event_name":"Stop"}"#;
+        assert!(HookEvent::from_hook_input(missing.as_bytes()).is_err());
+        assert!(HookEvent::from_hook_input("not json".as_bytes()).is_err());
+        // An event cut off part way is no event.
+        let cut = r#"{"session_id":"abc","hook_event_name":"Stop","#;
+        assert!(HookEvent::from_hook_input(cut.as_bytes()).is_err());
     }
 
     #[test]
