@@ -43,11 +43,13 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     // A standard user's prompt answered with an administrator's password
     // runs this as the administrator: the task, the hooks and the settings
     // would all be theirs, and the user at the desktop would get nothing.
+    // Windows 11's Administrator protection does the same to every
+    // administrator terminal: it runs as a hidden account of its own.
     if let Err(e) = process::as_shell_user(|| ())
         && e.kind() == std::io::ErrorKind::PermissionDenied
     {
         bail!(
-            "this terminal runs as another account than the one signed in: install from an administrator terminal of the account that runs the agents"
+            "this terminal runs as another account than the one signed in, as it does when a standard user's prompt takes an administrator's password, or under Windows Administrator protection, which Daifuku does not support: install from an administrator terminal of the account that runs the agents"
         );
     }
     let from = std::env::current_exe()?
