@@ -1,5 +1,6 @@
 //! What installing needs from Windows: the user's SID, a folder only
-//! administrators can change, and Task Scheduler.
+//! administrators can change, Task Scheduler, and a delete at the next
+//! restart for what uninstalling could not remove.
 
 use std::path::Path;
 use std::process::Command;
@@ -16,7 +17,8 @@ use windows::Win32::Security::{
 };
 use windows::Win32::Storage::FileSystem::{
     CreateDirectoryW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, READ_CONTROL,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW, READ_CONTROL,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::{PCWSTR, PWSTR};
@@ -229,6 +231,25 @@ unsafe fn only_admins_write(dacl: *mut ACL) -> bool {
         }
     }
     true
+}
+
+/// Has Windows delete `path`, a file or an empty folder, at the next restart,
+/// before anything can run from it. Only administrators may.
+///
+/// # Errors
+///
+/// When Windows refuses.
+pub fn delete_at_restart(path: &Path) -> std::io::Result<()> {
+    let path = to_wide(&path.to_string_lossy());
+    // SAFETY: the path is NUL terminated; no new name means delete.
+    unsafe {
+        MoveFileExW(
+            PCWSTR(path.as_ptr()),
+            PCWSTR::null(),
+            MOVEFILE_DELAY_UNTIL_REBOOT,
+        )
+    }
+    .map_err(std::io::Error::from)
 }
 
 /// Registers the task from its XML, replacing any older version.
