@@ -14,6 +14,7 @@
 //! 5. Add the hooks to Claude Code's settings and, if Codex is installed,
 //!    to Codex's, leaving everything else in each file as it was.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -102,9 +103,26 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     if !options.no_hooks {
         let exe = to.join("daifuku.exe").to_string_lossy().into_owned();
         for (agent, file) in hook_files() {
-            // Codex only if it is installed: its folder exists.
-            if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
+            let variable = folder_variable(agent);
+            let instead = read_instead(&file, std::env::var_os(variable));
+            // Codex only if it is installed: its folder exists, in the
+            // profile or where its variable points.
+            if agent.name == CODEX.name
+                && !file.parent().is_some_and(Path::is_dir)
+                && !instead
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .is_some_and(Path::is_dir)
+            {
                 continue;
+            }
+            if let Some(other) = &instead {
+                println!(
+                    "hooks        {} reads {} ({variable}), which install does not write: copy Daifuku's hooks there from {}",
+                    agent.name,
+                    other.display(),
+                    file.display()
+                );
             }
             let mut updated = 0;
             let edited = edit_agent_file(&file, |s| {
@@ -267,12 +285,25 @@ pub fn doctor() -> bool {
     let exe = paths::install_dir()
         .map(|d| d.join("daifuku.exe").to_string_lossy().into_owned())
         .unwrap_or_default();
+    // In the file the agent reads, which its variable may move out of the
+    // one install writes.
     let profile = paths::profile_dir();
     for (agent, file) in hook_files() {
-        if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
+        let variable = folder_variable(agent);
+        let instead = read_instead(&file, std::env::var_os(variable));
+        let read = instead.as_deref().unwrap_or(&file);
+        if agent.name == CODEX.name && !read.parent().is_some_and(Path::is_dir) {
             continue;
         }
-        let fix = hooks_fix(agent, &file, &exe, profile.as_deref());
+        let fix = hooks_fix(agent, read, &exe, profile.as_deref()).map(|fix| match &instead {
+            Some(other) => format!(
+                "{variable} points {} at {}, which `daifuku install` does not write: copy Daifuku's hooks there from {}",
+                agent.name,
+                other.display(),
+                file.display()
+            ),
+            None => fix,
+        });
         check(
             fix.is_none(),
             &format!("{} hooks present and current", agent.name),
@@ -478,6 +509,47 @@ fn hook_files() -> Vec<(&'static Agent, PathBuf)> {
         out.push((&CODEX, p));
     }
     out
+}
+
+/// The variable that points `agent` at another folder than the one in the
+/// profile, which install writes: Claude Code's `CLAUDE_CONFIG_DIR`, Codex's
+/// `CODEX_HOME`.
+fn folder_variable(agent: &Agent) -> &'static str {
+    if agent.name == CODEX.name {
+        "CODEX_HOME"
+    } else {
+        "CLAUDE_CONFIG_DIR"
+    }
+}
+
+/// The file an agent reads in place of `file` when `folder`, the value of
+/// its [`folder_variable`], names another folder than the one `file` is in;
+/// `None` when it reads `file`. Install writes only the file in the profile:
+/// the variable is the user's to set, and install runs as administrator.
+fn read_instead(file: &Path, folder: Option<OsString>) -> Option<PathBuf> {
+    let folder = PathBuf::from(folder.filter(|f| !f.is_empty())?);
+    let default = file.parent()?;
+    let same = match (
+        std::fs::canonicalize(&folder),
+        std::fs::canonicalize(default),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        // Not there to ask the file system: compared as written, in any
+        // case and with or without a separator at the end.
+        _ => {
+            let key = |p: &Path| {
+                p.components()
+                    .map(|c| c.as_os_str().to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+            };
+            key(&folder) == key(default)
+        }
+    };
+    if same {
+        None
+    } else {
+        Some(folder.join(file.file_name()?))
+    }
 }
 
 /// Reads a settings file as text, without the byte order mark many Windows
@@ -751,6 +823,32 @@ mod tests {
         assert!(made.status.success(), "{made:?}");
         assert!(inside, "a file yet to be made under the root");
         assert!(!through, "a junction that leads out of the root");
+    }
+
+    #[test]
+    fn a_variable_that_moves_an_agent_elsewhere_is_noticed() {
+        let base = std::env::temp_dir().join(format!("daifuku-moved-{}", std::process::id()));
+        let own = base.join(".claude");
+        let other = base.join("work");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let file = own.join("settings.json");
+        let shouted = OsString::from(own.to_string_lossy().to_uppercase());
+        let gone = base.join("gone");
+        let mut gone_slash = gone.clone().into_os_string();
+        gone_slash.push(r"\");
+
+        let unset = read_instead(&file, None);
+        let empty = read_instead(&file, Some(OsString::new()));
+        let same = read_instead(&file, Some(shouted));
+        let same_unmade = read_instead(&gone.join("settings.json"), Some(gone_slash));
+        let moved = read_instead(&file, Some(other.clone().into_os_string()));
+        std::fs::remove_dir_all(&base).unwrap();
+
+        assert_eq!((unset, empty), (None, None));
+        assert_eq!(same, None, "the same folder in other letters");
+        assert_eq!(same_unmade, None, "a folder not made yet, as written");
+        assert_eq!(moved, Some(other.join("settings.json")));
     }
 
     /// Doctor sends to install only what install would change.
