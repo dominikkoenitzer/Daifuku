@@ -143,20 +143,36 @@ pub struct Connection<'a> {
 ///
 /// # Errors
 ///
-/// When the name is taken or the security descriptor is refused, and for
-/// the hook pipe when this process cannot read its user's SID: every hook
-/// would be turned away without a word.
+/// When the name is taken or the security descriptor is refused, for the
+/// hook pipe when this process cannot read its user's SID, and for the
+/// control pipe when this process is not elevated.
 pub fn instances(pipe: Pipe, count: usize) -> io::Result<Vec<Instance>> {
-    if pipe == Pipe::Hook && crate::setup::user_sid().is_none() {
-        return Err(io::Error::other(
+    let elevated = process::current_is_elevated();
+    may_serve(pipe, elevated)?;
+    instances_at(&pipe.name(), &pipe.sddl(elevated), count)
+}
+
+/// Refuses a pipe this process cannot serve, and says why.
+///
+/// - Hook: without the user's SID, every hook would be turned away without a
+///   word.
+/// - Control: only an elevated process can. Windows lets no process label a
+///   pipe above its own integrity level, so the high label is refused, and a
+///   client turns away a control server that is not elevated in any case.
+fn may_serve(pipe: Pipe, elevated: bool) -> io::Result<()> {
+    match pipe {
+        Pipe::Hook if crate::setup::user_sid().is_none() => Err(io::Error::other(
             "cannot read this user's SID to let their hooks in",
-        ));
+        )),
+        Pipe::Control if !elevated => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "daifukud must run elevated; start it with schtasks /Run /TN {}",
+                daifuku_core::task::TASK_NAME
+            ),
+        )),
+        _ => Ok(()),
     }
-    instances_at(
-        &pipe.name(),
-        &pipe.sddl(process::current_is_elevated()),
-        count,
-    )
 }
 
 fn instances_at(name: &str, sddl: &str, count: usize) -> io::Result<Vec<Instance>> {
@@ -737,6 +753,21 @@ mod tests {
             panic!("an ordinary process added a server instance");
         };
         assert_eq!(os_error(&e), Some(ERROR_ACCESS_DENIED.0));
+    }
+
+    #[test]
+    fn only_an_elevated_process_serves_the_control_pipe() {
+        let refused = may_serve(Pipe::Control, false).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            refused.to_string().contains("must run elevated"),
+            "{refused}"
+        );
+        assert!(may_serve(Pipe::Control, true).is_ok());
+        // Why: an ordinary process cannot even give a pipe the high label.
+        let name = private_name();
+        let made = as_ordinary_user(|| create(&name, &Pipe::Control.sddl(false), true, 1));
+        assert!(made.is_err(), "an ordinary process made the control pipe");
     }
 
     #[test]
