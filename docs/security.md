@@ -66,10 +66,10 @@ Every exchange has a deadline. A hook has half a second from connecting to
 deliver its line, a command client five seconds to send its request and five
 to read the reply; past that the daemon hangs up. A process that opens every
 hook instance and says nothing therefore holds them for a moment, not for
-ever. One that keeps reconnecting can still crowd hooks out while it runs;
-that loses state reports, as a forged message could, and nothing more. A
-hook gives up just as fast on a pipe that does not take its line, so a
-process posing as the daemon cannot make agents wait.
+ever. One that keeps reconnecting can still crowd hooks out while it runs,
+which keeps borders from updating and does nothing more. A hook gives up
+just as fast on a pipe that does not take its line, so a process posing as
+the daemon cannot make agents wait.
 
 ## Hotkeys
 
