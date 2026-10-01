@@ -23,8 +23,8 @@ use crate::border::BorderSpec;
 pub struct BorderChanges {
     /// Windows that had no border before.
     pub added: Vec<BorderSpec>,
-    /// The colour changed, or the last draw failed: repaint, wherever it is
-    /// now.
+    /// The colour changed, the last draw failed or everything is being
+    /// repainted: repaint, wherever it is now.
     pub repainted: Vec<BorderSpec>,
     /// Same colour, new rectangle: move it, do not touch its pixels.
     pub moved: Vec<BorderSpec>,
@@ -67,7 +67,7 @@ impl BorderChanges {
 pub struct BorderDiff {
     last: BTreeMap<isize, BorderSpec>,
     /// Borders the next pass hands over again even when nothing changed,
-    /// because their last draw failed.
+    /// because their last draw failed or everything has to be repainted.
     resend: BTreeSet<isize>,
 }
 
@@ -101,11 +101,22 @@ impl BorderDiff {
 
     /// Forgets everything, so that the next pass re-adds every border.
     ///
-    /// Used when the borders come off the screen and when the configuration
-    /// changes, because a new configuration repaints whatever is left.
-    pub fn invalidate(&mut self) {
+    /// Used when every border has come off the screen.
+    pub fn clear(&mut self) {
         self.last.clear();
         self.resend.clear();
+    }
+
+    /// Marks every border for repainting, so that the next pass hands each
+    /// one that is still wanted to its window again.
+    ///
+    /// Used when the configuration or the displays change, because then a
+    /// border can need new pixels while its rectangle and colour stay the
+    /// same. What is on screen is still known: a window that leaves the
+    /// layout in that same pass still has its border taken down, which it
+    /// would not if this forgot everything.
+    pub fn invalidate(&mut self) {
+        self.resend.extend(self.last.keys().copied());
     }
 
     /// Marks one border for the next pass to hand to its window again.
@@ -393,16 +404,44 @@ mod tests {
     }
 
     #[test]
-    fn invalidating_re_adds_everything_next_time() {
+    fn clearing_re_adds_everything_next_time() {
         let mut diff = BorderDiff::new();
         let specs = vec![spec(A, LEFT, BLUE)];
         let _ = diff.diff(specs.clone());
 
-        diff.invalidate();
+        diff.clear();
         assert!(diff.is_empty());
         let changes = diff.diff(specs);
-        assert_eq!(changes.added.len(), 1, "a new configuration repaints");
+        assert_eq!(changes.added.len(), 1, "every border came off the screen");
         assert!(changes.removed.is_empty());
+    }
+
+    #[test]
+    fn invalidating_repaints_everything_next_time() {
+        let mut diff = BorderDiff::new();
+        let specs = vec![spec(A, LEFT, BLUE), spec(B, RIGHT, GREEN)];
+        let _ = diff.diff(specs.clone());
+
+        diff.invalidate();
+        assert_eq!(diff.len(), 2, "what is on screen is still known");
+        let changes = diff.diff(specs.clone());
+        assert_eq!(changes.repainted.len(), 2, "a new configuration repaints");
+        assert!(changes.added.is_empty() && changes.removed.is_empty());
+        assert!(diff.diff(specs).is_empty(), "and only once");
+    }
+
+    #[test]
+    fn a_window_that_leaves_as_everything_repaints_is_taken_down() {
+        // A reload or a monitor change invalidates the diff, and in that same
+        // pass a window is minimised or closed. Its frame is on screen, so the
+        // pass has to name it as removed, or nothing ever takes it down.
+        let mut diff = BorderDiff::new();
+        let _ = diff.diff(vec![spec(A, LEFT, BLUE), spec(B, RIGHT, GREEN)]);
+
+        diff.invalidate();
+        let changes = diff.diff(vec![spec(B, RIGHT, GREEN)]);
+        assert_eq!(changes.removed, vec![A], "A's frame stays on screen");
+        assert_eq!(changes.repainted, vec![spec(B, RIGHT, GREEN)]);
     }
 
     #[test]
