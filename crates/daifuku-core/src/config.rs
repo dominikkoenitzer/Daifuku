@@ -70,7 +70,8 @@ impl Default for Config {
 pub struct Border {
     /// Draw status borders at all.
     pub enabled: bool,
-    /// Thickness in physical pixels, 1 to 64. `enabled: false` draws none.
+    /// Thickness in physical pixels, 1 to 64; 0, which earlier versions took,
+    /// draws as 1. `enabled: false` draws none.
     pub width: i32,
     /// How far outside the visible frame the border sits, -64 to 64 pixels;
     /// negative overlaps the window's own edge.
@@ -558,7 +559,7 @@ impl Config {
         if !(0..=1000).contains(&self.gaps.outer) || !(0..=1000).contains(&self.gaps.inner) {
             return Err(ConfigError::Size("gaps must be 0 to 1000 pixels".into()));
         }
-        if !(1..=64).contains(&self.border.width) {
+        if !(0..=64).contains(&self.border.width) {
             return Err(ConfigError::Size(
                 "border width must be 1 to 64 pixels; set enabled to false for no border".into(),
             ));
@@ -809,7 +810,7 @@ mod tests {
 
     #[test]
     fn a_misspelt_monitor_is_an_error_not_the_primary_monitor() {
-        for text in ["potrait", "Landscpae", "DISPLAY2"] {
+        for text in ["sideways", "Wide", "DISPLAY2"] {
             let json = format!(r#"{{"fleets":[{{"name":"a","monitor":"{text}"}}]}}"#);
             assert_eq!(
                 Config::from_json(&json),
@@ -900,6 +901,7 @@ mod tests {
             r#"{"border":{"offset":64}}"#,
             r#"{"border":{"offset":-64}}"#,
             r#"{"gaps":{"outer":1000,"inner":1000}}"#,
+            r#"{"border":{"width":0}}"#,
             r#"{"border":{"width":1}}"#,
             r#"{"border":{"width":64}}"#,
         ] {
@@ -910,7 +912,6 @@ mod tests {
             r#"{"border":{"offset":-65}}"#,
             r#"{"gaps":{"outer":1001,"inner":0}}"#,
             r#"{"gaps":{"outer":0,"inner":1001}}"#,
-            r#"{"border":{"width":0}}"#,
             r#"{"border":{"width":-1}}"#,
             r#"{"border":{"width":65}}"#,
         ] {

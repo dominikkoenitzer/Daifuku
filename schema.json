@@ -94,7 +94,7 @@
           "default": true
         },
         "width": {
-          "description": "Thickness in physical pixels, 1 to 64. `enabled: false` draws none.",
+          "description": "Thickness in physical pixels, 1 to 64; 0, which earlier versions took,\ndraws as 1. `enabled: false` draws none.",
           "type": "integer",
           "format": "int32",
           "default": 4
