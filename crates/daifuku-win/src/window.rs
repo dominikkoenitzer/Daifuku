@@ -28,7 +28,7 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_MENU,
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
@@ -330,9 +330,11 @@ pub fn foreground() -> u64 {
 /// 1. Joins the input queue of the thread that owns the foreground window
 ///    for the duration of the call (`AttachThreadInput`), which makes the
 ///    switch look like it came from the foreground's own input.
-/// 2. From the second attempt on, first taps Alt once (a key up and down of
-///    Alt alone, which no program treats as a shortcut) so this process has
-///    the last input.
+/// 2. From the second attempt on, first sends one empty mouse input, with no
+///    movement, no button and no key, so this process has the last input. A
+///    key would reach the window still in front: a lone Alt opens its menu
+///    bar, Sticky Keys latches it, and its release lets go of an Alt the
+///    user is still holding from the hotkey.
 ///
 /// A window whose thread is not answering is left alone and the result is
 /// `false`: restoring and raising it would wait for that thread.
@@ -350,7 +352,7 @@ pub fn focus(w: u64) -> bool {
     for attempt in 0..3 {
         if foreground() != w {
             if attempt > 0 {
-                tap_alt();
+                claim_last_input();
             }
             switch_to(h);
         }
@@ -365,8 +367,8 @@ pub fn focus(w: u64) -> bool {
 ///
 /// The queue is not joined when the foreground's thread is not answering:
 /// joined, the activation is handled inside that thread's queue and waits
-/// for it. The attempt then goes ahead without it, and the Alt tap of the
-/// later attempts still gives this process the last input.
+/// for it. The attempt then goes ahead without it, and the empty input of
+/// the later attempts still gives this process the last input.
 fn switch_to(h: HWND) {
     // SAFETY: plain calls on handles and thread ids; the attachment is always
     // undone before returning.
@@ -398,21 +400,24 @@ fn settled(w: u64) -> bool {
     foreground() == w
 }
 
-fn tap_alt() {
-    let key = |flags| INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VK_MENU,
-                dwFlags: flags,
-                ..Default::default()
-            },
-        },
-    };
-    let inputs = [key(Default::default()), key(KEYEVENTF_KEYUP)];
+/// Makes this process the one that sent the last input, which Windows asks
+/// of a process that takes the foreground, without changing anything: the
+/// pointer stays where it is and no key or button changes state.
+fn claim_last_input() {
+    let inputs = [empty_input()];
     // SAFETY: inputs is a valid array of INPUT with the right size.
     unsafe {
         SendInput(&inputs, i32::try_from(size_of::<INPUT>()).unwrap_or(0));
+    }
+}
+
+/// A mouse input that moves nothing and presses nothing.
+fn empty_input() -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT::default(),
+        },
     }
 }
 
@@ -454,6 +459,15 @@ mod tests {
             false,
             windows::Win32::Foundation::ERROR_ACCESS_DENIED
         ));
+    }
+
+    #[test]
+    fn the_input_that_claims_the_foreground_moves_and_presses_nothing() {
+        let input = empty_input();
+        assert_eq!(input.r#type, INPUT_MOUSE);
+        // SAFETY: a mouse input, so `mi` is the field that was written.
+        let mi = unsafe { input.Anonymous.mi };
+        assert_eq!((mi.dx, mi.dy, mi.mouseData, mi.dwFlags.0), (0, 0, 0, 0));
     }
 
     #[test]
