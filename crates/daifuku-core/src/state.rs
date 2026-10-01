@@ -216,6 +216,12 @@ impl<W> Session<W> {
 /// events.
 const ENDED: usize = 256;
 
+/// The longest session id [`Agents`] takes, in bytes. Far longer than any
+/// agent's (Claude Code and Codex use 36-character UUIDs, the demo
+/// `demo-<n>`), so a made-up one cannot make a tracked session cost more
+/// than a few hundred bytes.
+const MAX_SESSION_ID: usize = 128;
+
 impl<W: Ord + Copy> Default for Agents<W> {
     fn default() -> Self {
         Self {
@@ -234,9 +240,10 @@ impl<W: Ord + Copy> Agents<W> {
     }
 
     /// Applies one hook event from a session running in `window`, and says
-    /// whether any window's state changed as a result.
+    /// whether any window's state changed as a result. An event with a
+    /// session id longer than any agent's is dropped.
     pub fn apply(&mut self, window: W, event: &HookEvent) -> bool {
-        if self.is_late(event) {
+        if event.session_id.len() > MAX_SESSION_ID || self.is_late(event) {
             return false;
         }
         let before = self.window_state(window);
@@ -578,6 +585,18 @@ mod tests {
         // A session that starts again later is a new one.
         a.apply(1, &at(ev("s", "SessionStart"), 40));
         assert_eq!(a.window_state(1), Some(AgentState::Done));
+    }
+
+    #[test]
+    fn a_session_id_no_agent_would_send_is_turned_away() {
+        let long = "x".repeat(MAX_SESSION_ID + 1);
+        let mut a = Agents::new();
+        assert!(!a.apply(1, &ev(&long, "PermissionRequest")));
+        assert!(a.is_empty());
+        a.apply(1, &at(ev(&long, "SessionEnd"), 10));
+        assert!(a.ended.is_empty());
+        let longest = "x".repeat(MAX_SESSION_ID);
+        assert!(a.apply(1, &ev(&longest, "PermissionRequest")));
     }
 
     #[test]
