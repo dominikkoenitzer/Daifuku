@@ -226,10 +226,27 @@ impl Daemon {
             Action::Next => self.next(),
             Action::Snap => self.snap(),
         };
-        if let Response::Error { message } = result {
-            tracing::warn!(%message, "hotkey failed");
+        let idle = self.idle(action);
+        match &result {
+            Response::Error { message } => tracing::warn!(%message, "hotkey failed"),
+            Response::Ok {
+                message: Some(message),
+            } if idle => tracing::info!(%message, "hotkey had nothing to do"),
+            _ => {}
+        }
+        if idle || matches!(result, Response::Error { .. }) {
             // A key that did nothing says so; the reason is in the log.
             access::refused();
+        }
+    }
+
+    /// Whether a key had nothing to act on: no agent waits for `next`, no
+    /// fleet is open for `snap`.
+    fn idle(&self, action: &Action) -> bool {
+        match action {
+            Action::Open(_) => false,
+            Action::Next => self.waiting().is_empty(),
+            Action::Snap => self.fleets.is_empty(),
         }
     }
 
@@ -493,13 +510,18 @@ impl Daemon {
         Response::said(message)
     }
 
-    fn next(&mut self) -> Response {
-        let queue: Vec<u64> = self
-            .agents
+    /// The terminals whose agents need you, the one that has waited longest
+    /// first.
+    fn waiting(&self) -> Vec<u64> {
+        self.agents
             .needs_you()
             .into_iter()
             .filter(|&w| window::exists(w))
-            .collect();
+            .collect()
+    }
+
+    fn next(&mut self) -> Response {
+        let queue = self.waiting();
         let since = |w: u64| self.shown_since.get(&w).map(|&(_, t)| t);
         let Some(target) = next_target(&queue, window::foreground(), self.last_next, since) else {
             return Response::said("no agent is waiting");
@@ -982,6 +1004,18 @@ mod tests {
             single_quoted("O\u{2019}Neill \u{2018}x\u{201A}\u{201B}"),
             "'O\u{2019}\u{2019}Neill \u{2018}\u{2018}x\u{201A}\u{201A}\u{201B}\u{201B}'"
         );
+    }
+
+    #[test]
+    fn a_key_with_nothing_to_act_on_is_idle() {
+        let mut d = daemon();
+        assert!(d.idle(&Action::Next), "no agent waits");
+        assert!(d.idle(&Action::Snap), "no fleet is open");
+        assert!(!d.idle(&Action::Open("agents".into())));
+        let mut record = OpenFleet::new("agents");
+        record.slots = vec![Some(1)];
+        d.fleets.push(record);
+        assert!(!d.idle(&Action::Snap));
     }
 
     #[test]
