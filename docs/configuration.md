@@ -96,15 +96,17 @@ the gaps are exact.
 | Key | Default | |
 |---|---|---|
 | `enabled` | `true` | Draw status borders at all. |
-| `width` | `4` | Thickness in physical pixels, 0 to 64. |
+| `width` | `4` | Thickness in physical pixels, 1 to 64; 0 draws as 1. `enabled: false` turns the borders off. |
 | `offset` | `0` | How far outside the window's edge the border sits, -64 to 64; negative overlaps it. |
 | `palette` | `"catppuccin"` | `"catppuccin"` or `"colorblind"` (Okabe-Ito). |
-| `colours` | the palette's | Your own four colours, see below. |
+| `colours` | the palette's | Your own colours, for any of the states, see below. |
 | `state_widths` | `true` | Each state at its own width, so a state reads without its colour. Always on with a high contrast theme. |
-| `pulse` | `true` | The waiting border breathes slowly, between 70 % and full brightness, so its contrast never drops far. Off anyway when Windows shows no animations or a high contrast theme is on. |
+| `pulse` | `true` | The waiting border breathes slowly, between 70 % and full brightness, so its contrast never drops far. Off anyway when Windows shows no animations or a high contrast theme is on. It also rests at full brightness while the session is locked, a screen saver is up or another account is switched to (after 0.1.1). |
 
 With `state_widths` on, the widths at the default of 4 are done 2, working 4,
-failed 6 and waiting 8. With a high contrast theme on, the borders take the
+failed 6 and waiting 8. Each state is thicker than the one before it at any
+width: at 1 they are 1, 2, 3 and 4 (after 0.1.1; before, done, working and
+failed were all 1 there). With a high contrast theme on, the borders take the
 theme's own colours, every state keeps its own width, and nothing breathes.
 A maximised terminal gets no border: it would lie outside the screen.
 
@@ -123,7 +125,8 @@ A maximised terminal gets no border: it would lie outside the screen.
 }
 ```
 
-Colours are `#rrggbb`. A key left out takes the Catppuccin colour.
+Colours are `#rrggbb`. A key left out keeps the palette's colour (after
+0.1.1; before, it took the Catppuccin one).
 
 ## `hotkeys`
 
