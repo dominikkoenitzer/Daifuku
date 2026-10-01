@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A question from one of Claude Code's subagents keeps its window waiting
+  while the main thread or other subagents go on working; it clears when
+  that subagent goes on, stops, or you type a new prompt. Daifuku now also
+  hooks `SubagentStop`.
 - Codex hooks work on Windows. Codex runs a hook's command line in
   PowerShell, which read the quoted path as a string and never started
   Daifuku; the line now starts with PowerShell's `&`. `daifuku install`
