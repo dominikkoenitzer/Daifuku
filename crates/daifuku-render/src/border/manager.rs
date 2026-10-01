@@ -298,6 +298,8 @@ impl Borders {
             return;
         }
         let Some(mut window) = self.take_window(key) else {
+            // No window to draw in is a failed draw like any other.
+            self.retry(key);
             return;
         };
         if let Err(error) = window.track(spec.target.hwnd(), spec.rect, spec.colour, spec.width) {
