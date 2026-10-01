@@ -220,11 +220,15 @@ impl<W> Session<W> {
 /// events.
 const ENDED: usize = 256;
 
-/// The longest session id [`Agents`] takes, in bytes. Far longer than any
-/// agent's (Claude Code and Codex use 36-character UUIDs, the demo
-/// `demo-<n>`), so a made-up one cannot make a tracked session cost more
-/// than a few hundred bytes.
+/// The longest session or subagent id [`Agents`] takes, in bytes. Far
+/// longer than any agent's (Claude Code and Codex use 36-character UUIDs,
+/// the demo `demo-<n>`).
 const MAX_SESSION_ID: usize = 128;
+
+/// The most threads one session can have waiting at once. Far more than
+/// subagents run at a time; with [`MAX_SESSION_ID`] it bounds what made-up
+/// events can make one tracked session cost to a few kilobytes.
+const MAX_WAITING: usize = 32;
 
 impl<W: Ord + Copy> Default for Agents<W> {
     fn default() -> Self {
@@ -245,9 +249,14 @@ impl<W: Ord + Copy> Agents<W> {
 
     /// Applies one hook event from a session running in `window`, and says
     /// whether any window's state changed as a result. An event with a
-    /// session id longer than any agent's is dropped.
+    /// session or subagent id longer than any agent's is dropped.
     pub fn apply(&mut self, window: W, event: &HookEvent) -> bool {
-        if event.session_id.len() > MAX_SESSION_ID || self.is_late(event) {
+        let too_long = event.session_id.len() > MAX_SESSION_ID
+            || event
+                .agent_id
+                .as_ref()
+                .is_some_and(|a| a.len() > MAX_SESSION_ID);
+        if too_long || self.is_late(event) {
             return false;
         }
         let before = self.window_state(window);
@@ -310,7 +319,9 @@ impl<W: Ord + Copy> Agents<W> {
                 if state == AgentState::Waiting {
                     // A notification names no thread: it is the reminder of a
                     // prompt already counted, or the only sign of one.
-                    if event.hook_event_name != "Notification" || entry.waiting.is_empty() {
+                    let counted =
+                        event.hook_event_name == "Notification" && !entry.waiting.is_empty();
+                    if !counted && entry.waiting.len() < MAX_WAITING {
                         entry.waiting.insert(thread);
                     }
                 } else {
@@ -589,6 +600,17 @@ mod tests {
         // A session that starts again later is a new one.
         a.apply(1, &at(ev("s", "SessionStart"), 40));
         assert_eq!(a.window_state(1), Some(AgentState::Done));
+    }
+
+    #[test]
+    fn made_up_subagents_cannot_grow_a_session_without_end() {
+        let mut a = Agents::new();
+        let long = "x".repeat(MAX_SESSION_ID + 1);
+        assert!(!a.apply(1, &sub("s", "PermissionRequest", &long)));
+        for i in 0..(MAX_WAITING * 4) {
+            a.apply(1, &sub("s", "PermissionRequest", &i.to_string()));
+        }
+        assert_eq!(a.sessions["s"].waiting.len(), MAX_WAITING);
     }
 
     #[test]
