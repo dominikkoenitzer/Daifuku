@@ -19,6 +19,9 @@
   or one whose agent had been approved and then failed, it used to skip the
   agents that had waited longest, as far as a failed one Enter cannot approve.
 - A second zip for Windows on ARM, built and checked in every release.
+- A pre-release tag, such as v0.2.0-rc.1, is published as a pre-release, so
+  the link to the latest release never leads to one, and build provenance
+  is attested only for a release run on its own tag.
 - `{n}` works in a fleet's `directory` as it does in its `command`, so each
   agent can start in a folder of its own, such as its own git worktree.
 - A terminal reopened in a fleet goes back into its own cell with its own
