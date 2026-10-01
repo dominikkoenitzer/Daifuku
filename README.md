@@ -70,8 +70,9 @@ config in it and made anew (after 0.1.1).
 saving is enough). Only administrators may write that folder, so edit the file
 from an administrator editor, such as `notepad` in an administrator terminal.
 Do not take ownership of the folder or give your account write access to it:
-the next install would delete it, config and all. Every key is optional; an editor that reads the linked schema completes and
-checks them. [docs/configuration.md](docs/configuration.md) has every key.
+the next install would delete it, config and all. Every key is optional; an
+editor that reads the linked schema completes and checks them.
+[docs/configuration.md](docs/configuration.md) has every key.
 
 ```json
 {
