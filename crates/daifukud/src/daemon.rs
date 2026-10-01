@@ -237,7 +237,13 @@ impl Daemon {
         while let Ok(item) = inbox.receiver.try_recv() {
             match item {
                 Inbound::Hook(message) => self.hook(&message),
-                Inbound::Control(request, reply) => {
+                Inbound::Control(request, reply, claimed) => {
+                    // Withdrawn while it waited behind something long: its
+                    // client was told nothing was done, so nothing is.
+                    if !ipc::claim(&claimed) {
+                        tracing::info!(?request, "dropped a command its client gave up on");
+                        continue;
+                    }
                     let response = self.control(&request);
                     let _ = reply.send(response);
                     if matches!(request, Request::Stop) {

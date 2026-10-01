@@ -15,7 +15,7 @@ use daifuku_win::{monitor, window};
 /// How long Windows Terminal gets to show a window. A cold start of the first
 /// window on a busy machine is the slow case; later ones take a few hundred
 /// milliseconds.
-const SHOW_TIMEOUT: Duration = Duration::from_secs(12);
+pub const SHOW_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// A fleet that is open.
 #[derive(Debug, Clone)]
