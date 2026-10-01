@@ -22,9 +22,10 @@ opens its terminals as you instead.
 
 ## Install
 
-Windows 10 or 11 with Windows Terminal. Download
-`Daifuku-v<version>-x86_64-pc-windows-msvc.zip` (or the `aarch64` zip on
-Windows on ARM, after 0.1.1) from the
+Windows 10 or 11 with Windows Terminal, signed in with an account that is an
+administrator itself; Windows 11's Administrator protection is not supported.
+Download `Daifuku-v<version>-x86_64-pc-windows-msvc.zip` (or the `aarch64`
+zip on Windows on ARM, after 0.1.1) from the
 [Releases page](https://github.com/dominikkoenitzer/Daifuku/releases/latest)
 and unzip it. From an administrator terminal, in that folder:
 
@@ -39,7 +40,11 @@ exactly as they are. Claude Code sessions that are already open normally pick
 the hooks up by themselves; restart one that still shows no border. Codex runs
 new hooks only after you trust them in its `/hooks` menu. A settings file
 behind a link that leads out of your profile is left alone, and the installer
-says so (after 0.1.1).
+says so (after 0.1.1); make it a real file in your profile and install again.
+Install adds hooks to these two files only. If `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME` moves an agent's settings elsewhere, copy Daifuku's hooks into
+the file there yourself, and remove them there when you uninstall; install
+and doctor name that file (after 0.1.1).
 
 The installer does not add Daifuku to `PATH`, so run its commands by their
 full path:
