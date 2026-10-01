@@ -242,15 +242,16 @@ impl BorderWindow {
         // SAFETY: the render target belongs to this surface and is only used on
         // this thread. Every pointer below is to a live local. BeginDraw is
         // always paired with EndDraw, including on the error path, because
-        // EndDraw is what reports the failure.
+        // EndDraw is what reports the failure. The brush comes first: without
+        // it the draw would clear the frame to nothing and still succeed, and
+        // an invisible frame would be recorded as painted.
         let result = unsafe {
-            target.BeginDraw();
-            target.Clear(Some(&TRANSPARENT));
-            target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-            let brush = target.CreateSolidColorBrush(&colour.to_d2d(), None);
-            match brush {
+            match target.CreateSolidColorBrush(&colour.to_d2d(), None) {
                 Ok(brush) => {
+                    target.BeginDraw();
+                    target.Clear(Some(&TRANSPARENT));
+                    target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
                     if geometry.radius > 0.0 {
                         let rounded = D2D1_ROUNDED_RECT {
                             rect: geometry.stroke.into(),
@@ -262,11 +263,11 @@ impl BorderWindow {
                         let square: D2D_RECT_F = geometry.stroke.into();
                         target.DrawRectangle(&square, &brush, geometry.stroke_width, None);
                     }
-                }
-                Err(error) => tracing::warn!(%error, "border brush"),
-            }
 
-            target.EndDraw(None, None)
+                    target.EndDraw(None, None)
+                }
+                Err(error) => Err(error),
+            }
         };
 
         if let Err(error) = result {
