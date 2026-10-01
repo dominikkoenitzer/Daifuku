@@ -308,7 +308,8 @@
           ]
         },
         {
-          "type": "string"
+          "type": "string",
+          "pattern": "^\\\\\\\\\\.\\\\"
         }
       ]
     },

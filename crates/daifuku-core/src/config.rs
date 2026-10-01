@@ -348,7 +348,7 @@ impl JsonSchema for MonitorPick {
             "description": "portrait, landscape, primary, secondary, cursor, or a device name such as \\\\.\\DISPLAY2",
             "anyOf": [
                 { "enum": ["portrait", "landscape", "primary", "secondary", "cursor"] },
-                { "type": "string" }
+                { "type": "string", "pattern": r"^\\\\\.\\" }
             ]
         })
     }
@@ -467,6 +467,16 @@ pub enum ConfigError {
         /// What it asked for.
         count: u32,
     },
+    /// A monitor that is neither a keyword nor a device name.
+    #[error(
+        "fleet `{name}`: monitor `{text}` is not portrait, landscape, primary, secondary, cursor or a device name such as \\\\.\\DISPLAY2"
+    )]
+    Monitor {
+        /// The fleet.
+        name: String,
+        /// As written.
+        text: String,
+    },
     /// A hotkey that does not parse.
     #[error("hotkey `{text}`: {reason}")]
     Hotkey {
@@ -523,7 +533,8 @@ impl Config {
     }
 
     /// Checks everything a type cannot: unique names, counts in range, every
-    /// hotkey parses and none is bound twice.
+    /// monitor a keyword or a device name, every hotkey parses and none is
+    /// bound twice.
     ///
     /// # Errors
     ///
@@ -556,6 +567,17 @@ impl Config {
                 return Err(ConfigError::Count {
                     name: fleet.name.clone(),
                     count: fleet.count,
+                });
+            }
+            // Windows names every monitor `\\.\DISPLAYn`. Anything else is a
+            // misspelt keyword, which would open the fleet on the primary
+            // monitor without a word.
+            if let MonitorPick::Device(text) = &fleet.monitor
+                && !text.starts_with(r"\\.\")
+            {
+                return Err(ConfigError::Monitor {
+                    name: fleet.name.clone(),
+                    text: text.clone(),
                 });
             }
         }
@@ -633,6 +655,8 @@ mod tests {
         let schema: serde_json::Value = serde_json::from_str(&Config::schema()).unwrap();
         let defs = &schema["$defs"];
         assert!(defs["MonitorPick"]["anyOf"].is_array());
+        // Any other string is a misspelt keyword, which editors should flag.
+        assert_eq!(defs["MonitorPick"]["anyOf"][1]["pattern"], r"^\\\\\.\\");
         assert_eq!(defs["Colour"]["pattern"], "^#?[0-9a-fA-F]{6}$");
     }
 
@@ -766,6 +790,25 @@ mod tests {
             assert_eq!(pick.to_string(), s);
         }
         assert_eq!("Mouse".parse::<MonitorPick>().unwrap(), MonitorPick::Cursor);
+    }
+
+    #[test]
+    fn a_misspelt_monitor_is_an_error_not_the_primary_monitor() {
+        for text in ["potrait", "Landscpae", "DISPLAY2"] {
+            let json = format!(r#"{{"fleets":[{{"name":"a","monitor":"{text}"}}]}}"#);
+            assert_eq!(
+                Config::from_json(&json),
+                Err(ConfigError::Monitor {
+                    name: "a".into(),
+                    text: text.into()
+                }),
+                "{text}"
+            );
+        }
+        for text in ["Portrait", "mouse", r"\\\\.\\DISPLAY2", r"\\\\.\\display2"] {
+            let json = format!(r#"{{"fleets":[{{"name":"a","monitor":"{text}"}}]}}"#);
+            assert!(Config::from_json(&json).is_ok(), "{text}");
+        }
     }
 
     #[test]
