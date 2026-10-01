@@ -94,9 +94,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
 
     // SAFETY: no arguments.
     let main_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
-    let inbox = ipc::start(main_thread).context(
-        "could not open Daifuku's pipes; another daifukud may already run in this session",
-    )?;
+    let inbox = ipc::start(main_thread).context("could not open Daifuku's pipes")?;
 
     let config_path = config_override
         .or_else(paths::config_file)
