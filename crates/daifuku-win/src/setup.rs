@@ -21,7 +21,7 @@ use windows::Win32::Storage::FileSystem::{
     MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW, READ_CONTROL,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows::core::{PCWSTR, PWSTR};
+use windows::core::{PCSTR, PCWSTR, PWSTR};
 
 use crate::wide::{from_wide, to_wide};
 
@@ -319,13 +319,46 @@ fn schtasks(args: &[&str]) -> std::io::Result<()> {
     if out.status.success() {
         Ok(())
     } else {
-        let msg = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+        let msg = oem_text(&out.stderr).trim().to_owned();
         Err(std::io::Error::other(if msg.is_empty() {
             format!("schtasks {} failed", args[0])
         } else {
             msg
         }))
     }
+}
+
+/// What a console program such as `schtasks` wrote into a pipe, as text. It
+/// writes in the OEM code page, not UTF-8, so read as UTF-8 the messages of
+/// a French or a German Windows would lose every accent and umlaut. Where
+/// Windows is set to use UTF-8 everywhere, that code page is UTF-8.
+fn oem_text(bytes: &[u8]) -> String {
+    // Declared as the `windows` crate declares it, which keeps it behind a
+    // feature this crate needs for nothing else.
+    windows_core::link!("kernel32.dll" "system" fn MultiByteToWideChar(codepage: u32, flags: u32, multi: PCSTR, multi_len: i32, wide: PWSTR, wide_len: i32) -> i32);
+    /// `CP_OEMCP`.
+    const CP_OEMCP: u32 = 1;
+    if bytes.is_empty() {
+        return String::new();
+    }
+    if let Ok(len) = i32::try_from(bytes.len()) {
+        // SAFETY: both calls read `len` bytes from `bytes`; the first writes
+        // nothing and returns the units the second may write into `wide`.
+        unsafe {
+            let multi = PCSTR(bytes.as_ptr());
+            let units = MultiByteToWideChar(CP_OEMCP, 0, multi, len, PWSTR::null(), 0);
+            let mut wide = vec![0u16; usize::try_from(units).unwrap_or(0)];
+            if !wide.is_empty() {
+                let wide_ptr = PWSTR(wide.as_mut_ptr());
+                let written = MultiByteToWideChar(CP_OEMCP, 0, multi, len, wide_ptr, units);
+                wide.truncate(usize::try_from(written).unwrap_or(0));
+            }
+            if !wide.is_empty() {
+                return String::from_utf16_lossy(&wide);
+            }
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// `System32`, from the known folder rather than `%SystemRoot%`.
@@ -341,6 +374,20 @@ mod tests {
     fn this_user_has_a_sid() {
         let sid = user_sid().unwrap();
         assert!(sid.starts_with("S-1-"), "{sid}");
+    }
+
+    #[test]
+    fn what_schtasks_writes_is_read_in_the_oem_code_page() {
+        windows_core::link!("kernel32.dll" "system" fn GetOEMCP() -> u32);
+        assert_eq!(oem_text(b""), "");
+        assert_eq!(oem_text(b"ERROR: no task.\r\n"), "ERROR: no task.\r\n");
+        // SAFETY: no arguments.
+        let page = unsafe { GetOEMCP() };
+        // The US and Western European code pages, which Windows in English,
+        // French or German uses, agree on these two.
+        if matches!(page, 437 | 850) {
+            assert_eq!(oem_text(b"na\x8Bve caf\x82"), "naïve café");
+        }
     }
 
     #[test]
