@@ -54,6 +54,7 @@ pub const CLAUDE: Agent = Agent {
         "Elicitation",
         "ElicitationResult",
         "SubagentStart",
+        "SubagentStop",
         "PreCompact",
         "Stop",
         "StopFailure",
@@ -370,10 +371,10 @@ mod tests {
 
     #[test]
     fn uninstall_keeps_the_users_empty_groups_and_lists() {
-        // `SubagentStop` is not one of Daifuku's events.
+        // `TeammateIdle` is not one of Daifuku's events.
         let users = json!({"hooks": {
             "PreToolUse": [{"matcher": "Bash", "hooks": []}],
-            "SubagentStop": [],
+            "TeammateIdle": [],
             "Notification": [{"matcher": "x"}]
         }});
         let mut s = users.clone();
