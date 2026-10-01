@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Codex hooks work on Windows. Codex runs a hook's command line in
+  PowerShell, which read the quoted path as a string and never started
+  Daifuku; the line now starts with PowerShell's `&`. `daifuku install`
+  updates hooks written before, and Codex asks to trust them again in
+  `/hooks`.
 - The next key moves on down the queue only when pressed again from the
   terminal it just brought up, while that agent still waits. From a waiting
   terminal that was in front anyway, such as the last one the demo opened,
