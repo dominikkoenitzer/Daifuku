@@ -486,7 +486,8 @@ pub enum ConfigError {
 pub fn decode(bytes: &[u8]) -> std::io::Result<String> {
     let invalid = |e: String| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
-        let units: Vec<u16> = rest.chunks_exact(2).map(|c| unit([c[0], c[1]])).collect();
+        let (pairs, _) = rest.as_chunks::<2>();
+        let units: Vec<u16> = pairs.iter().map(|&pair| unit(pair)).collect();
         String::from_utf16(&units).map_err(|e| invalid(e.to_string()))
     };
     match bytes {
