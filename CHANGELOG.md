@@ -34,8 +34,9 @@
 - A terminal that stopped responding no longer holds up the daemon: it is
   moved later and skipped when focusing.
 - The installer replaces a `ProgramData\Daifuku` folder that is not locked
-  to administrators, config and all, never follows a link there, finds ProgramData without the
-  environment, and registers the logon task from inside that locked folder.
+  to administrators, config and all, never follows a link there, finds
+  ProgramData without the environment, and registers the logon task from
+  inside that locked folder.
 - The hook pipe lets the signed-in user write, not listen, and no one else:
   while the daemon runs, no other process can add a server to it. Clients
   connect for identification only, and a report sent just before the daemon
@@ -64,16 +65,14 @@
   source, and a `;` in a fleet's folder no longer splits the command.
 - A border stays above its terminal when the terminal is brought to the
   front, and no longer flashes over other windows while it moves.
-- A `Stop` that Claude Code sends when it only pauses to call tools no longer
-  shows the agent as done, and an agent that resumes by itself after a rate
-  limit shows as working again.
+- An agent that resumes by itself after a rate limit shows as working again.
 - Hooks stamp the time they start, and the daemon drops an event that
   arrives after a newer one of its session, so a late tool hook cannot leave
   a finished agent looking busy.
 - Idle, the daemon costs next to nothing: it listens for window moves only
-  while an agent has a border, a waiting border's pulse only recolours the
-  frames it has, spare borders give their bitmaps back, and a border already
-  in place is not restacked.
+  while an agent session is open and borders are on, a waiting border's
+  pulse only recolours the frames it has, spare borders give their bitmaps
+  back, and a border already in place is not restacked.
 - The waiting border breathes down to 70 % instead of 45 %, so its contrast
   holds, and in high contrast it does not breathe and every state keeps its
   own width.
@@ -84,15 +83,19 @@
 - `border.offset` must be -64 to 64 and the gaps at most 1000.
 - `daifuku doctor` also checks that the hooks call the installed copy, that
   the daemon runs the same version, and that the config can be read, and it
-  says where the logs are. A daemon busy with another command is called
-  busy, not "not running".
+  says where the logs are.
+- A command sent while the daemon is busy with another one, such as opening
+  a fleet, says Daifuku is busy instead of not running or a raw Windows
+  error, and `daifuku doctor` calls such a daemon busy instead of telling you
+  to restart it.
 - `daifuku doctor` no longer reports a hotkey as refused because a fleet is
   called `refused`.
 - `daifuku status` lists the agent that needs you first, its title before
   its window handle.
 - A config saved as UTF-16, as Windows PowerShell's `>` writes it, is read.
-- A hotkey that did nothing, such as a fleet that could not open, beeps; the
-  reason is in the log.
+- A hotkey that did nothing beeps, and the reason is in the log: a fleet
+  that could not open, the next key with no agent waiting or failed, the
+  snap key with no fleet open.
 - Without PowerShell 7, fleets start Windows PowerShell with
   `-ExecutionPolicy RemoteSigned`, so a `claude` installed with npm runs;
   Windows Terminal Canary is found as well.
