@@ -28,8 +28,15 @@ pub struct Agent {
 enum Style {
     /// `"command": "<exe>", "args": ["hook"]`.
     ProgramAndArgs,
-    /// `"command": "\"<exe>\" hook"`.
+    /// `"command": "& \"<exe>\" hook"`: one command line, which Codex runs
+    /// in PowerShell on Windows. PowerShell reads a quoted path as a string,
+    /// not a program, so it needs the call operator `&` in front.
     CommandLine,
+}
+
+/// The command line Codex runs for Daifuku's hook.
+fn command_line(exe: &str) -> String {
+    format!("& \"{exe}\" hook")
 }
 
 /// Claude Code, `~/.claude/settings.json`.
@@ -85,7 +92,7 @@ impl Agent {
             }),
             Style::CommandLine => json!({
                 "type": "command",
-                "command": format!("\"{exe}\" hook"),
+                "command": command_line(exe),
                 "async": true,
                 "timeout": 10
             }),
@@ -155,8 +162,9 @@ fn style_of_ours(hook: &Value) -> Option<Style> {
     if first_arg == Some("hook") && is_daifuku(command) {
         return Some(Style::ProgramAndArgs);
     }
-    command
-        .strip_suffix("\" hook")
+    // Installs before the call operator wrote the line without it.
+    let line = command.strip_prefix("& ").unwrap_or(command);
+    line.strip_suffix("\" hook")
         .and_then(|c| c.strip_prefix('"'))
         .is_some_and(|program| !program.contains('"') && is_daifuku(program))
         .then_some(Style::CommandLine)
@@ -185,7 +193,7 @@ pub fn update_hooks(settings: &mut Value, exe: &str) -> usize {
     for hook in all.flatten() {
         let wanted = match style_of_ours(hook) {
             Some(Style::ProgramAndArgs) => exe.to_owned(),
-            Some(Style::CommandLine) => format!("\"{exe}\" hook"),
+            Some(Style::CommandLine) => command_line(exe),
             None => continue,
         };
         let current = hook.get("command").and_then(Value::as_str).unwrap_or("");
@@ -263,6 +271,21 @@ mod tests {
     }
 
     const EXE: &str = r"C:\Program Files\Daifuku\daifuku.exe";
+
+    #[test]
+    fn a_codex_hook_from_before_the_call_operator_is_ours_and_gets_it() {
+        let old = format!("\"{EXE}\" hook");
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": old, "async": true}
+        ]}]}});
+        assert_eq!(update_hooks(&mut s, EXE), 1);
+        assert_eq!(
+            s["hooks"]["Stop"][0]["hooks"][0]["command"],
+            format!("& \"{EXE}\" hook")
+        );
+        assert_eq!(update_hooks(&mut s, EXE), 0, "already current");
+        assert_eq!(remove_hooks(&mut s), 1);
+    }
 
     /// A settings file with a hook of the user's own and keys in a
     /// deliberate order.
@@ -398,7 +421,7 @@ mod tests {
         let mut s = json!({});
         assert_eq!(CODEX.add_hooks(&mut s, EXE), Ok(CODEX.events.len()));
         let stop = &s["hooks"]["Stop"][0]["hooks"][0];
-        assert_eq!(stop["command"], format!("\"{EXE}\" hook"));
+        assert_eq!(stop["command"], format!("& \"{EXE}\" hook"));
         assert!(stop.get("args").is_none());
         assert_eq!(CODEX.add_hooks(&mut s, EXE), Ok(0), "idempotent");
         assert_eq!(remove_hooks(&mut s), CODEX.events.len());
