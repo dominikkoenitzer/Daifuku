@@ -112,9 +112,10 @@ the gaps are exact.
 With `state_widths` on, the widths at the default of 4 are done 2, working 4,
 failed 6 and waiting 8. Each state is thicker than the one before it at any
 width: at 1 they are 1, 2, 3 and 4 (after 0.1.1; before, done, working and
-failed were all 1 there). With a high contrast theme on, the borders take the
-theme's own colours, every state keeps its own width, and nothing breathes.
-A maximised terminal gets no border: it would lie outside the screen.
+failed were all 1 at that width). With a high contrast theme on, the borders
+take the theme's own colours, every state keeps its own width, and nothing
+breathes. A maximised terminal gets no border: it would lie outside the
+screen.
 
 ### `colours`
 
@@ -154,8 +155,8 @@ layout each is a key with other characters on it.
 A combination another program already holds cannot be registered; `daifuku
 status` and `daifuku doctor` list it as refused. On German, Swiss and French
 keyboards AltGr is Ctrl and Alt together, so avoid Ctrl+Alt with a letter,
-digit or punctuation key that types a character there, such as `e` (€) or `2`
-(@).
+digit or punctuation key that types a character there, such as `e` (€) or
+`2` (@).
 
 ## `sound`
 
