@@ -75,6 +75,25 @@
   `daifuku stop` always gets its reply.
 - Daemon commands from a normal terminal say they need an administrator one,
   instead of "Access is denied".
+- A command whose reply the daemon cut short by exiting fails with "Daifuku
+  stopped before it answered", where `status --json` printed nothing or part
+  of a reply and exited 0.
+- `daifuku status --json` exits 1 when the daemon answers with an error,
+  and writes characters past ASCII as `\u` escapes, so a PowerShell script
+  reads titles intact.
+- Hooks that fire while every pipe instance is taken get through: one that
+  loses the race for a freed instance waits for the next one, within its
+  short deadline, instead of dropping its report.
+- daifukud started without administrator rights logs that it must run
+  elevated, and how to start it, instead of blaming another daifukud.
+- Bringing a terminal to the front no longer taps Alt, which opened the
+  menu bar of the window still in front, could latch Sticky Keys, and let
+  go of an Alt still held from the hotkey.
+- An `"admin": false` fleet whose command line is longer than the 1024
+  characters Windows takes for a terminal without administrator rights, as
+  a `command` of about 250 characters makes it, is refused with a message
+  that names the limit. With the Secondary Logon service (seclogon)
+  disabled, such a fleet says that it needs this service.
 - The config and the agents' settings files are read when saved with a byte
   order mark.
 - The installer points Daifuku's hooks at the installed `daifuku.exe` when
