@@ -454,7 +454,7 @@ impl Daemon {
             .collect();
         for (record, definition) in self.fleets.iter_mut().zip(definitions) {
             if let Some(fleet) = definition
-                && fleet::snap(&fleet, &self.config, record).is_ok()
+                && fleet::snap(&fleet, &self.config, record, true).is_ok()
             {
                 snapped += record.windows().count();
             }
@@ -628,28 +628,25 @@ impl Daemon {
             tracing::info!("config file changed, reloading");
             let _ = self.control(&Request::Reload);
         }
-        // A monitor came, went or changed its size (a plug, a resolution, a
-        // display link renegotiating): every open fleet goes back into the
-        // grid of the monitor it belongs on now.
+        // A monitor came, went or changed (a plug, a resolution, a scale, a
+        // display link renegotiating, a taskbar): an open fleet whose cells
+        // that moved goes back into the grid of the monitor it belongs on now.
         let now = daifuku_win::monitor::monitors();
         if now != self.monitors {
             tracing::info!(
                 before = self.monitors.len(),
                 after = now.len(),
-                "monitors changed, snapping fleets"
+                "monitors changed"
             );
-            self.monitors = now;
+            let before = std::mem::replace(&mut self.monitors, now);
             // A border's corners are worked out at the DPI of its screen, so
             // every border is handed over again, whether its window moved or
-            // not; snapping does that pass itself.
+            // not.
             if let Some(b) = &self.borders {
                 b.invalidate();
             }
-            if self.fleets.is_empty() {
-                self.refresh_borders();
-            } else {
-                let _ = self.snap();
-            }
+            self.follow_monitors(&before);
+            self.refresh_borders();
         }
         let (hc, anim) = (access::high_contrast(), access::animations());
         if (hc, anim) != (self.high_contrast, self.animations) {
@@ -679,6 +676,28 @@ impl Daemon {
         if !dead.is_empty() {
             self.refresh_borders();
         }
+    }
+
+    /// Snaps back the open fleets whose cells the monitors going from
+    /// `before` to what they are now moved, and only those. A terminal
+    /// someone minimised or maximised stays so: only a snap they ask for
+    /// restores it.
+    fn follow_monitors(&mut self, before: &[daifuku_core::monitor::MonitorInfo]) {
+        let cursor = daifuku_win::monitor::cursor();
+        let definitions: Vec<_> = self
+            .fleets
+            .iter()
+            .map(|r| self.definition(&r.name))
+            .collect();
+        for (record, definition) in self.fleets.iter_mut().zip(definitions) {
+            if let Some(fleet) = definition
+                && fleet::moved(&fleet, &self.config, record, before, &self.monitors, cursor)
+            {
+                tracing::info!(fleet = %record.name, "monitors changed, snapping the fleet");
+                let _ = fleet::snap(&fleet, &self.config, record, false);
+            }
+        }
+        self.drop_closed_fleets();
     }
 
     /// Lets go of every fleet whose terminals are all closed, so it is no
