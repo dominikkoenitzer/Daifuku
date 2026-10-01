@@ -33,8 +33,8 @@
   no longer add them without end.
 - A terminal that stopped responding no longer holds up the daemon: it is
   moved later and skipped when focusing.
-- The installer replaces a `ProgramData\Daifuku` folder it did not lock
-  itself, never follows a link there, finds ProgramData without the
+- The installer replaces a `ProgramData\Daifuku` folder that is not locked
+  to administrators, config and all, never follows a link there, finds ProgramData without the
   environment, and registers the logon task from inside that locked folder.
 - The hook pipe lets the signed-in user write, not listen, and no one else:
   while the daemon runs, no other process can add a server to it. Clients
