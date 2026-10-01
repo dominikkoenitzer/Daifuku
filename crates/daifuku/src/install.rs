@@ -244,20 +244,16 @@ pub fn doctor() -> bool {
     let exe = paths::install_dir()
         .map(|d| d.join("daifuku.exe").to_string_lossy().into_owned())
         .unwrap_or_default();
+    let profile = paths::profile_dir();
     for (agent, file) in hook_files() {
         if agent.name == CODEX.name && !file.parent().is_some_and(Path::is_dir) {
             continue;
         }
-        let present = read_settings(&file)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|mut s| {
-                agents::update_hooks(&mut s, &exe) == 0 && agent.add_hooks(&mut s, &exe) == Ok(0)
-            });
+        let fix = hooks_fix(agent, &file, &exe, profile.as_deref());
         check(
-            present,
+            fix.is_none(),
             &format!("{} hooks present and current", agent.name),
-            "run `daifuku install`",
+            fix.as_deref().unwrap_or_default(),
         );
     }
 
@@ -318,6 +314,44 @@ pub fn doctor() -> bool {
         println!("logs  {}", logs.display());
     }
     ok
+}
+
+/// What to do so that `file` holds all of `agent`'s hooks, calling `exe`, or
+/// `None` when it does. Running install is the answer, except for a file
+/// install leaves alone: one behind a link out of `profile`, or one it cannot
+/// read as settings. Install would only refuse it again.
+fn hooks_fix(agent: &Agent, file: &Path, exe: &str, profile: Option<&Path>) -> Option<String> {
+    let missing = match read_settings(file) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(mut s) => {
+                let updated = agents::update_hooks(&mut s, exe);
+                agent
+                    .add_hooks(&mut s, exe)
+                    .map(|added| updated + added)
+                    .map_err(|e| {
+                        format!(
+                            "{}: {e}; repair it, then run `daifuku install`",
+                            file.display()
+                        )
+                    })
+            }
+            Err(_) => Err(format!(
+                "{} is not valid JSON: repair it, then run `daifuku install`",
+                file.display()
+            )),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
+        Err(e) => Err(format!("could not read {}: {e}", file.display())),
+    };
+    match missing {
+        Ok(0) => None,
+        _ if profile.is_some_and(|p| !stays_inside(file, p)) => Some(format!(
+            "{} leads outside your profile, which `daifuku install` leaves alone: make it a real file in your profile, then run `daifuku install`",
+            file.display()
+        )),
+        Ok(_) => Some("run `daifuku install`".to_owned()),
+        Err(fix) => Some(fix),
+    }
 }
 
 /// What came back when doctor asked the daemon for its status.
@@ -679,6 +713,46 @@ mod tests {
         assert!(made.status.success(), "{made:?}");
         assert!(inside, "a file yet to be made under the root");
         assert!(!through, "a junction that leads out of the root");
+    }
+
+    /// Doctor sends to install only what install would change.
+    #[test]
+    fn doctor_names_a_settings_file_install_would_refuse() {
+        let base = std::env::temp_dir().join(format!("daifuku-fix-{}", std::process::id()));
+        let profile = base.join("profile");
+        let outside = base.join("elsewhere");
+        std::fs::create_dir_all(profile.join("own")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let made = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(profile.join(".claude"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        let exe = r"C:\Program Files\Daifuku\daifuku.exe";
+        let mut hooked = serde_json::json!({});
+        CLAUDE.add_hooks(&mut hooked, exe).unwrap();
+        let own = profile.join("own").join("settings.json");
+        let linked = profile.join(".claude").join("settings.json");
+        let fix = |file: &Path| hooks_fix(&CLAUDE, file, exe, Some(&profile));
+
+        let missing = fix(&own);
+        std::fs::write(&own, "{ \"theme\": ").unwrap();
+        let broken = fix(&own);
+        std::fs::write(&own, hooked.to_string()).unwrap();
+        let current = fix(&own);
+        let linked_missing = fix(&linked);
+        std::fs::write(outside.join("settings.json"), hooked.to_string()).unwrap();
+        let linked_current = fix(&linked);
+        let _ = std::fs::remove_dir(profile.join(".claude"));
+        std::fs::remove_dir_all(&base).unwrap();
+
+        assert!(made.status.success(), "{made:?}");
+        assert_eq!(missing.as_deref(), Some("run `daifuku install`"));
+        assert!(broken.is_some_and(|f| f.contains("is not valid JSON: repair it")));
+        assert_eq!(current, None);
+        assert!(linked_missing.is_some_and(|f| f.contains("leads outside your profile")));
+        assert_eq!(linked_current, None, "hooks added by hand count");
     }
 
     #[test]
