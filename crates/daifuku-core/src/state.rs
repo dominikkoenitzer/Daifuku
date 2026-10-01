@@ -64,6 +64,14 @@ pub struct HookEvent {
     /// their own, under the same session id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// Set on `SessionStart` events: how the session started, `startup`,
+    /// `resume`, `compact` and so on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Set on `PreCompact` and `PostCompact` events: `manual` for a
+    /// `/compact` you ran, `auto` for one the agent started itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
     /// When the hook started, in 100 ns ticks since 1970, stamped by
     /// `daifuku hook` itself. Agents run their hooks in the background and
     /// they may finish out of order; this puts them back in order.
@@ -106,12 +114,16 @@ impl HookEvent {
     /// Claude Code's events, by what they tell us:
     ///
     /// - A prompt was sent, a tool is about to run or just ran, a subagent
-    ///   started: **working**. A tool that failed is still working, because
-    ///   the agent carries on and tries something else.
+    ///   started, the chat is being compacted: **working**. A tool that
+    ///   failed is still working, because the agent carries on and tries
+    ///   something else.
     /// - A permission prompt is up, or an MCP server is asking a question:
     ///   **waiting**. A denied permission puts it back to work.
-    /// - The turn ended: **done**. It ended on an error: **failed**. A
-    ///   rate-limited session that resumed by itself is working again.
+    /// - The turn ended, or a `/compact` you ran is finished: **done**. It
+    ///   ended on an error: **failed**. A rate-limited session that resumed
+    ///   by itself is working again. A session that starts again after a
+    ///   compaction says nothing new: one the agent started itself may be in
+    ///   the middle of a turn, and Codex starts it only with the next prompt.
     /// - Nothing has happened at the prompt for about a minute: see
     ///   [`Transition::Idle`].
     /// - The session closed: forget it.
@@ -120,7 +132,11 @@ impl HookEvent {
         match self.hook_event_name.as_str() {
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
             | "PostToolBatch" | "PermissionDenied" | "SubagentStart" | "PreCompact"
-            | "PostCompact" | "ElicitationResult" => Transition::To(AgentState::Working),
+            | "ElicitationResult" => Transition::To(AgentState::Working),
+            "PostCompact" if self.trigger.as_deref() == Some("manual") => {
+                Transition::To(AgentState::Done)
+            }
+            "PostCompact" => Transition::To(AgentState::Working),
             "PermissionRequest" | "Elicitation" => Transition::To(AgentState::Waiting),
             // Not `agent_needs_input`: that is a background session asking
             // while agent view is open. It runs apart from this window and
@@ -134,6 +150,7 @@ impl HookEvent {
                 Some("idle_prompt") => Transition::Idle,
                 _ => Transition::Ignore,
             },
+            "SessionStart" if self.source.as_deref() == Some("compact") => Transition::Ignore,
             // Codex reports a turn the user interrupted as an event of its
             // own; the agent is idle either way.
             "SessionStart" | "Stop" | "Interrupt" => Transition::To(AgentState::Done),
@@ -598,6 +615,53 @@ mod tests {
             a.apply(1, &ev("s", name));
             assert_eq!(a.window_state(1), Some(want), "after {name}");
         }
+    }
+
+    fn compacted(name: &str, trigger: &str) -> HookEvent {
+        HookEvent {
+            trigger: Some(trigger.into()),
+            ..ev("s", name)
+        }
+    }
+
+    fn started(source: &str) -> HookEvent {
+        HookEvent {
+            source: Some(source.into()),
+            ..ev("s", "SessionStart")
+        }
+    }
+
+    #[test]
+    fn a_compaction_in_the_middle_of_a_turn_keeps_it_working() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "UserPromptSubmit"));
+        for e in [
+            compacted("PreCompact", "auto"),
+            compacted("PostCompact", "auto"),
+            started("compact"),
+        ] {
+            a.apply(1, &e);
+            let name = &e.hook_event_name;
+            assert_eq!(a.window_state(1), Some(AgentState::Working), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_compact_you_ran_ends_done() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "Stop"));
+        a.apply(1, &compacted("PreCompact", "manual"));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
+        a.apply(1, &compacted("PostCompact", "manual"));
+        assert_eq!(a.window_state(1), Some(AgentState::Done));
+        // Codex starts the compacted session just before the next model
+        // request, so after the next prompt.
+        a.apply(1, &ev("s", "UserPromptSubmit"));
+        assert!(!a.apply(1, &started("compact")));
+        assert_eq!(a.window_state(1), Some(AgentState::Working));
+        // Any other start is a session at its prompt.
+        a.apply(1, &started("resume"));
+        assert_eq!(a.window_state(1), Some(AgentState::Done));
     }
 
     #[test]
