@@ -77,13 +77,47 @@ fn cells(
     config: &Config,
     stay_on: Option<&str>,
 ) -> anyhow::Result<(MonitorInfo, Vec<Rect>)> {
-    let monitors = monitor::monitors();
-    let choice = home_pick(&fleet.monitor, stay_on);
-    let m = pick(&monitors, &choice, monitor::cursor())
-        .cloned()
-        .ok_or_else(|| anyhow!("no monitor"))?;
+    plan(
+        fleet,
+        config,
+        stay_on,
+        &monitor::monitors(),
+        monitor::cursor(),
+    )
+    .ok_or_else(|| anyhow!("no monitor"))
+}
+
+/// Where a fleet's cells are on `monitors` with the cursor at `cursor`, as
+/// [`cells`] works them out.
+fn plan(
+    fleet: &Fleet,
+    config: &Config,
+    stay_on: Option<&str>,
+    monitors: &[MonitorInfo],
+    cursor: (i32, i32),
+) -> Option<(MonitorInfo, Vec<Rect>)> {
+    let m = pick(monitors, &home_pick(&fleet.monitor, stay_on), cursor)?.clone();
     let cells = Grid::plan(fleet.count, m.work, config.gaps, fleet.shape);
-    Ok((m, cells))
+    Some((m, cells))
+}
+
+/// Whether the monitors going from `before` to `now` moved an open fleet's
+/// cells, or changed the scale of the monitor they are on, which makes
+/// Windows resize its terminals. A change anywhere else, such as a taskbar
+/// coming back on another monitor, leaves the fleet as it is.
+pub fn moved(
+    fleet: &Fleet,
+    config: &Config,
+    record: &OpenFleet,
+    before: &[MonitorInfo],
+    now: &[MonitorInfo],
+    cursor: (i32, i32),
+) -> bool {
+    let on = |monitors: &[MonitorInfo]| {
+        plan(fleet, config, Some(&record.monitor), monitors, cursor)
+            .map(|(m, cells)| (m.dpi, cells))
+    };
+    on(before) != on(now)
 }
 
 /// The monitor to look for: a fleet that opened where the cursor was stays on
@@ -171,7 +205,7 @@ pub fn open(
         }
     }
 
-    place_all(record, &cells);
+    place_all(record, &cells, true);
     if let Some(first) = record.windows().next() {
         window::focus(first);
     }
@@ -250,10 +284,13 @@ fn wait_for_new(before: &BTreeSet<u64>, record: &OpenFleet) -> Option<u64> {
     None
 }
 
-/// Puts every terminal of the fleet in its cell.
-fn place_all(record: &OpenFleet, cells: &[Rect]) {
+/// Puts every terminal of the fleet in its cell. A minimised or maximised one
+/// is restored into it only when `restore` is set, as it is when someone asks
+/// for the fleet; otherwise it is left as they put it.
+fn place_all(record: &OpenFleet, cells: &[Rect], restore: bool) {
     for (slot, &cell) in record.slots.iter().zip(cells) {
         if let Some(w) = *slot
+            && (restore || !(window::is_minimised(w) || window::is_maximised(w)))
             && window::frame(w) != Some(cell)
         {
             window::place(w, cell);
@@ -262,15 +299,21 @@ fn place_all(record: &OpenFleet, cells: &[Rect]) {
 }
 
 /// Puts an open fleet's terminals back in their cells without opening
-/// anything.
-pub fn snap(fleet: &Fleet, config: &Config, record: &mut OpenFleet) -> anyhow::Result<()> {
+/// anything. A minimised or maximised terminal is restored into its cell
+/// only when `restore` is set.
+pub fn snap(
+    fleet: &Fleet,
+    config: &Config,
+    record: &mut OpenFleet,
+    restore: bool,
+) -> anyhow::Result<()> {
     record.prune();
     record
         .slots
         .truncate(usize::try_from(fleet.count).unwrap_or(usize::MAX));
     let (m, cells) = cells(fleet, config, Some(&record.monitor))?;
     settle(fleet, record, &m, cells.len());
-    place_all(record, &cells);
+    place_all(record, &cells, restore);
     Ok(())
 }
 
@@ -433,6 +476,61 @@ mod tests {
             r.monitor, r"\\.\DISPLAY2",
             "the same monitor, as spelled now"
         );
+    }
+
+    #[test]
+    fn a_monitor_change_moves_only_the_fleets_it_touches() {
+        let wide = Rect::new(0, 0, 2560, 1440);
+        let tall = Rect::new(2560, 0, 3640, 1920);
+        let left = |work| MonitorInfo {
+            device: r"\\.\DISPLAY1".into(),
+            bounds: wide,
+            work,
+            dpi: 96,
+            primary: true,
+        };
+        let right = |work, dpi| MonitorInfo {
+            device: r"\\.\DISPLAY2".into(),
+            bounds: tall,
+            work,
+            dpi,
+            primary: false,
+        };
+        let (left_bar, right_bar) = (Rect::new(0, 0, 2560, 1392), Rect::new(2560, 0, 3640, 1872));
+        let both = [left(left_bar), right(right_bar, 96)];
+        let config = Config::default();
+        let on_right = record(r"\\.\DISPLAY2", vec![Some(1)]);
+        let cursor = (100, 100);
+        for pick in [
+            MonitorPick::Portrait,
+            MonitorPick::Cursor,
+            MonitorPick::Device(r"\\.\DISPLAY2".into()),
+        ] {
+            let fleet = fleet_on(pick.clone());
+            let moves = |before: &[MonitorInfo], now: &[MonitorInfo]| {
+                moved(&fleet, &config, &on_right, before, now, cursor)
+            };
+            assert!(
+                !moves(&both, &[left(wide), right(right_bar, 96)]),
+                "{pick:?}: the other monitor's taskbar went"
+            );
+            assert!(
+                moves(&both, &[left(left_bar), right(tall, 96)]),
+                "{pick:?}: its own taskbar went"
+            );
+            assert!(
+                moves(&both, &[left(left_bar), right(right_bar, 144)]),
+                "{pick:?}: its monitor's scale changed"
+            );
+            assert!(
+                moves(&both, &[left(left_bar)]),
+                "{pick:?}: its monitor went"
+            );
+            assert!(
+                moves(&[left(left_bar)], &both),
+                "{pick:?}: its monitor came back"
+            );
+        }
     }
 
     #[test]
