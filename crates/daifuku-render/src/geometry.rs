@@ -22,8 +22,9 @@
 //! |  ##|                         |  |
 //! ```
 //!
-//! With the default offset of `-1` the inner edge of the stroke laps one pixel
-//! over the target, which hides the seam between the frame and the window.
+//! With the default offset of `0` the inner edge of the stroke lies on the
+//! target's edge. An offset of `-1` laps it one pixel over the target, which
+//! hides any seam between the frame and the window.
 
 use daifuku_core::Rect;
 
