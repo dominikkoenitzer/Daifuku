@@ -6,7 +6,7 @@
 //! not changed is not repainted, not moved, and not even sent to the border
 //! thread.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::FrameUpdate;
 use crate::WindowHandle;
@@ -23,7 +23,8 @@ use crate::border::BorderSpec;
 pub struct BorderChanges {
     /// Windows that had no border before.
     pub added: Vec<BorderSpec>,
-    /// The colour changed: repaint, wherever it is now.
+    /// The colour changed, or the last draw failed: repaint, wherever it is
+    /// now.
     pub repainted: Vec<BorderSpec>,
     /// Same colour, new rectangle: move it, do not touch its pixels.
     pub moved: Vec<BorderSpec>,
@@ -65,6 +66,9 @@ impl BorderChanges {
 #[derive(Debug, Clone, Default)]
 pub struct BorderDiff {
     last: BTreeMap<isize, BorderSpec>,
+    /// Borders the next pass hands over again even when nothing changed,
+    /// because their last draw failed.
+    resend: BTreeSet<isize>,
 }
 
 impl BorderDiff {
@@ -73,6 +77,7 @@ impl BorderDiff {
     pub fn new() -> Self {
         Self {
             last: BTreeMap::new(),
+            resend: BTreeSet::new(),
         }
     }
 
@@ -100,9 +105,10 @@ impl BorderDiff {
     /// changes, because a new configuration repaints whatever is left.
     pub fn invalidate(&mut self) {
         self.last.clear();
+        self.resend.clear();
     }
 
-    /// Forgets one border, so that the next pass hands it to its window again.
+    /// Marks one border for the next pass to hand to its window again.
     ///
     /// The diff records a spec as applied the moment it is SENT, which is one
     /// thread hop before anything is drawn. That is right for the common case
@@ -112,8 +118,16 @@ impl BorderDiff {
     /// its window keeps the same rectangle and colour. One transient failure and
     /// the border is simply gone. The thread calls this when a draw fails, so
     /// the next pass tries again.
-    pub fn forget(&mut self, target: WindowHandle) {
-        self.last.remove(&target.0);
+    ///
+    /// The border stays in the record. Dropping it would lose track of a frame
+    /// the thread may still hold: when its window then left the layout, the
+    /// next pass would not name it as removed, and the frame would stay on
+    /// screen for good. The same goes for a newer spec for the same window
+    /// that was sent while the failed one was still on its way.
+    pub fn retry(&mut self, target: WindowHandle) {
+        if self.last.contains_key(&target.0) {
+            self.resend.insert(target.0);
+        }
     }
 
     /// Diffs a complete desired set against the last one.
@@ -135,6 +149,7 @@ impl BorderDiff {
             let spec = next[&key];
             match self.last.get(&key) {
                 None => changes.added.push(spec),
+                Some(_) if self.resend.contains(&key) => changes.repainted.push(spec),
                 Some(previous)
                     if previous.colour != spec.colour || previous.width != spec.width =>
                 {
@@ -152,6 +167,7 @@ impl BorderDiff {
             .collect();
 
         self.last = next;
+        self.resend.clear();
         changes
     }
 
@@ -304,7 +320,7 @@ mod tests {
         // screen but the diff believes it is, so the next pass sees an
         // unchanged spec and sends nothing: one transient failure and the
         // border is gone for as long as its window keeps the same rectangle
-        // and colour. The thread calls `forget` on a failed draw so the next
+        // and colour. The thread calls `retry` on a failed draw so the next
         // pass hands it over again.
         let mut diff = BorderDiff::new();
         let spec = spec(A, LEFT, BLUE);
@@ -315,7 +331,7 @@ mod tests {
             "an unchanged pass costs nothing, which is the whole problem"
         );
 
-        diff.forget(A);
+        diff.retry(A);
         let changes = diff.diff(vec![spec]);
         assert!(
             !changes.is_empty(),
@@ -325,6 +341,55 @@ mod tests {
             changes.specs().any(|s| s.target == A),
             "the retry has to name the window whose draw failed"
         );
+        assert!(
+            diff.diff(vec![spec]).is_empty(),
+            "one retry per failure, not one per pass from then on"
+        );
+    }
+
+    #[test]
+    fn a_border_whose_draw_failed_is_still_taken_down() {
+        // A failed draw can leave the old frame on screen. If the diff dropped
+        // the window, a pass without it would not name it as removed, and the
+        // thread would never take that frame down.
+        let mut diff = BorderDiff::new();
+        let _ = diff.diff(vec![spec(A, LEFT, BLUE), spec(B, RIGHT, GREEN)]);
+
+        diff.retry(A);
+        let changes = diff.diff(vec![spec(B, RIGHT, GREEN)]);
+        assert_eq!(
+            changes.removed,
+            vec![A],
+            "the frame stays on screen for good"
+        );
+        assert!(changes.specs().next().is_none());
+    }
+
+    #[test]
+    fn a_failed_draw_does_not_lose_a_newer_spec_still_on_its_way() {
+        // Two passes in a row: blue, then yellow. The thread fails to draw the
+        // blue one after the yellow one was already sent, and then draws the
+        // yellow one. The yellow frame is on screen, so it must still be taken
+        // down when its window goes.
+        let mut diff = BorderDiff::new();
+        let _ = diff.diff(vec![spec(A, LEFT, BLUE)]);
+        let _ = diff.diff(vec![spec(A, LEFT, YELLOW)]);
+
+        diff.retry(A);
+        assert_eq!(diff.colour(A), Some(YELLOW), "the newer spec is kept");
+        let changes = diff.diff(Vec::new());
+        assert_eq!(changes.removed, vec![A]);
+    }
+
+    #[test]
+    fn a_retry_for_a_border_already_taken_down_is_ignored() {
+        let mut diff = BorderDiff::new();
+        let _ = diff.diff(vec![spec(A, LEFT, BLUE)]);
+        let _ = diff.diff(Vec::new());
+
+        diff.retry(A);
+        assert!(diff.is_empty());
+        assert!(diff.diff(Vec::new()).is_empty());
     }
 
     #[test]
