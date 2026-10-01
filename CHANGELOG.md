@@ -8,9 +8,11 @@
   hooks `SubagentStop`.
 - Codex hooks work on Windows. Codex runs a hook's command line in
   PowerShell, which read the quoted path as a string and never started
-  Daifuku; the line now starts with PowerShell's `&`. `daifuku install`
-  updates hooks written before, and Codex asks to trust them again in
-  `/hooks`.
+  Daifuku; the line now starts with PowerShell's `&`. Codex also no longer
+  warns at every session start about Daifuku's `SessionEnd` and `Interrupt`
+  hooks: they ask for 3 seconds at most, and `SessionEnd` no longer for
+  `async`. `daifuku install` updates hooks written before, and Codex asks to
+  trust them again in `/hooks`.
 - The next key moves on down the queue only when pressed again from the
   terminal it just brought up, while that agent still waits. From a waiting
   terminal that was in front anyway, such as the last one the demo opened,
@@ -30,7 +32,10 @@
 - `daifuku demo` says so when a fleet in the config is called `demo`.
 - `daifuku status` times a window right after a tab moves out of it.
 - The limit of 512 tracked agent sessions counts sessions, so one window can
-  no longer add them without end.
+  no longer add them without end. The daemon also ignores a report whose
+  session or subagent id is longer than 128 bytes, and keeps at most 32
+  threads of one session waiting, so made-up reports cannot make it grow
+  without end.
 - A terminal that stopped responding no longer holds up the daemon: it is
   moved later and skipped when focusing.
 - The installer replaces a `ProgramData\Daifuku` folder that is not locked
@@ -66,6 +71,21 @@
 - A border stays above its terminal when the terminal is brought to the
   front, and no longer flashes over other windows while it moves.
 - An agent that resumes by itself after a rate limit shows as working again.
+- A Claude Code turn you interrupt, with Esc or by saying no at a
+  permission prompt, shows done once Claude Code reports its prompt idle,
+  about a minute later. It used to stay working or waiting until the next
+  prompt.
+- A compaction in the middle of a turn keeps the agent working; it showed
+  done until the next tool call. A `/compact` you run ends done. Daifuku now
+  also hooks `PostCompact`; run `daifuku install` again to add it.
+- A question Codex asks with its `request_user_input` tool shows as waiting;
+  it showed as working.
+- A background session asking for input while Claude Code's agent view is
+  open no longer turns that terminal yellow; nothing cleared it once
+  answered.
+- A hook reads an event of any size. A tool event over 1 MiB, such as one
+  for a large file edit, used to be dropped, so an approved edit could keep
+  showing waiting.
 - Hooks stamp the time they start, and the daemon drops an event that
   arrives after a newer one of its session, so a late tool hook cannot leave
   a finished agent looking busy.
