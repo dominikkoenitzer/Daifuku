@@ -315,11 +315,13 @@ impl Borders {
             // The diff already wrote this spec down as applied, so without
             // this the next pass would see nothing changed, send nothing, and
             // the border would stay missing until its window moved.
-            self.diff
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .forget(WindowHandle(key));
+            self.retry(key);
             tracing::warn!(target = %WindowHandle(key), %error, "could not draw a border");
+            // A failed paint or move leaves the old frame up, in the old
+            // colour and maybe in the old place. Take it down until the retry
+            // draws it, so that a frame in `active` is one that is right.
+            self.recycle(window);
+            return;
         }
         if let Some(duplicate) = self.active.insert(key, window) {
             self.recycle(duplicate);
@@ -334,10 +336,19 @@ impl Borders {
                 self.diff
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .forget(WindowHandle(key));
+                    .retry(WindowHandle(key));
                 tracing::warn!(target = %WindowHandle(key), %error, "could not restack a border");
             }
         }
+    }
+
+    /// Asks the next pass to hand the border for `key` over again, because
+    /// what was last sent for it did not make it onto the screen.
+    fn retry(&self, key: isize) {
+        self.diff
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retry(WindowHandle(key));
     }
 
     /// The window for `key`: the one already tracking it, a spare, or a new one.
