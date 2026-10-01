@@ -658,6 +658,12 @@ impl Daemon {
             self.high_contrast = hc;
             self.animations = anim;
             self.refresh_borders();
+        } else if self.high_contrast {
+            // Another contrast theme, or the colours of this one edited,
+            // with high contrast on all along: only the colours change, and
+            // only a repaint shows them. One that changes nothing sends
+            // nothing to the borders.
+            self.paint_borders();
         }
         let dead: Vec<u64> = self
             .agents
