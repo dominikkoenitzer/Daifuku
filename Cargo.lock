@@ -136,7 +136,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "daifuku"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "daifuku-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "schemars",
  "serde",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "daifuku-render"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "daifuku-core",
  "thiserror",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "daifuku-win"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "daifuku-core",
  "windows",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "daifukud"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "daifuku-core",
