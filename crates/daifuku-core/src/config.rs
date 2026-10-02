@@ -230,17 +230,21 @@ pub struct Hotkeys {
     pub next_waiting: Option<HotkeyText>,
     /// Put every fleet terminal back in its cell.
     pub snap: Option<HotkeyText>,
+    /// Close every fleet's terminals at once, ending the agents in them.
+    pub close: Option<HotkeyText>,
 }
 
 impl Default for Hotkeys {
     /// Ctrl and Alt, because common tiling setups live on Alt alone, and keys
     /// that type nothing with AltGr on the German, Swiss and French layouts,
     /// where AltGr is Ctrl and Alt together. Not Ctrl, Alt and Space: on the
-    /// first machine Daifuku ran on, another program already held it.
+    /// first machine Daifuku ran on, another program already held it. Close
+    /// is on F4, as Alt and F4 closes one window.
     fn default() -> Self {
         Self {
             next_waiting: Some(HotkeyText::new("ctrl + alt + n")),
             snap: Some(HotkeyText::new("ctrl + alt + backspace")),
+            close: Some(HotkeyText::new("ctrl + alt + f4")),
         }
     }
 }
@@ -615,6 +619,7 @@ impl Config {
             .next_waiting
             .iter()
             .chain(self.hotkeys.snap.iter())
+            .chain(self.hotkeys.close.iter())
             .chain(self.fleets.iter().filter_map(|f| f.hotkey.as_ref()))
     }
 
@@ -778,6 +783,14 @@ mod tests {
     fn rejects_a_hotkey_that_does_not_parse() {
         let e = Config::from_json(r#"{"hotkeys":{"snap":"ctrl + banana"}}"#).unwrap_err();
         assert!(matches!(e, ConfigError::Hotkey { .. }), "{e}");
+    }
+
+    #[test]
+    fn the_close_key_is_on_f4_until_turned_off() {
+        let key = Config::default().hotkeys.close.unwrap().parse().unwrap();
+        assert_eq!(key.to_string(), "ctrl + alt + f4");
+        let c = Config::from_json(r#"{"hotkeys":{"close":null}}"#).unwrap();
+        assert_eq!(c.hotkeys.close, None);
     }
 
     #[test]

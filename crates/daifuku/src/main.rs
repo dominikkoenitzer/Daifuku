@@ -4,6 +4,7 @@
 //! daifuku open [fleet]   open a fleet, or bring it back
 //! daifuku snap           put every fleet terminal back in its cell
 //! daifuku close [fleet]  close a fleet's terminals
+//! daifuku close --all    close every fleet's terminals
 //! daifuku next           focus the agent that has waited longest
 //! daifuku demo           open six scripted demo agents
 //! daifuku status         what the daemon knows
@@ -54,6 +55,9 @@ enum Command {
     Close {
         /// The fleet's name.
         fleet: Option<String>,
+        /// Close every open fleet instead.
+        #[arg(long, conflicts_with = "fleet")]
+        all: bool,
     },
     /// Focus the agent that has waited longest for you.
     Next,
@@ -128,7 +132,8 @@ fn main() -> ExitCode {
         }
         Command::Open { fleet } => control(&Request::Open { fleet }, false),
         Command::Snap => control(&Request::Snap, false),
-        Command::Close { fleet } => control(&Request::Close { fleet }, false),
+        Command::Close { all: true, .. } => control(&Request::CloseAll, false),
+        Command::Close { fleet, .. } => control(&Request::Close { fleet }, false),
         Command::Next => control(&Request::Next, false),
         Command::Demo => control(&Request::Demo, false),
         Command::DemoAgent { number } => {

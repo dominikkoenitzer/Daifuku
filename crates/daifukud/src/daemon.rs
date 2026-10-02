@@ -223,12 +223,20 @@ impl Daemon {
 
     fn hotkey(&mut self, action: &Action) {
         tracing::info!(?action, "hotkey");
+        // Close leaves no fleet open, so whether it had one to act on is
+        // known only beforehand.
+        let had_nothing = self.idle(action);
         let result = match action {
             Action::Open(name) => self.open(Some(name)),
             Action::Next => self.next(),
             Action::Snap => self.snap(),
+            Action::Close => self.close_all(),
         };
-        let idle = self.idle(action);
+        let idle = if *action == Action::Close {
+            had_nothing
+        } else {
+            self.idle(action)
+        };
         match &result {
             Response::Error { message } => tracing::warn!(%message, "hotkey failed"),
             Response::Ok {
@@ -243,12 +251,12 @@ impl Daemon {
     }
 
     /// Whether a key had nothing to act on: no agent waits for `next`, no
-    /// fleet is open for `snap`.
+    /// fleet is open for `snap` or `close`.
     fn idle(&self, action: &Action) -> bool {
         match action {
             Action::Open(_) => false,
             Action::Next => self.waiting().is_empty(),
-            Action::Snap => self.fleets.is_empty(),
+            Action::Snap | Action::Close => self.fleets.is_empty(),
         }
     }
 
@@ -279,6 +287,7 @@ impl Daemon {
             Request::Open { fleet } => self.open(fleet.as_deref()),
             Request::Snap => self.snap(),
             Request::Close { fleet } => self.close(fleet.as_deref()),
+            Request::CloseAll => self.close_all(),
             Request::Next => self.next(),
             Request::Demo => self.demo(),
             Request::Status => Response::Status(self.status()),
@@ -492,24 +501,47 @@ impl Daemon {
                 _ => Response::said("that fleet is not open"),
             };
         };
-        let record = &mut self.fleets[index];
-        // Only a window that is still one of our terminals: a handle can
-        // have been reused by anything since.
-        record.prune();
-        let asked: Vec<u64> = record.windows().filter(|&w| window::close(w)).collect();
+        let name = self.fleets[index].name.clone();
+        let (closed, open) = self.close_fleets(&[index]);
+        Response::said(closed_message(Some(&name), closed, open))
+    }
+
+    fn close_all(&mut self) -> Response {
+        if self.fleets.is_empty() {
+            return Response::said("no fleet is open");
+        }
+        let every: Vec<usize> = (0..self.fleets.len()).collect();
+        let (closed, open) = self.close_fleets(&every);
+        Response::said(closed_message(None, closed, open))
+    }
+
+    /// Asks every terminal of the fleets at `indices` to close, waits for
+    /// them together, and returns how many went and how many are still open.
+    fn close_fleets(&mut self, indices: &[usize]) -> (usize, usize) {
+        let mut asked: Vec<u64> = Vec::new();
+        for &index in indices {
+            let record = &mut self.fleets[index];
+            // Only a window that is still one of our terminals: a handle can
+            // have been reused by anything since.
+            record.prune();
+            asked.extend(record.windows().filter(|&w| window::close(w)));
+        }
         // Windows Terminal asks before it closes a window with several
-        // tabs. A terminal still open after that stays in the fleet, in its
+        // tabs. A terminal still open after that stays in its fleet, in its
         // own cell, and is counted as open rather than closed.
         let start = std::time::Instant::now();
         while asked.iter().any(|&w| window::exists(w)) && start.elapsed() < CLOSE_WAIT {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        record.prune();
-        let open = record.windows().count();
+        let mut open = 0;
+        for &index in indices {
+            let record = &mut self.fleets[index];
+            record.prune();
+            open += record.windows().count();
+        }
         let closed = asked.iter().filter(|&&w| !window::exists(w)).count();
-        let message = closed_message(&record.name, closed, open);
         self.drop_closed_fleets();
-        Response::said(message)
+        (closed, open)
     }
 
     /// The terminals whose agents need you, the one that has waited longest
@@ -872,14 +904,15 @@ fn single_quoted(text: &str) -> String {
     out
 }
 
-/// What `close` says about fleet `name`: how many of its terminals closed,
-/// and how many are still `open`.
-fn closed_message(name: &str, closed: usize, open: usize) -> String {
+/// What `close` says about fleet `name`, or about every fleet without one:
+/// how many terminals closed, and how many are still `open`.
+fn closed_message(name: Option<&str>, closed: usize, open: usize) -> String {
+    let of = name.map(|n| format!(" of {n}")).unwrap_or_default();
     if open == 0 {
-        return format!("closed {} of {name}", fleet::terminals_count(closed));
+        return format!("closed {}{of}", fleet::terminals_count(closed));
     }
     format!(
-        "closed {closed} of {} of {name}; Windows Terminal kept {} open, perhaps to ask about closing tabs",
+        "closed {closed} of {}{of}; Windows Terminal kept {} open, perhaps to ask about closing tabs",
         fleet::terminals_count(closed + open),
         fleet::terminals_count(open)
     )
@@ -1054,11 +1087,13 @@ mod tests {
         let mut d = daemon();
         assert!(d.idle(&Action::Next), "no agent waits");
         assert!(d.idle(&Action::Snap), "no fleet is open");
+        assert!(d.idle(&Action::Close), "no fleet is open");
         assert!(!d.idle(&Action::Open("agents".into())));
         let mut record = OpenFleet::new("agents");
         record.slots = vec![Some(1)];
         d.fleets.push(record);
         assert!(!d.idle(&Action::Snap));
+        assert!(!d.idle(&Action::Close));
     }
 
     #[test]
@@ -1078,10 +1113,18 @@ mod tests {
 
     #[test]
     fn close_counts_only_the_terminals_that_went() {
-        assert_eq!(closed_message("e2e", 4, 0), "closed 4 terminals of e2e");
         assert_eq!(
-            closed_message("agents", 5, 1),
+            closed_message(Some("e2e"), 4, 0),
+            "closed 4 terminals of e2e"
+        );
+        assert_eq!(
+            closed_message(Some("agents"), 5, 1),
             "closed 5 of 6 terminals of agents; Windows Terminal kept 1 terminal open, perhaps to ask about closing tabs"
+        );
+        assert_eq!(closed_message(None, 10, 0), "closed 10 terminals");
+        assert_eq!(
+            closed_message(None, 9, 1),
+            "closed 9 of 10 terminals; Windows Terminal kept 1 terminal open, perhaps to ask about closing tabs"
         );
     }
 

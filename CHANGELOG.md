@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Ctrl+Alt+F4, `close` in `hotkeys`, closes the terminals of every open
+  fleet, the demo's too, and `daifuku close --all` does the same. Neither
+  asks: agents still working end with their terminals. Only a window with
+  several tabs may stay open, as Windows Terminal asks about those first, and
+  it stays in its fleet. With no fleet open, the key beeps. F4 because Alt+F4
+  closes one window, and Ctrl+Alt with a letter would block a character
+  typed with AltGr on German, Swiss and French keyboards.
 - A question from one of Claude Code's subagents keeps its window waiting
   while the main thread or other subagents go on working; it clears when
   that subagent goes on, stops, or you type a new prompt. Daifuku now also
