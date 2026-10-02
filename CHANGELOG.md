@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2, 2026-10-02
 
 - Ctrl+Alt+F4, `close` in `hotkeys`, closes the terminals of every open
   fleet, the demo's too, and `daifuku close --all` does the same. Neither
