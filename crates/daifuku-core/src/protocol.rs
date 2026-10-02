@@ -43,6 +43,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fleet: Option<String>,
     },
+    /// Close the terminals of every open fleet.
+    CloseAll,
     /// Focus the terminal that has waited longest.
     Next,
     /// Open six scripted demo agents, to see Daifuku without a real one.
@@ -194,6 +196,7 @@ mod tests {
             Request::Close {
                 fleet: Some("x".into()),
             },
+            Request::CloseAll,
             Request::Next,
             Request::Demo,
             Request::Status,

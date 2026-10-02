@@ -21,6 +21,8 @@ pub enum Action {
     Next,
     /// Put every fleet terminal back in its cell.
     Snap,
+    /// Close every fleet's terminals.
+    Close,
 }
 
 /// The registered hotkeys, by id.
@@ -61,6 +63,14 @@ impl Hotkeys {
             .map(daifuku_core::config::HotkeyText::parse)
         {
             wanted.push((Action::Snap, key));
+        }
+        if let Some(Ok(key)) = config
+            .hotkeys
+            .close
+            .as_ref()
+            .map(daifuku_core::config::HotkeyText::parse)
+        {
+            wanted.push((Action::Close, key));
         }
         for (index, (action, key)) in wanted.into_iter().enumerate() {
             let id = i32::try_from(index).unwrap_or(0) + 1;
@@ -104,6 +114,7 @@ impl Hotkeys {
                 Action::Open(name) => format!("{key}: open {name}"),
                 Action::Next => format!("{key}: next waiting agent"),
                 Action::Snap => format!("{key}: snap fleets back"),
+                Action::Close => format!("{key}: close every fleet"),
             })
             .collect()
     }

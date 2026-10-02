@@ -36,7 +36,8 @@
       "$ref": "#/$defs/Hotkeys",
       "default": {
         "next_waiting": "ctrl + alt + n",
-        "snap": "ctrl + alt + backspace"
+        "snap": "ctrl + alt + backspace",
+        "close": "ctrl + alt + f4"
       }
     },
     "fleets": {
@@ -232,6 +233,18 @@
             }
           ],
           "default": "ctrl + alt + backspace"
+        },
+        "close": {
+          "description": "Close every fleet's terminals at once, ending the agents in them.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HotkeyText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "ctrl + alt + f4"
         }
       },
       "additionalProperties": false

@@ -141,6 +141,7 @@ Colours are `#rrggbb`. A key left out keeps the palette's colour (after
 |---|---|---|
 | `next_waiting` | `"ctrl + alt + n"` | Focus the agent that has waited longest, and after the waiting ones, the failed ones. Pressed again from the one it brought up, while that agent still waits, it moves on to the next. |
 | `snap` | `"ctrl + alt + backspace"` | Put every fleet terminal back in its cell. |
+| `close` | `"ctrl + alt + f4"` | Close every fleet terminal, the demo's too, without asking: an agent still working ends with its terminal. |
 
 A hotkey is modifiers and one key, joined by `+`: `ctrl`, `alt`, `shift`,
 `win`, and a letter, a digit, `f1` to `f24`, `numpad0` to `numpad9`, or one of

@@ -13,6 +13,8 @@ each window's border shows what its agent is doing.
 - **Ctrl+Alt+N** visits the waiting agents first, longest waiting first, then
   the failed ones. Press it again for the next one.
 - **Ctrl+Alt+Backspace** puts every terminal back in its cell.
+- **Ctrl+Alt+F4** closes every fleet at once, without asking: an agent still
+  working ends with its terminal.
 
 It works with Claude Code and Codex, in Windows Terminal. Fleets open as
 administrator by default, which also keeps them out of a tiling window
@@ -169,6 +171,7 @@ vulnerabilities as described in [SECURITY.md](SECURITY.md).
 | `daifuku snap` | put every terminal back in its cell |
 | `daifuku next` | focus the agent that has waited longest, then failed ones |
 | `daifuku close [fleet]` | close a fleet |
+| `daifuku close --all` | close every open fleet |
 | `daifuku status` | fleets, agents and hotkeys |
 | `daifuku demo` | six scripted agents |
 | `daifuku reload` | re-read the config |

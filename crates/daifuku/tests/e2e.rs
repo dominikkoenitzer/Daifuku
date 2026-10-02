@@ -160,7 +160,7 @@ fn a_hook_in_a_real_console_colours_its_window_and_the_border_follows_it_away() 
     // machine running this by hand is, and must not lose its keys.
     std::fs::write(
         &config,
-        r#"{"fleets":[{"name":"e2e","hotkey":null}],"hotkeys":{"next_waiting":null,"snap":null}}"#,
+        r#"{"fleets":[{"name":"e2e","hotkey":null}],"hotkeys":{"next_waiting":null,"snap":null,"close":null}}"#,
     )
     .unwrap();
     let mut steps = 0;
@@ -291,7 +291,7 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
             "name": "e2e", "count": 4, "monitor": "primary", "command": command,
             "admin": true, "no_profile": true, "hotkey": null
         }],
-        "hotkeys": { "next_waiting": null, "snap": null }
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
     });
     std::fs::write(&config, fleets.to_string()).unwrap();
     let mut steps = 0;
@@ -422,6 +422,29 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
             .all(|&w| !window::exists(w))
             .then_some(())
     });
+    steps += 1;
+
+    // Opened again, `close --all` takes it down as well, and then has
+    // nothing left to close.
+    let opened = run(&["open", "e2e"]);
+    assert!(opened.contains("opened e2e (4 terminals"), "{opened}");
+    let fleet = wait_for("the fleet open again", Duration::from_secs(10), || {
+        status()?
+            .fleets
+            .into_iter()
+            .find(|f| f.name == "e2e" && f.windows.len() == 4)
+    });
+    let closed = run(&["close", "--all"]);
+    assert!(closed.contains("closed 4 terminals"), "{closed}");
+    wait_for("every terminal to close", Duration::from_secs(15), || {
+        fleet
+            .windows
+            .iter()
+            .all(|&w| !window::exists(w))
+            .then_some(())
+    });
+    let again = run(&["close", "--all"]);
+    assert!(again.contains("no fleet is open"), "{again}");
     steps += 1;
 
     let _ = run(&["stop"]);
@@ -576,7 +599,7 @@ fn next_brings_each_waiting_agent_up_and_enter_approves_it() {
     // cannot fail on a runner.
     std::fs::write(
         &config,
-        r#"{"fleets":[],"hotkeys":{"next_waiting":"ctrl + alt + f11","snap":null}}"#,
+        r#"{"fleets":[],"hotkeys":{"next_waiting":"ctrl + alt + f11","snap":null,"close":null}}"#,
     )
     .unwrap();
     let mut steps = 0;
