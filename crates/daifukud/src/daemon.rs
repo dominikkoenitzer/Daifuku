@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use anyhow::Context;
 use daifuku_core::config::{Border, Config};
 use daifuku_core::protocol::{AgentWindow, FleetStatus, HookMessage, Request, Response, Status};
+use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
-use daifuku_win::{access, dpi, paths, process, window};
+use daifuku_win::{access, clock, dpi, paths, process, window};
 use windows::Win32::UI::Shell::{QUNS_NOT_PRESENT, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
@@ -40,6 +41,10 @@ const PULSE_MS: u32 = 50;
 
 /// One breath of the pulse, in seconds.
 const PULSE_PERIOD: f64 = 1.6;
+
+/// How often the state is saved again when nothing changed, in 100 ns ticks:
+/// often enough that a daemon restarted on an error finds it fresh.
+const RESAVE_TICKS: u64 = 60 * 10_000_000;
 
 struct Daemon {
     config: Config,
@@ -78,6 +83,12 @@ struct Daemon {
     /// agent had shown the state it was brought up for, so that pressing it
     /// again from there moves on instead of starting over.
     last_next: Option<(u64, std::time::Instant)>,
+    /// Where the state is kept across a restart, `None` when it is not: see
+    /// [`daifuku_core::saved`].
+    state_file: Option<PathBuf>,
+    /// What the last save held, apart from when it was made, and the
+    /// interrupt time it was made at.
+    last_saved: (String, u64),
 }
 
 /// Runs the daemon until it is told to stop.
@@ -97,15 +108,24 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     let main_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
     let inbox = ipc::start(main_thread).context("could not open Daifuku's pipes")?;
 
+    // Only the installed daemon, elevated and on its own config, keeps its
+    // state: one run on another config, as the end-to-end tests run theirs,
+    // starts clean every time and leaves the installed one's state alone.
+    let keeps_state = elevated && config_override.is_none();
     let config_path = config_override
         .or_else(paths::config_file)
         .context("no ProgramData folder")?;
     let mut d = Daemon::new(config_path, elevated, events::Hooks::install());
+    if keeps_state {
+        d.state_file = paths::data_dir().map(|p| p.join("state.json"));
+    }
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
         .inspect_err(|e| tracing::error!(error = %e, "no borders"))
         .ok();
     d.hotkeys.register(&d.config);
+    d.restore();
+    d.refresh_borders();
     // SAFETY: a thread timer, killed before returning.
     let timer = unsafe { SetTimer(None, 0, SWEEP_MS, None) };
 
@@ -149,6 +169,9 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         let _ = KillTimer(None, timer);
     }
     d.hotkeys.unregister();
+    // An install stops the daemon to replace it: the next one takes up its
+    // fleets and agents from here.
+    d.save(true);
     if let Some(borders) = d.borders.take() {
         borders.stop();
     }
@@ -183,6 +206,8 @@ impl Daemon {
             monitors: daifuku_win::monitor::monitors(),
             shown_since: std::collections::HashMap::new(),
             last_next: None,
+            state_file: None,
+            last_saved: (String::new(), 0),
         }
     }
 
@@ -735,6 +760,157 @@ impl Daemon {
         if !dead.is_empty() {
             self.refresh_borders();
         }
+        self.save(false);
+    }
+
+    /// Writes the state to [`Daemon::state_file`] when it changed since the
+    /// last save, when that save is a minute old, or always when `now`.
+    fn save(&mut self, now: bool) {
+        let Some(file) = &self.state_file else {
+            return;
+        };
+        let ticks = clock::ticks();
+        let mut saved = self.to_saved(ticks);
+        let shown: Vec<_> = saved
+            .shown
+            .iter()
+            .map(|s| (&s.session, s.window, s.state))
+            .collect();
+        let Ok(key) = serde_json::to_string(&(&saved.agents, &saved.fleets, shown)) else {
+            return;
+        };
+        let (last, at) = &self.last_saved;
+        if !now && key == *last && ticks.saturating_sub(*at) < RESAVE_TICKS {
+            return;
+        }
+        saved.boot = saved::boot(wall_seconds(), ticks);
+        saved.at = ticks;
+        let written = serde_json::to_string(&saved)
+            .map_err(std::io::Error::other)
+            .and_then(|text| replace_file(file, &text));
+        match written {
+            Ok(()) => self.last_saved = (key, ticks),
+            Err(e) => {
+                tracing::warn!(path = %file.display(), error = %e, "could not save the state")
+            }
+        }
+    }
+
+    /// The state as it is saved at interrupt time `ticks`, its own time
+    /// still unset.
+    fn to_saved(&self, ticks: u64) -> Saved {
+        let now = std::time::Instant::now();
+        let mut shown: Vec<SavedShown> = self
+            .shown_since
+            .iter()
+            .map(|((session, window), &(state, t))| SavedShown {
+                session: session.clone(),
+                window: *window,
+                state,
+                since: ticks.saturating_sub(
+                    u64::try_from(now.duration_since(t).as_nanos() / 100).unwrap_or(u64::MAX),
+                ),
+            })
+            .collect();
+        // In a set order, so a state that did not change saves the same.
+        shown.sort_by(|a, b| (&a.session, a.window).cmp(&(&b.session, b.window)));
+        Saved {
+            boot: 0,
+            at: 0,
+            agents: self.agents.clone(),
+            fleets: self
+                .fleets
+                .iter()
+                .map(|f| SavedFleet {
+                    name: f.name.clone(),
+                    monitor: f.monitor.clone(),
+                    slots: f.slots.clone(),
+                })
+                .collect(),
+            shown,
+        }
+    }
+
+    /// Takes back the state the daemon before this one saved, when it is
+    /// from this start of Windows and fresh. Every window in it is checked
+    /// again: an agent's must still be a window a hook could name, a fleet's
+    /// still a terminal.
+    fn restore(&mut self) {
+        let Some(file) = &self.state_file else {
+            return;
+        };
+        let text = match std::fs::read_to_string(file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::warn!(path = %file.display(), error = %e, "could not read the saved state");
+                return;
+            }
+        };
+        let saved = match serde_json::from_str::<Saved>(&text) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "the saved state does not read, starting clean");
+                return;
+            }
+        };
+        let ticks = clock::ticks();
+        if !saved.usable(saved::boot(wall_seconds(), ticks), ticks) {
+            tracing::info!("the saved state is from another start of Windows or too old");
+            return;
+        }
+        self.take_back(saved, ticks, |w| {
+            daifuku_win::console::visible_window(w) == Some(w)
+        });
+        tracing::info!(
+            sessions = self.agents.len(),
+            fleets = self.fleets.len(),
+            "took back the saved state"
+        );
+    }
+
+    /// Puts `saved` in place at interrupt time `ticks`, keeping only the
+    /// agents whose window passes `alive`, and only the fleet terminals that
+    /// are still terminals.
+    fn take_back(&mut self, saved: Saved, ticks: u64, alive: impl Fn(u64) -> bool) {
+        self.agents = saved.agents;
+        let gone: Vec<u64> = self
+            .agents
+            .windows()
+            .into_keys()
+            .filter(|&w| !alive(w))
+            .collect();
+        for w in gone {
+            self.agents.forget_window(w);
+        }
+        self.fleets = saved
+            .fleets
+            .into_iter()
+            .map(|f| {
+                let mut record = OpenFleet::new(&f.name);
+                record.monitor = f.monitor;
+                record.slots = f.slots;
+                record.prune();
+                record
+            })
+            .collect();
+        self.drop_closed_fleets();
+        let now = std::time::Instant::now();
+        self.shown_since = saved
+            .shown
+            .into_iter()
+            .map(|s| {
+                let ago = std::time::Duration::from_nanos(
+                    ticks.saturating_sub(s.since).saturating_mul(100),
+                );
+                (
+                    (s.session, s.window),
+                    (s.state, now.checked_sub(ago).unwrap_or(now)),
+                )
+            })
+            .collect();
+        // Drops what was forgotten above and times anything missing from now.
+        self.note_states();
     }
 
     /// Snaps back only the open fleets whose cells moved when the monitors
@@ -940,6 +1116,23 @@ fn dim(c: daifuku_core::config::Colour, k: f64) -> daifuku_core::config::Colour 
         out
     };
     daifuku_core::config::Colour::new(f(c.r), f(c.g), f(c.b))
+}
+
+/// The wall clock, in seconds since 1970.
+fn wall_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Writes `text` next to `path` and renames it over `path`, so a daemon that
+/// stops half way leaves the last whole save, never one cut short.
+fn replace_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".new");
+    let new = path.with_file_name(name);
+    std::fs::write(&new, text)?;
+    std::fs::rename(&new, path)
 }
 
 /// When a file last changed, `None` when it does not exist.
@@ -1271,6 +1464,60 @@ mod tests {
         note_shown(&mut shown, BTreeMap::from([(1, AgentState::Done)]), t1);
         assert_eq!(shown.get(&1), Some(&(AgentState::Done, t1)), "changed");
         assert_eq!(shown.len(), 1);
+    }
+
+    #[test]
+    fn a_restarted_daemon_takes_back_its_agents_and_lets_go_of_dead_windows() {
+        use daifuku_core::state::HookEvent;
+        let dir = std::env::temp_dir().join(format!("daifukud-saved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("state.json");
+        let waiting = |session: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: "PermissionRequest".into(),
+            daifuku_at: Some(clock::ticks()),
+            ..HookEvent::default()
+        };
+
+        let mut before = daemon();
+        before.state_file = Some(file.clone());
+        before.agents.apply(7, &waiting("kept"));
+        before.agents.apply(8, &waiting("closed"));
+        before.note_states();
+        let mut record = OpenFleet::new("agents");
+        record.slots = vec![Some(7), None];
+        before.fleets.push(record);
+        before.save(true);
+        // Nothing changed: no new write within the minute.
+        std::fs::remove_file(&file).unwrap();
+        before.save(false);
+        let rewritten = file.exists();
+        before.save(true);
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        let saved: Saved = serde_json::from_str(&text).unwrap();
+        let usable = saved.usable(saved::boot(wall_seconds(), clock::ticks()), clock::ticks());
+        let mut after = daemon();
+        after.take_back(saved.clone(), clock::ticks(), |w| w == 7);
+
+        let mut stale = daemon();
+        stale.state_file = Some(file.clone());
+        let old = Saved { boot: 1, ..saved };
+        std::fs::write(&file, serde_json::to_string(&old).unwrap()).unwrap();
+        stale.restore();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(!rewritten, "an unchanged state was written again");
+        assert!(usable, "a save just made is from this start and fresh");
+        assert_eq!(after.agents.window_state(7), Some(AgentState::Waiting));
+        assert_eq!(after.agents.window_state(8), None, "its window is gone");
+        assert_eq!(after.agents.needs_you(), vec![7]);
+        assert!(window_since(&after.agents, &after.shown_since, 7).is_some());
+        assert!(
+            after.fleets.is_empty(),
+            "a fleet whose windows are not terminals is not open"
+        );
+        assert!(stale.agents.is_empty(), "a save from another start");
     }
 
     #[test]

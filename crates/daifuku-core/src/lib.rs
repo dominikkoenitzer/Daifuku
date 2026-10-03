@@ -8,6 +8,7 @@
 //! - [`protocol`] is what travels over the daemon's pipes.
 //! - [`agents`] adds and removes Daifuku's hooks for Claude Code and Codex.
 //! - [`task`] is the scheduled task that starts the daemon at logon.
+//! - [`saved`] is what the daemon keeps across a restart.
 
 pub mod agents;
 pub mod config;
@@ -16,6 +17,7 @@ pub mod grid;
 pub mod hotkey;
 pub mod monitor;
 pub mod protocol;
+pub mod saved;
 pub mod state;
 pub mod task;
 
