@@ -71,8 +71,9 @@ struct Daemon {
     config_failed: Option<std::time::SystemTime>,
     /// The monitors as last seen, to put fleets back when they change.
     monitors: Vec<daifuku_core::monitor::MonitorInfo>,
-    /// Since when each window has shown its state, for `daifuku status`.
-    shown_since: std::collections::HashMap<u64, (AgentState, std::time::Instant)>,
+    /// Since when each session has shown its state in the window it runs
+    /// in, for `daifuku status` and `next`: see [`window_since`].
+    shown_since: Shown,
     /// The terminal `next` last brought to the front, and since when its
     /// agent had shown the state it was brought up for, so that pressing it
     /// again from there moves on instead of starting over.
@@ -337,24 +338,34 @@ impl Daemon {
         if self.agents.len() >= MAX_SESSIONS && !self.agents.knows(&message.event.session_id) {
             return;
         }
-        let before = self.agents.window_state(w);
-        if self.agents.apply(w, &message.event) {
-            let now = self.agents.window_state(w);
+        // By session, not by window: a second tab that starts waiting in a
+        // window that waits already changes nothing on screen, yet it is one
+        // more agent that needs you.
+        let session = &message.event.session_id;
+        let before = self.agents.session_state(session);
+        let changed = self.agents.apply(w, &message.event);
+        let now = self.agents.session_state(session);
+        if changed || now != before {
             self.note_states();
-            if self.config.sound && now == Some(AgentState::Waiting) && before != now {
-                access::chime();
-            }
+        }
+        if self.config.sound && now == Some(AgentState::Waiting) && before != now {
+            access::chime();
+        }
+        if changed {
             tracing::debug!(window = format!("{w:#x}"), event = %message.event.hook_event_name, state = ?self.agents.window_state(w), "agent state");
             self.refresh_borders();
         }
     }
 
-    /// Keeps `shown_since` in step with every window's state. A session that
-    /// moves to another window changes the window it left as well.
+    /// Keeps `shown_since` in step with every session's state. A session
+    /// that moves to another window starts its time there anew.
     fn note_states(&mut self) {
         note_shown(
             &mut self.shown_since,
-            self.agents.windows(),
+            self.agents
+                .sessions()
+                .map(|(id, w, state)| ((id.to_owned(), w), state))
+                .collect(),
             std::time::Instant::now(),
         );
     }
@@ -556,12 +567,12 @@ impl Daemon {
 
     fn next(&mut self) -> Response {
         let queue = self.waiting();
-        let since = |w: u64| self.shown_since.get(&w).map(|&(_, t)| t);
+        let since = |w: u64| window_since(&self.agents, &self.shown_since, w);
         let Some(target) = next_target(&queue, window::foreground(), self.last_next, since) else {
             return Response::said("no agent is waiting");
         };
         if window::focus(target) {
-            self.last_next = self.shown_since.get(&target).map(|&(_, t)| (target, t));
+            self.last_next = since(target).map(|t| (target, t));
             Response::said(format!("focused {}", window::title(target)))
         } else {
             Response::error("Windows refused to switch to that terminal")
@@ -577,10 +588,8 @@ impl Daemon {
                 window: w,
                 title: window::title(w),
                 state,
-                for_seconds: self
-                    .shown_since
-                    .get(&w)
-                    .map_or(0, |&(_, t)| t.elapsed().as_secs()),
+                for_seconds: window_since(&self.agents, &self.shown_since, w)
+                    .map_or(0, |t| t.elapsed().as_secs()),
             })
             .collect();
         let fleets = self
@@ -629,7 +638,9 @@ impl Daemon {
             match e {
                 Event::Destroyed(w) => {
                     let forgot = self.agents.forget_window(w);
-                    self.shown_since.remove(&w);
+                    if forgot {
+                        self.note_states();
+                    }
                     for f in &mut self.fleets {
                         f.forget(w);
                     }
@@ -713,7 +724,9 @@ impl Daemon {
             .collect();
         for w in &dead {
             self.agents.forget_window(*w);
-            self.shown_since.remove(w);
+        }
+        if !dead.is_empty() {
+            self.note_states();
         }
         for f in &mut self.fleets {
             f.prune();
@@ -948,12 +961,28 @@ fn retry_once(
     }
 }
 
-/// Keeps `shown` in step with every window's state as of `now`: a window
-/// whose state changed shows it since `now`, one whose state did not keeps
-/// its time, and one that is gone is dropped.
-fn note_shown(
-    shown: &mut std::collections::HashMap<u64, (AgentState, std::time::Instant)>,
-    states: std::collections::BTreeMap<u64, AgentState>,
+/// Since when each session, in the window it runs in, has shown its state.
+type Shown = std::collections::HashMap<(String, u64), (AgentState, std::time::Instant)>;
+
+/// Since when window `w` has shown its state: since the earliest of its
+/// sessions that shows that state began to. A window with two tabs waiting
+/// has waited since the first of them still waiting began, not since a tab
+/// that has been answered since.
+fn window_since(agents: &Agents<u64>, shown: &Shown, w: u64) -> Option<std::time::Instant> {
+    let state = agents.window_state(w)?;
+    agents
+        .sessions()
+        .filter(|&(_, sw, s)| sw == w && s == state)
+        .filter_map(|(id, _, _)| shown.get(&(id.to_owned(), w)).map(|&(_, t)| t))
+        .min()
+}
+
+/// Keeps `shown` in step with every state as of `now`: one that changed is
+/// shown since `now`, one that did not keeps its time, and one that is gone
+/// is dropped.
+fn note_shown<K: Ord + Eq + std::hash::Hash>(
+    shown: &mut std::collections::HashMap<K, (AgentState, std::time::Instant)>,
+    states: std::collections::BTreeMap<K, AgentState>,
     now: std::time::Instant,
 ) {
     shown.retain(|w, _| states.contains_key(w));
@@ -1242,6 +1271,47 @@ mod tests {
         note_shown(&mut shown, BTreeMap::from([(1, AgentState::Done)]), t1);
         assert_eq!(shown.get(&1), Some(&(AgentState::Done, t1)), "changed");
         assert_eq!(shown.len(), 1);
+    }
+
+    #[test]
+    fn a_window_with_two_tabs_waits_since_the_tab_still_waiting() {
+        use daifuku_core::state::HookEvent;
+        use std::time::{Duration, Instant};
+        let ev = |session: &str, name: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: name.into(),
+            ..HookEvent::default()
+        };
+        let note = |agents: &Agents<u64>, shown: &mut Shown, t| {
+            let states = agents
+                .sessions()
+                .map(|(id, w, s)| ((id.to_owned(), w), s))
+                .collect();
+            note_shown(shown, states, t);
+        };
+        let t0 = Instant::now();
+        let (t1, t2) = (t0 + Duration::from_secs(10), t0 + Duration::from_secs(20));
+        let mut agents = Agents::new();
+        let mut shown = Shown::new();
+        agents.apply(1, &ev("a", "PermissionRequest"));
+        note(&agents, &mut shown, t0);
+        agents.apply(1, &ev("b", "PermissionRequest"));
+        note(&agents, &mut shown, t1);
+        assert_eq!(
+            window_since(&agents, &shown, 1),
+            Some(t0),
+            "since the first"
+        );
+        // The first tab is answered; the window still waits, on the second.
+        agents.apply(1, &ev("a", "PostToolUse"));
+        note(&agents, &mut shown, t2);
+        assert_eq!(agents.window_state(1), Some(AgentState::Waiting));
+        assert_eq!(
+            window_since(&agents, &shown, 1),
+            Some(t1),
+            "since the second"
+        );
+        assert_eq!(window_since(&agents, &shown, 2), None);
     }
 
     #[test]

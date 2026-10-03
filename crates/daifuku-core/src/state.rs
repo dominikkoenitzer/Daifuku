@@ -383,6 +383,20 @@ impl<W: Ord + Copy> Agents<W> {
             .max()
     }
 
+    /// The state a session shows, or `None` when it is not known.
+    #[must_use]
+    pub fn session_state(&self, session_id: &str) -> Option<AgentState> {
+        self.sessions.get(session_id).map(Session::shown)
+    }
+
+    /// Every session, the window it runs in and the state it shows, so a
+    /// window with several tabs can be told apart by tab.
+    pub fn sessions(&self) -> impl Iterator<Item = (&str, W, AgentState)> {
+        self.sessions
+            .iter()
+            .map(|(id, s)| (id.as_str(), s.window, s.shown()))
+    }
+
     /// Every window with at least one session, and the state it shows.
     #[must_use]
     pub fn windows(&self) -> BTreeMap<W, AgentState> {
@@ -860,6 +874,26 @@ mod tests {
         assert_eq!(a.window_state(1), Some(AgentState::Working));
         a.apply(1, &ev("tab-b", "PermissionRequest"));
         assert_eq!(a.window_state(1), Some(AgentState::Waiting));
+    }
+
+    #[test]
+    fn a_second_tab_that_starts_waiting_is_seen_by_session() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("tab-a", "PermissionRequest"));
+        a.apply(1, &ev("tab-b", "PreToolUse"));
+        assert_eq!(a.session_state("tab-b"), Some(AgentState::Working));
+        // The window waited already, so it does not change; the tab does.
+        assert!(!a.apply(1, &ev("tab-b", "PermissionRequest")));
+        assert_eq!(a.session_state("tab-b"), Some(AgentState::Waiting));
+        assert_eq!(a.session_state("tab-c"), None);
+        let tabs: Vec<_> = a.sessions().collect();
+        assert_eq!(
+            tabs,
+            [
+                ("tab-a", 1, AgentState::Waiting),
+                ("tab-b", 1, AgentState::Waiting)
+            ]
+        );
     }
 
     #[test]
