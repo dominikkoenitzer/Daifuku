@@ -675,7 +675,7 @@ impl Daemon {
         }
         // A monitor came, went or changed (a plug, a resolution, a scale, a
         // display link renegotiating, a taskbar): an open fleet whose cells
-        // that moved goes back into the grid of the monitor it belongs on now.
+        // moved goes back into the grid of the monitor it belongs on now.
         let now = daifuku_win::monitor::monitors();
         if now != self.monitors {
             tracing::info!(
@@ -737,8 +737,8 @@ impl Daemon {
         }
     }
 
-    /// Snaps back the open fleets whose cells the monitors going from
-    /// `before` to what they are now moved, and only those. A terminal
+    /// Snaps back only the open fleets whose cells moved when the monitors
+    /// changed from `before` to what they are now. A terminal
     /// someone minimised or maximised stays so: only a snap they ask for
     /// restores it.
     fn follow_monitors(&mut self, before: &[daifuku_core::monitor::MonitorInfo]) {
