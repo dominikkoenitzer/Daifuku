@@ -181,7 +181,8 @@ impl HookEvent {
 ///
 /// The window key is opaque here: the daemon uses the window handle. Keeping
 /// it generic is what lets every rule below be tested without a desktop.
-#[derive(Debug, Clone)]
+/// It is saved whole, so a restarted daemon picks up where it left off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agents<W: Ord + Copy> {
     sessions: BTreeMap<String, Session<W>>,
     /// The latest hook time of sessions that ended, so a late event of one
@@ -192,7 +193,7 @@ pub struct Agents<W: Ord + Copy> {
     tick: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Session<W> {
     window: W,
     /// What the session's threads did last, apart from waiting.
