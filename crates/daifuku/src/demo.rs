@@ -158,12 +158,9 @@ impl Reporter {
     }
 }
 
-/// Now, as the hook stamps its events: 100 ns ticks since 1970.
+/// Now, as the hook stamps its events.
 fn now() -> Option<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|d| u64::try_from(d.as_nanos() / 100).ok())
+    Some(daifuku_win::clock::ticks())
 }
 
 /// Reports that the session is over, once. A real agent says so when it

@@ -202,11 +202,10 @@ fn hook() {
     use daifuku_win::{console, process};
 
     // Stamped before anything slow, reading the event included, so the
-    // order of the stamps is the order the agent ran its hooks in.
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|d| u64::try_from(d.as_nanos() / 100).ok());
+    // order of the stamps is the order the agent ran its hooks in. Not by
+    // the wall clock: set back, it would make every later event look older
+    // than the last one applied.
+    let at = Some(daifuku_win::clock::ticks());
     // Read as it comes, with no cap: a tool event for a large edit carries
     // the whole file, and only the few fields Daifuku needs are kept.
     let Ok(mut event) = HookEvent::from_hook_input(std::io::stdin().lock()) else {
