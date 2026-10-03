@@ -80,7 +80,7 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
         setup::harden_dir(&data).with_context(|| format!("could not lock {}", data.display()))?;
     if removed {
         println!(
-            "removed      {} (not locked by an earlier install, so nothing in it was trusted)",
+            "removed      {} (it was not locked to administrators, so anyone could have written what was in it)",
             data.display()
         );
     }
