@@ -10,7 +10,9 @@
 //! 3. Lock `%ProgramData%\Daifuku` to administrators, for the same reason,
 //!    and write a starter config there if there is none. A folder there that
 //!    an earlier install did not lock is removed first, config and all.
-//! 4. Register the logon task that starts the daemon elevated, and start it.
+//! 4. Register this user's logon task that starts the daemon elevated, and
+//!    start it. The one task per machine earlier installs registered goes
+//!    when it is this user's.
 //! 5. Add the hooks to Claude Code's settings and, if Codex is installed,
 //!    to Codex's, leaving everything else in each file as it was.
 
@@ -23,7 +25,7 @@ use daifuku_core::agents::{self, Agent, CLAUDE, CODEX};
 use daifuku_core::config;
 use daifuku_core::config::Config;
 use daifuku_core::protocol::{Request, Response, Status, from_line, to_line};
-use daifuku_core::task::{TASK_NAME, xml};
+use daifuku_core::task::{LEGACY_TASK_NAME, task_name, task_users, xml};
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{paths, process, setup, terminal};
 
@@ -91,12 +93,14 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     }
 
     let sid = setup::user_sid().context("could not read this user's SID")?;
+    let task = task_name(&sid);
     let daemon = to.join("daifukud.exe");
-    setup::create_task(TASK_NAME, &xml(&daemon.to_string_lossy(), &sid), &data)
+    setup::create_task(&task, &xml(&daemon.to_string_lossy(), &sid), &data)
         .context("could not register the logon task")?;
-    println!("logon task   {TASK_NAME}");
+    println!("logon task   {task}");
+    remove_legacy_task(&sid);
     if !options.no_start {
-        setup::run_task(TASK_NAME).context("could not start the daemon")?;
+        setup::run_task(&task).context("could not start the daemon")?;
         println!("started      daifukud");
     }
 
@@ -181,8 +185,10 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         bail!("uninstalling needs an administrator terminal");
     }
     stop_daemon();
-    setup::delete_task(TASK_NAME).context("could not remove the logon task")?;
+    let sid = setup::user_sid().context("could not read this user's SID")?;
+    setup::delete_task(&task_name(&sid)).context("could not remove the logon task")?;
     println!("removed      logon task");
+    remove_legacy_task(&sid);
     for (agent, file) in hook_files() {
         if !file.is_file() {
             continue;
@@ -240,11 +246,13 @@ pub fn doctor() -> bool {
         "installed in Program Files",
         "run `daifuku install` from an administrator terminal",
     );
+    let task = setup::user_sid().map(|sid| task_name(&sid));
     check(
-        setup::task_exists(TASK_NAME),
+        task.as_deref().is_some_and(setup::task_exists),
         "logon task registered",
         "run `daifuku install`",
     );
+    let task = task.unwrap_or_else(|| task_name("<your SID>"));
     check(
         terminal::find().is_some(),
         "Windows Terminal found",
@@ -301,7 +309,7 @@ pub fn doctor() -> bool {
     check(
         running,
         "daemon running",
-        "sign out and in, or `schtasks /Run /TN \\Daifuku\\Daemon`",
+        &format!("sign out and in, or `schtasks /Run /TN {task}`"),
     );
 
     if !running {
@@ -342,7 +350,7 @@ pub fn doctor() -> bool {
             StatusReply::Silent => check(
                 false,
                 "daemon answers",
-                r"restart it: `daifuku stop`, then `schtasks /Run /TN \Daifuku\Daemon`",
+                &format!("restart it: `daifuku stop`, then `schtasks /Run /TN {task}`"),
             ),
         }
     } else {
@@ -425,6 +433,48 @@ fn refused_hotkeys(hotkeys: &[String]) -> Vec<&str> {
         .iter()
         .filter_map(|h| h.strip_suffix(": refused, another program holds it"))
         .collect()
+}
+
+/// Removes the one task per machine that earlier installs registered, when
+/// it runs for this user, and says so. Another user's stays: it is their
+/// autostart until they install again.
+fn remove_legacy_task(sid: &str) {
+    let Some(definition) = setup::task_xml(LEGACY_TASK_NAME) else {
+        return;
+    };
+    if !runs_for(&task_users(&definition), sid, this_account().as_deref()) {
+        return;
+    }
+    match setup::delete_task(LEGACY_TASK_NAME) {
+        Ok(()) => println!("removed      logon task {LEGACY_TASK_NAME} of an earlier install"),
+        Err(e) => println!("left         logon task {LEGACY_TASK_NAME}: {e}"),
+    }
+}
+
+/// This account as `DOMAIN\name`, the other way a task may name its user.
+fn this_account() -> Option<String> {
+    let domain = std::env::var("USERDOMAIN").ok()?;
+    let name = std::env::var("USERNAME").ok()?;
+    Some(format!(r"{domain}\{name}"))
+}
+
+/// Whether a task whose XML names `users` runs for the user with SID `sid`,
+/// whose account is `account`, `DOMAIN\name`. A user named without a domain
+/// is this machine's. One that names no user, or anyone else, does not.
+fn runs_for(users: &[String], sid: &str, account: Option<&str>) -> bool {
+    let is_account = |u: &str| {
+        account.is_some_and(|a| {
+            u.eq_ignore_ascii_case(a)
+                || (!u.contains('\\')
+                    && a.rsplit('\\')
+                        .next()
+                        .is_some_and(|n| u.eq_ignore_ascii_case(n)))
+        })
+    };
+    !users.is_empty()
+        && users
+            .iter()
+            .all(|u| u.eq_ignore_ascii_case(sid) || is_account(u))
 }
 
 /// Asks a running daemon to stop and waits a moment for it to exit.
@@ -708,6 +758,30 @@ mod tests {
         assert_eq!(how_to_open(&c).as_deref(), Some("run `daifuku open`"));
         c.fleets.clear();
         assert_eq!(how_to_open(&c), None);
+    }
+
+    #[test]
+    fn only_this_users_earlier_task_is_theirs_to_remove() {
+        fn users(u: &[&str]) -> Vec<String> {
+            u.iter().map(|&s| s.to_owned()).collect()
+        }
+        let sid = "S-1-5-21-1-2-3-1001";
+        assert!(runs_for(&users(&[sid, sid]), sid, None));
+        assert!(runs_for(&users(&["s-1-5-21-1-2-3-1001"]), sid, None));
+        assert!(runs_for(&users(&[r"PC\ada"]), sid, Some(r"pc\Ada")));
+        assert!(runs_for(&users(&["ada", sid]), sid, Some(r"PC\Ada")));
+        assert!(!runs_for(&users(&[r"WORK\ada"]), sid, Some(r"PC\Ada")));
+        assert!(!runs_for(
+            &users(&["S-1-5-21-1-2-3-1002"]),
+            sid,
+            Some(r"PC\x")
+        ));
+        assert!(!runs_for(&users(&[sid, "S-1-5-21-1-2-3-1002"]), sid, None));
+        assert!(!runs_for(&users(&[r"PC\other"]), sid, None));
+        assert!(
+            !runs_for(&[], sid, Some(r"PC\x")),
+            "a task that names no one"
+        );
     }
 
     #[test]
