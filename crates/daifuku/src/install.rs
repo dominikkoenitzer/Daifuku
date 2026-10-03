@@ -219,7 +219,7 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         println!("removed      {}", dir.display());
     } else if let Some(dir) = paths::data_dir() {
         println!(
-            "kept         {} (config and logs; --purge removes them)",
+            "kept         {} (config, logs and saved state; --purge removes them)",
             dir.display()
         );
     }
