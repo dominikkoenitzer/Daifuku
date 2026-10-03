@@ -609,7 +609,7 @@ fn read_settings(path: &Path) -> std::io::Result<String> {
 }
 
 /// [`edit_json`] for an agent's settings file, only while the file really is
-/// in the user's profile.
+/// in the user's profile, and only with the user's own rights.
 ///
 /// The installer runs as administrator and the profile is the user's to
 /// change: a link at `.claude` or at the file itself could otherwise point
@@ -630,17 +630,21 @@ fn edit_agent_file(
     };
     // With the user's own rights, so a link swapped in while the file is
     // edited cannot lead the write anywhere the user may not write. Without
-    // a desktop shell to borrow them from, as on a build server, the checks
-    // above are all there is.
-    let mut run = Some(run);
-    match process::as_shell_user(|| run.take().map(|r| r())) {
-        Ok(Some(result)) => result,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match run.take() {
-            Some(r) => r(),
-            None => bail!("the edit of {} did not run", path.display()),
-        },
-        Ok(None) => bail!("the edit of {} did not run", path.display()),
-        Err(e) => Err(e).with_context(|| format!("could not edit {}", path.display())),
+    // a desktop shell to borrow them from, as on a build server, the file is
+    // left alone: the checks above alone do not close that gap.
+    process::as_shell_user(run).unwrap_or_else(|e| Err(shell_refused(e, path)))
+}
+
+/// Why an agent's settings file was not edited when the user's own rights
+/// could not be borrowed for it.
+fn shell_refused(e: std::io::Error, path: &Path) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        anyhow!(
+            "{} left untouched: no desktop shell is running to change it with your own rights; run this from an administrator terminal on your signed-in desktop, or change Daifuku's hooks in it by hand",
+            path.display()
+        )
+    } else {
+        anyhow::Error::new(e).context(format!("could not edit {}", path.display()))
     }
 }
 
@@ -758,6 +762,27 @@ mod tests {
         assert_eq!(how_to_open(&c).as_deref(), Some("run `daifuku open`"));
         c.fleets.clear();
         assert_eq!(how_to_open(&c), None);
+    }
+
+    #[test]
+    fn without_a_desktop_shell_a_settings_file_is_left_alone() {
+        let file = Path::new(r"C:\Users\ada\.claude\settings.json");
+        let none = shell_refused(
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no desktop shell"),
+            file,
+        );
+        let text = format!("{none:#}");
+        assert!(text.contains("left untouched"), "{text}");
+        assert!(text.contains("signed-in desktop"), "{text}");
+        assert!(
+            text.contains(r"C:\Users\ada\.claude\settings.json"),
+            "{text}"
+        );
+        let other = shell_refused(std::io::Error::other("refused"), file);
+        assert_eq!(
+            format!("{other:#}"),
+            r"could not edit C:\Users\ada\.claude\settings.json: refused"
+        );
     }
 
     #[test]

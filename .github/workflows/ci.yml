@@ -156,9 +156,14 @@ jobs:
           # must leave behind untouched.
           '{"theme":"dark","hooks":{"Stop":[{"hooks":[{"type":"command","command":"C:/mine.exe"}]}]}}' |
               Set-Content -Encoding utf8 $settings
+          $original = Get-Content -Raw $settings
 
-          ./target/release/daifuku.exe install --no-start
+          $out = ./target/release/daifuku.exe install --no-start | Out-String
+          Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "install exited with $LASTEXITCODE" }
+          # The hooks are written with the desktop user's own rights; on a
+          # runner without a desktop shell install must leave them alone.
+          $shell = $out -notmatch 'no desktop shell is running'
 
           $dir = Join-Path $env:ProgramFiles 'Daifuku'
           foreach ($f in 'daifuku.exe', 'daifukud.exe') {
@@ -175,10 +180,15 @@ jobs:
           $task = "\Daifuku\Daemon-$sid"
           schtasks /Query /TN $task | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'the logon task was not registered' }
-          $json = Get-Content -Raw $settings | ConvertFrom-Json
-          if ($json.theme -ne 'dark') { throw 'the install lost a setting' }
-          if (@($json.hooks.Stop).Count -ne 2) { throw 'Stop should hold the user hook and Daifuku''s' }
-          Write-Output 'installed: binaries, locked folder, task, hooks next to the user''s own'
+          if ($shell) {
+              $json = Get-Content -Raw $settings | ConvertFrom-Json
+              if ($json.theme -ne 'dark') { throw 'the install lost a setting' }
+              if (@($json.hooks.Stop).Count -ne 2) { throw 'Stop should hold the user hook and Daifuku''s' }
+              Write-Output 'installed: binaries, locked folder, task, hooks next to the user''s own'
+          } else {
+              if ((Get-Content -Raw $settings) -ne $original) { throw 'install changed the settings without a desktop shell' }
+              Write-Output 'installed: binaries, locked folder, task; no desktop shell, so the settings were left alone'
+          }
 
           # Installing twice changes nothing.
           $before = Get-Content -Raw $settings
