@@ -1,10 +1,10 @@
 //! What changed since the last border pass. Pure code, no Win32.
 //!
-//! The daemon calls [`crate::BorderManager::update`] after every layout pass
-//! and [`crate::BorderManager::follow_frame`] on every animation frame, which
-//! at 144 fps is often. Both go through a [`BorderDiff`], so a border that has
-//! not changed is not repainted, not moved, and not even sent to the border
-//! thread.
+//! The daemon calls [`crate::BorderManager::update`] on every pass, twenty
+//! times a second while a waiting border pulses. It goes through a
+//! [`BorderDiff`], as [`crate::BorderManager::follow_frame`] does, so a border
+//! that has not changed is not repainted, not moved, and not even sent to the
+//! border thread.
 
 use std::collections::{BTreeMap, BTreeSet};
 

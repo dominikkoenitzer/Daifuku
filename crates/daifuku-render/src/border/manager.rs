@@ -54,7 +54,7 @@ impl BorderManager {
     /// factory cannot be created.
     pub fn new(config: BorderConfig) -> Result<Self> {
         // The thread gets the same diff the handle holds, so that a draw which
-        // fails can be un-recorded and tried again on the next pass.
+        // fails is marked there and handed over again by the next pass.
         let diff = Arc::new(Mutex::new(BorderDiff::new()));
         let theirs = Arc::clone(&diff);
         let worker = spawn_worker(
@@ -209,8 +209,10 @@ struct Borders {
     active: HashMap<isize, BorderWindow>,
     /// Hidden windows kept for the next container that needs one.
     idle: Vec<BorderWindow>,
-    /// The manager's record of what is on screen, shared so that a draw which
-    /// failed can be taken back out of it.
+    /// The manager's record of what is on screen, shared so that a border
+    /// whose draw failed can be marked there for the next pass to hand over
+    /// again. It stays in the record, so it is still taken down when its
+    /// window leaves.
     diff: Arc<Mutex<BorderDiff>>,
     /// Targets Windows will not let this process stack a border against.
     ///
