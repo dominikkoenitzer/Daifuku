@@ -14,7 +14,9 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use windows::Win32::Foundation::{CloseHandle, ERROR_SERVICE_DISABLED, HANDLE, WIN32_ERROR};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_SERVICE_DISABLED, ERROR_SUCCESS, HANDLE, WIN32_ERROR,
+};
 use windows::Win32::Security::{
     DuplicateTokenEx, SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT,
     TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY, TokenPrimary,
@@ -25,6 +27,9 @@ use windows::Win32::Storage::Packaging::Appx::{
     PackageOrigin_Store,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
+};
 use windows::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW, LOGON_WITH_PROFILE, OpenProcess,
     OpenProcessToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
@@ -143,6 +148,97 @@ pub fn shell() -> Option<PathBuf> {
     [seven, five].into_iter().flatten().find(|p| p.is_file())
 }
 
+/// Where the organisation sets Windows PowerShell's execution policy, for the
+/// machine and for the user. A policy set there wins over the command line.
+const ORGANISATION_POLICY: [HKEY; 2] = [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER];
+
+/// Where the user and the machine set it, the user first.
+const OWN_POLICY: [HKEY; 2] = [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE];
+
+/// Whether Windows PowerShell, left to the execution policy set on this
+/// machine, refuses to run a local script, as it does until a policy says it
+/// may. The daemon runs as the signed-in user, so the user's own policy is
+/// the one their terminals get.
+#[must_use]
+pub fn windows_powershell_refuses_scripts() -> bool {
+    let read = |roots: [HKEY; 2], key: &str| roots.map(|root| registry_text(root, key));
+    let organisation = read(
+        ORGANISATION_POLICY,
+        r"SOFTWARE\Policies\Microsoft\Windows\PowerShell",
+    );
+    let own = read(
+        OWN_POLICY,
+        r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell",
+    );
+    refuses_scripts(
+        &organisation.each_ref().map(Option::as_deref),
+        &own.each_ref().map(Option::as_deref),
+    )
+}
+
+/// Whether the execution policy the scopes decide on refuses a local script,
+/// each list most specific scope first. A scope set to `Undefined`, or not
+/// set at all, leaves the decision to the next; with none left, Windows
+/// PowerShell is `Restricted`. A policy the organisation set is never asked
+/// to give way: the command line could not override it anyway.
+fn refuses_scripts(organisation: &[Option<&str>], own: &[Option<&str>]) -> bool {
+    if organisation.iter().any(|&p| decisive(p).is_some()) {
+        return false;
+    }
+    own.iter()
+        .find_map(|&p| decisive(p))
+        .is_none_or(|p| p.eq_ignore_ascii_case("Restricted"))
+}
+
+/// A scope's policy, `None` when it leaves the decision to the next scope.
+fn decisive(policy: Option<&str>) -> Option<&str> {
+    policy
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("Undefined"))
+}
+
+/// The `ExecutionPolicy` text under `key`, `None` when it is not there or is
+/// not text. Read from the 64-bit view, which the Windows PowerShell in
+/// System32 reads too.
+fn registry_text(root: HKEY, key: &str) -> Option<String> {
+    let key = to_wide(key);
+    let value = to_wide("ExecutionPolicy");
+    let flags = RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY;
+    let mut len = 0u32;
+    // SAFETY: both names are NUL terminated; the first call only reports the
+    // size in bytes, the second writes at most that many into a buffer of
+    // that size.
+    unsafe {
+        let sized = RegGetValueW(
+            root,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            flags,
+            None,
+            None,
+            Some(&raw mut len),
+        );
+        if sized != ERROR_SUCCESS {
+            return None;
+        }
+        let mut buf = vec![0u16; (len as usize).div_ceil(2)];
+        let read = RegGetValueW(
+            root,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            flags,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&raw mut len),
+        );
+        if read != ERROR_SUCCESS {
+            return None;
+        }
+        buf.truncate(len as usize / 2);
+        Some(from_wide(&buf))
+    }
+}
+
 /// What to open in one new Windows Terminal window.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
@@ -160,9 +256,11 @@ pub struct Launch {
 }
 
 impl Launch {
-    /// The arguments for `wt.exe`, given the shell to run a command in.
+    /// The arguments for `wt.exe`, given the shell to run a command in and
+    /// whether Windows PowerShell's own execution policy refuses a local
+    /// script, as [`windows_powershell_refuses_scripts`] reads it.
     #[must_use]
-    pub fn args(&self, shell: Option<&Path>) -> Vec<OsString> {
+    pub fn args(&self, shell: Option<&Path>, scripts_refused: bool) -> Vec<OsString> {
         let mut a: Vec<OsString> = ["-w", "new", "new-tab"]
             .iter()
             .map(OsString::from)
@@ -184,12 +282,16 @@ impl Launch {
             if self.clean {
                 a.push("-NoProfile".into());
             }
-            // Windows PowerShell runs no scripts by default, and a `claude`
-            // installed with npm is one. PowerShell 7 allows local ones
-            // already, and a policy set by the organisation still wins.
-            if shell
-                .file_name()
-                .is_some_and(|n| n.eq_ignore_ascii_case("powershell.exe"))
+            // Windows PowerShell runs no scripts until a policy says it may,
+            // and a `claude` installed with npm is one. Only then is one set,
+            // for this process alone: a policy the user chose, stricter or
+            // looser, stays as they chose it. PowerShell 7 allows local
+            // scripts already, and a policy set by the organisation wins
+            // over the command line either way.
+            if scripts_refused
+                && shell
+                    .file_name()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("powershell.exe"))
             {
                 a.push("-ExecutionPolicy".into());
                 a.push("RemoteSigned".into());
@@ -249,7 +351,7 @@ pub fn open(wt: &Path, launch: &Launch) -> std::io::Result<()> {
     // flashes a console of its own.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     Command::new(wt)
-        .args(launch.args(shell().as_deref()))
+        .args(launch.args(shell().as_deref(), windows_powershell_refuses_scripts()))
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map(drop)
@@ -263,7 +365,8 @@ pub fn open(wt: &Path, launch: &Launch) -> std::io::Result<()> {
 ///
 /// When there is no shell (a session without Explorer) or the start fails.
 pub fn open_unelevated(wt: &Path, launch: &Launch) -> std::io::Result<()> {
-    let mut line_w = token_command_line(wt, &launch.args(shell().as_deref()))?;
+    let args = launch.args(shell().as_deref(), windows_powershell_refuses_scripts());
+    let mut line_w = token_command_line(wt, &args)?;
     let app = to_wide(&wt.to_string_lossy());
     // SAFETY: every handle opened here is closed before returning; the
     // strings are NUL terminated and outlive the call.
@@ -410,7 +513,7 @@ mod tests {
     #[test]
     fn a_bare_launch_opens_a_new_window_with_the_default_profile() {
         assert_eq!(
-            strs(&Launch::default().args(None)),
+            strs(&Launch::default().args(None, true)),
             ["-w", "new", "new-tab"]
         );
     }
@@ -425,7 +528,10 @@ mod tests {
             clean: false,
         };
         assert_eq!(
-            strs(&l.args(Some(Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe")))),
+            strs(&l.args(
+                Some(Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe")),
+                true
+            )),
             [
                 "-w",
                 "new",
@@ -449,7 +555,7 @@ mod tests {
             command: Some("claude".into()),
             ..Launch::default()
         };
-        assert_eq!(strs(&l.args(None)), ["-w", "new", "new-tab"]);
+        assert_eq!(strs(&l.args(None, true)), ["-w", "new", "new-tab"]);
     }
 
     #[test]
@@ -458,7 +564,7 @@ mod tests {
             command: Some(r#"cd x; Set-Content a -Value "b c""#.into()),
             ..Launch::default()
         };
-        let args = strs(&l.args(Some(Path::new("pwsh.exe"))));
+        let args = strs(&l.args(Some(Path::new("pwsh.exe")), true));
         let last = args.last().unwrap();
         assert!(
             last.chars()
@@ -490,7 +596,7 @@ mod tests {
             ..Launch::default()
         };
         assert_eq!(
-            strs(&l.args(Some(Path::new("pwsh.exe")))),
+            strs(&l.args(Some(Path::new("pwsh.exe")), true)),
             [
                 "-w",
                 "new",
@@ -515,7 +621,7 @@ mod tests {
             directory: Some(r"C:\src\a;b".into()),
             ..Launch::default()
         };
-        let args = strs(&l.args(None));
+        let args = strs(&l.args(None, true));
         assert!(args.contains(&r"C:\src\a\;b".to_owned()), "{args:?}");
     }
 
@@ -525,16 +631,52 @@ mod tests {
             command: Some("claude".into()),
             ..Launch::default()
         };
-        let five = strs(&l.args(Some(Path::new(
-            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-        ))));
+        let five = Path::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+        let refused = strs(&l.args(Some(five), true));
         assert!(
-            five.windows(2)
+            refused
+                .windows(2)
                 .any(|w| w == ["-ExecutionPolicy", "RemoteSigned"]),
-            "{five:?}"
+            "{refused:?}"
         );
-        let seven = strs(&l.args(Some(Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe"))));
+        // A policy the user set is theirs to keep.
+        let chosen = strs(&l.args(Some(five), false));
+        assert!(
+            !chosen.iter().any(|a| a == "-ExecutionPolicy"),
+            "{chosen:?}"
+        );
+        let seven = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
+        let seven = strs(&l.args(Some(seven), true));
         assert!(!seven.iter().any(|a| a == "-ExecutionPolicy"), "{seven:?}");
+    }
+
+    #[test]
+    fn only_a_policy_that_refuses_scripts_is_set_aside() {
+        let own = |user: Option<&str>, machine: Option<&str>| {
+            refuses_scripts(&[None, None], &[user, machine])
+        };
+        // Nothing set is Restricted, as is a scope that says so.
+        assert!(own(None, None));
+        assert!(own(Some("Undefined"), Some("")));
+        assert!(own(None, Some("Restricted")));
+        assert!(own(Some("restricted"), Some("Unrestricted")));
+        for chosen in ["AllSigned", "RemoteSigned", "Unrestricted", "Bypass"] {
+            assert!(!own(Some(chosen), None), "{chosen}");
+            assert!(!own(None, Some(chosen)), "{chosen}");
+            assert!(!own(Some("Undefined"), Some(chosen)), "{chosen}");
+        }
+        // The user's own policy decides before the machine's.
+        assert!(!own(Some("AllSigned"), Some("Restricted")));
+        // A policy the organisation set wins over the command line anyway.
+        assert!(!refuses_scripts(&[Some("Restricted"), None], &[None, None]));
+        assert!(!refuses_scripts(&[None, Some("AllSigned")], &[None, None]));
+        assert!(refuses_scripts(&[Some("Undefined"), None], &[None, None]));
+    }
+
+    #[test]
+    fn the_policy_on_this_machine_reads_without_failing() {
+        // Whatever it is: reading the registry must neither fail nor hang.
+        let _ = windows_powershell_refuses_scripts();
     }
 
     #[test]
@@ -589,7 +731,7 @@ mod tests {
                 command: Some("c".repeat(n)),
                 ..Launch::default()
             }
-            .args(Some(shell))
+            .args(Some(shell), true)
         };
         let short = token_command_line(wt, &args(100)).unwrap();
         assert_eq!(short.last(), Some(&0));
