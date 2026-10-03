@@ -323,8 +323,10 @@ fn xml_text(bytes: &[u8]) -> String {
     let utf16 = bytes.starts_with(&[0xFF, 0xFE]) || (bytes.len() >= 2 && bytes[1] == 0);
     if utf16 {
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&p| u16::from_le_bytes(p))
             .collect();
         let text = String::from_utf16_lossy(&units);
         return text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned();
