@@ -166,15 +166,18 @@ fn a_hook_in_a_real_console_colours_its_window_and_the_border_follows_it_away() 
     let mut steps = 0;
 
     let (mut cleanup, first) = start(&config);
-    assert!(first.agents.is_empty() && first.fleets.is_empty());
+    assert!(first.fleets.is_empty());
     steps += 1;
 
     // A console of its own, like a terminal an agent runs in: the hook
     // reports waiting, working and done, a second apart, and the console then
-    // stays open until the test closes it.
+    // stays open until the test closes it. Its title is the test's own, so
+    // only its window counts: every agent in this session reports to the
+    // test's daemon as well, and one of them may be waiting too.
+    let tag = format!("daifuku-e2e-{}", std::process::id());
     let hook = cli();
     let script = format!(
-        "\"{h}\" hook < \"{w}\" & ping -n 3 127.0.0.1 >nul & \"{h}\" hook < \"{k}\" & ping -n 3 127.0.0.1 >nul & \"{h}\" hook < \"{d}\" & ping -n 60 127.0.0.1 >nul",
+        "title {tag} & \"{h}\" hook < \"{w}\" & ping -n 3 127.0.0.1 >nul & \"{h}\" hook < \"{k}\" & ping -n 3 127.0.0.1 >nul & \"{h}\" hook < \"{d}\" & ping -n 60 127.0.0.1 >nul",
         h = hook.display(),
         w = event(&dir, "PermissionRequest").display(),
         k = event(&dir, "PreToolUse").display(),
@@ -195,7 +198,7 @@ fn a_hook_in_a_real_console_colours_its_window_and_the_border_follows_it_away() 
         status()?
             .agents
             .into_iter()
-            .find(|a| a.state.name() == "waiting")
+            .find(|a| a.state.name() == "waiting" && a.title.contains(&tag))
     });
     let w = waiting.window;
     assert!(
