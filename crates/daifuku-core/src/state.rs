@@ -75,9 +75,11 @@ pub struct HookEvent {
     /// `/compact` you ran, `auto` for one the agent started itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
-    /// When the hook started, in 100 ns ticks since 1970, stamped by
-    /// `daifuku hook` itself. Agents run their hooks in the background and
-    /// they may finish out of order; this puts them back in order.
+    /// When the hook started, in 100 ns ticks since Windows started, stamped
+    /// by `daifuku hook` itself. Agents run their hooks in the background and
+    /// they may finish out of order; this puts them back in order. Windows'
+    /// interrupt time, not the wall clock, so setting the clock back does not
+    /// make every event after it look late.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daifuku_at: Option<u64>,
 }
