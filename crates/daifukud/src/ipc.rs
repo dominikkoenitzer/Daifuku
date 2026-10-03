@@ -34,9 +34,12 @@ const RUN_TIMEOUT: Duration = crate::fleet::SHOW_TIMEOUT
     .saturating_mul(daifuku_core::config::MAX_FLEET)
     .saturating_add(Duration::from_secs(30));
 
-/// How long a hook has, from its connect, to deliver its line. A hook writes
-/// the moment it connects; one that stays silent past this is cut off, so a
-/// process holding every hook instance open cannot keep real hooks out.
+/// How long a hook has, from the moment its instance takes the connection, to
+/// deliver its whole line. A hook writes as soon as it connects; a client
+/// that is silent or slow past this is cut off, so no client holds a hook
+/// instance longer than this. One that keeps connecting again can still keep
+/// the instances busy, and a hook that finds none free within its own short
+/// wait gives up without a word.
 const HOOK_READ: Duration = Duration::from_millis(500);
 
 /// How long a control client has to send its request, and then to read the
