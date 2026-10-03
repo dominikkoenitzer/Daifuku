@@ -315,10 +315,21 @@ pub fn doctor() -> bool {
     if !running {
         // Nothing more to ask a daemon that is not there.
     } else if process::current_is_elevated() {
-        let reply = to_line(&Request::Status)
-            .map_err(std::io::Error::other)
-            .and_then(|l| send(Pipe::Control, &l, Duration::from_secs(2)));
-        match status_reply(reply) {
+        let mut told = false;
+        let reply = patient_status(BUSY_TRIES, || {
+            let reply = status_reply(
+                to_line(&Request::Status)
+                    .map_err(std::io::Error::other)
+                    .and_then(|l| send(Pipe::Control, &l, Duration::from_secs(2))),
+            );
+            if matches!(reply, StatusReply::Busy) && !std::mem::replace(&mut told, true) {
+                println!(
+                    "--    daemon busy with another command, such as opening a fleet: waiting for it"
+                );
+            }
+            reply
+        });
+        match reply {
             StatusReply::Status(s) => {
                 check(
                     s.elevated,
@@ -344,8 +355,13 @@ pub fn doctor() -> bool {
                     ),
                 );
             }
-            StatusReply::Busy => println!(
-                "--    daemon busy with another command, such as opening a fleet: run doctor again in a moment"
+            StatusReply::Busy | StatusReply::Stuck => check(
+                false,
+                "daemon answers",
+                &format!(
+                    "it has been busy with one command for over {} seconds, far longer than opening a fleet takes: restart it with `taskkill /F /IM daifukud.exe`, then `schtasks /Run /TN {task}`",
+                    BUSY_TRIES * 2
+                ),
             ),
             StatusReply::Silent => check(
                 false,
@@ -403,14 +419,35 @@ fn hooks_fix(agent: &Agent, file: &Path, exe: &str, profile: Option<&Path>) -> O
 }
 
 /// What came back when doctor asked the daemon for its status.
+#[derive(Debug)]
 enum StatusReply {
     /// The status.
     Status(Status),
     /// Nothing yet: another command, such as opening a fleet, holds the one
-    /// control pipe, and the daemon itself is fine.
+    /// control pipe.
     Busy,
+    /// Busy on every one of [`BUSY_TRIES`] asks: one command has held the
+    /// daemon far longer than any should.
+    Stuck,
     /// No answer, or one that does not read.
     Silent,
+}
+
+/// How many times doctor asks a busy daemon before it counts it as stuck.
+/// Each ask waits up to two seconds for the pipe, so this is about twenty:
+/// opening a fleet takes a few.
+const BUSY_TRIES: usize = 10;
+
+/// Asks with `ask` until the answer is not [`StatusReply::Busy`], at most
+/// `tries` times; busy every time is [`StatusReply::Stuck`].
+fn patient_status(tries: usize, mut ask: impl FnMut() -> StatusReply) -> StatusReply {
+    for _ in 0..tries {
+        match ask() {
+            StatusReply::Busy => {}
+            other => return other,
+        }
+    }
+    StatusReply::Stuck
 }
 
 /// Reads what [`send`] returned for `status`. A wait that timed out is how
@@ -833,6 +870,36 @@ mod tests {
             status_reply(Ok(Some(line))),
             StatusReply::Status(_)
         ));
+    }
+
+    #[test]
+    fn a_daemon_busy_on_every_ask_is_stuck() {
+        let mut asks = 0;
+        let stuck = patient_status(3, || {
+            asks += 1;
+            StatusReply::Busy
+        });
+        assert!(matches!(stuck, StatusReply::Stuck), "{stuck:?}");
+        assert_eq!(asks, 3);
+
+        let mut asks = 0;
+        let answered = patient_status(3, || {
+            asks += 1;
+            if asks < 3 {
+                StatusReply::Busy
+            } else {
+                StatusReply::Status(Status::default())
+            }
+        });
+        assert!(matches!(answered, StatusReply::Status(_)), "{answered:?}");
+
+        let mut asks = 0;
+        let silent = patient_status(3, || {
+            asks += 1;
+            StatusReply::Silent
+        });
+        assert!(matches!(silent, StatusReply::Silent));
+        assert_eq!(asks, 1, "only busy is asked again");
     }
 
     /// A file held open without leave to delete it can be neither deleted
