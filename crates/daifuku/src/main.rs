@@ -99,9 +99,10 @@ enum Command {
         no_start: bool,
     },
     /// Remove the program, the logon task and Daifuku's hooks. Keeps the
-    /// config and the logs unless --purge. Needs an administrator terminal.
+    /// config, the logs and the saved state unless --purge. Needs an
+    /// administrator terminal.
     Uninstall {
-        /// Also delete the config and the logs.
+        /// Also delete the config, the logs and the saved state.
         #[arg(long)]
         purge: bool,
     },
