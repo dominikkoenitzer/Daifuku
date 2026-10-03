@@ -95,14 +95,12 @@ administrator terminals that result.
   borrowed from the desktop shell, so a link swapped in half way cannot
   lead the write anywhere the user may not write. With no desktop shell to
   borrow them from, as on a build server or while Explorer is not running,
-  it makes the edit with its own rights: the check that the file is inside
-  the profile and the fresh file that cannot be a link still hold, the
-  user's rights do not.
+  it leaves the file alone and says so.
 
 ## Checked on every push
 
 CI installs Daifuku on a real Windows runner and asserts that the data folder
 is owned by Administrators and not writable by users, that the task exists,
 that a user's own hook survives next to Daifuku's, that a second install
-changes nothing, and that `uninstall --purge` removes the task, the data and
-exactly Daifuku's hooks.
+changes nothing, and that `uninstall --purge` removes the binaries, the task,
+the data and exactly Daifuku's hooks.
