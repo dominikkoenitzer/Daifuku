@@ -107,6 +107,10 @@ Gaps are in `gaps`, the look of the borders in `border`, the global keys in
 `hotkeys`, and `"sound": true` plays Windows' Asterisk sound when an agent
 starts waiting.
 
+Give a Claude Code fleet a `directory`: Claude Code does not remember that
+you trust your profile folder, so a fleet started there asks for trust in
+every terminal, every time.
+
 ## Accessibility
 
 Colour is never the only signal. Every state has its own border width, so the
