@@ -347,6 +347,10 @@
         {
           "type": "string",
           "pattern": "^\\\\\\\\\\.\\\\"
+        },
+        {
+          "type": "string",
+          "pattern": "^([pP][oO][rR][tT][rR][aA][iI][tT]|[lL][aA][nN][dD][sS][cC][aA][pP][eE]|[pP][rR][iI][mM][aA][rR][yY]|[sS][eE][cC][oO][nN][dD][aA][rR][yY]|[cC][uU][rR][sS][oO][rR]|[mM][oO][uU][sS][eE])$"
         }
       ]
     },
