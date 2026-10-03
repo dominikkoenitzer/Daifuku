@@ -358,10 +358,7 @@ pub fn doctor() -> bool {
             StatusReply::Busy | StatusReply::Stuck => check(
                 false,
                 "daemon answers",
-                &format!(
-                    "it has been busy with one command for over {} seconds, far longer than opening a fleet takes: restart it with `taskkill /F /IM daifukud.exe`, then `schtasks /Run /TN {task}`",
-                    BUSY_TRIES * 2
-                ),
+                &stuck_fix(process::session(), &task),
             ),
             StatusReply::NotElevated => check(
                 false,
@@ -448,6 +445,23 @@ enum StatusReply {
 /// Each ask waits up to two seconds for the pipe, so this is about twenty:
 /// opening a fleet takes a few.
 const BUSY_TRIES: usize = 10;
+
+/// What to do about a daemon stuck in one command, in Remote Desktop session
+/// `session`, whose logon task is `task`.
+///
+/// It ends only the daemon of this session. The pipes are per session, so
+/// each session holds at most one daemon, the signed-in user's, while another
+/// person signed in at the same time has their own in their own session. By
+/// image name alone it would end theirs too. Not by `%USERNAME%`, which
+/// PowerShell does not expand and which would also reach the same user's
+/// daemon in another session, nor by process id: the stuck daemon does not
+/// answer to say its own.
+fn stuck_fix(session: u32, task: &str) -> String {
+    format!(
+        "it has been busy with one command for over {} seconds, far longer than opening a fleet takes: restart it with `taskkill /F /FI \"SESSION eq {session}\" /IM daifukud.exe`, then `schtasks /Run /TN {task}`",
+        BUSY_TRIES * 2
+    )
+}
 
 /// Asks with `ask` until the answer is not [`StatusReply::Busy`], at most
 /// `tries` times; busy every time is [`StatusReply::Stuck`].
@@ -897,6 +911,20 @@ mod tests {
             status_reply(Ok(Some(line))),
             StatusReply::Status(_)
         ));
+    }
+
+    #[test]
+    fn a_stuck_daemon_is_ended_only_in_this_session() {
+        let fix = stuck_fix(2, r"\Daifuku\Daemon-S-1-5-21-1-2-3-1001");
+        assert!(
+            fix.contains(r#"`taskkill /F /FI "SESSION eq 2" /IM daifukud.exe`"#),
+            "{fix}"
+        );
+        assert!(!fix.contains('%'), "nothing a shell must expand: {fix}");
+        assert!(
+            fix.ends_with(r"`schtasks /Run /TN \Daifuku\Daemon-S-1-5-21-1-2-3-1001`"),
+            "{fix}"
+        );
     }
 
     #[test]
