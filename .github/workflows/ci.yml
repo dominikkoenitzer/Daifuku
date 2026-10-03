@@ -199,12 +199,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }
           schtasks /Query /TN $task 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) { throw 'the logon task survived the uninstall' }
+          # Run from there, its own daifuku.exe included.
+          if (Test-Path $dir) { throw 'Program Files\Daifuku survived the uninstall' }
           if (Test-Path $data) { throw 'ProgramData\Daifuku survived --purge' }
           $json = Get-Content -Raw $settings | ConvertFrom-Json
           if (@($json.hooks.Stop).Count -ne 1 -or $json.hooks.Stop[0].hooks[0].command -ne 'C:/mine.exe') {
               throw 'the uninstall did not leave exactly the user''s own hook'
           }
-          Write-Output 'uninstalled: task, data and Daifuku''s hooks gone, the user''s hook kept'
+          Write-Output 'uninstalled: binaries, task, data and Daifuku''s hooks gone, the user''s hook kept'
           # The last native command asked for a task that is gone on purpose and
           # left its exit code 1 behind, which the runner would report as a
           # failure of this whole step.
