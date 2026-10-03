@@ -308,7 +308,36 @@ pub fn task_exists(name: &str) -> bool {
     schtasks(&["/Query", "/TN", name]).is_ok()
 }
 
+/// The task's definition as Task Scheduler gives it back, `None` when there
+/// is no such task.
+#[must_use]
+pub fn task_xml(name: &str) -> Option<String> {
+    schtasks_output(&["/Query", "/TN", name, "/XML"])
+        .ok()
+        .map(|out| xml_text(&out))
+}
+
+/// What `schtasks /Query /XML` wrote, as text: UTF-16 when it says so with a
+/// byte order mark or looks like it, else the OEM code page.
+fn xml_text(bytes: &[u8]) -> String {
+    let utf16 = bytes.starts_with(&[0xFF, 0xFE]) || (bytes.len() >= 2 && bytes[1] == 0);
+    if utf16 {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            .collect();
+        let text = String::from_utf16_lossy(&units);
+        return text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned();
+    }
+    oem_text(bytes)
+}
+
 fn schtasks(args: &[&str]) -> std::io::Result<()> {
+    schtasks_output(args).map(drop)
+}
+
+/// Runs `schtasks` and returns what it wrote to standard output.
+fn schtasks_output(args: &[&str]) -> std::io::Result<Vec<u8>> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     use std::os::windows::process::CommandExt;
     let exe = system32().join("schtasks.exe");
@@ -317,7 +346,7 @@ fn schtasks(args: &[&str]) -> std::io::Result<()> {
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     if out.status.success() {
-        Ok(())
+        Ok(out.stdout)
     } else {
         let msg = oem_text(&out.stderr).trim().to_owned();
         Err(std::io::Error::other(if msg.is_empty() {
@@ -388,6 +417,21 @@ mod tests {
         if matches!(page, 437 | 850) {
             assert_eq!(oem_text(b"Gr\x81\xE1e"), "Grüße");
         }
+    }
+
+    #[test]
+    fn task_xml_reads_in_either_encoding() {
+        let xml = "<UserId>S-1-5-21-1</UserId>";
+        let mut bom = vec![0xFF, 0xFE];
+        let mut bare = Vec::new();
+        for u in xml.encode_utf16() {
+            bom.extend_from_slice(&u.to_le_bytes());
+            bare.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(xml_text(&bom), xml);
+        assert_eq!(xml_text(&bare), xml);
+        assert_eq!(xml_text(xml.as_bytes()), xml);
+        assert_eq!(xml_text(b""), "");
     }
 
     #[test]

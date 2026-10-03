@@ -171,7 +171,9 @@ jobs:
               $_.IdentityReference -match 'Users$' -and $_.FileSystemRights -match 'Write|Modify|FullControl'
           }
           if ($userWrite) { throw 'ordinary users can write ProgramData\Daifuku' }
-          schtasks /Query /TN '\Daifuku\Daemon' | Out-Null
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $task = "\Daifuku\Daemon-$sid"
+          schtasks /Query /TN $task | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'the logon task was not registered' }
           $json = Get-Content -Raw $settings | ConvertFrom-Json
           if ($json.theme -ne 'dark') { throw 'the install lost a setting' }
@@ -185,7 +187,7 @@ jobs:
 
           & (Join-Path $dir 'daifuku.exe') uninstall --purge
           if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }
-          schtasks /Query /TN '\Daifuku\Daemon' 2>$null | Out-Null
+          schtasks /Query /TN $task 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) { throw 'the logon task survived the uninstall' }
           if (Test-Path $data) { throw 'ProgramData\Daifuku survived --purge' }
           $json = Get-Content -Raw $settings | ConvertFrom-Json

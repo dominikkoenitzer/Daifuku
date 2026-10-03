@@ -168,7 +168,10 @@ fn may_serve(pipe: Pipe, elevated: bool) -> io::Result<()> {
             io::ErrorKind::PermissionDenied,
             format!(
                 "daifukud must run elevated; start it with schtasks /Run /TN {}",
-                daifuku_core::task::TASK_NAME
+                crate::setup::user_sid().map_or_else(
+                    || daifuku_core::task::task_name("<your SID>"),
+                    |sid| daifuku_core::task::task_name(&sid)
+                )
             ),
         )),
         _ => Ok(()),
