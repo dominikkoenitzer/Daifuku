@@ -363,6 +363,13 @@ pub fn doctor() -> bool {
                     BUSY_TRIES * 2
                 ),
             ),
+            StatusReply::NotElevated => check(
+                false,
+                "daemon elevated",
+                &format!(
+                    "the process answering on Daifuku's control pipe is not the elevated daemon: sign out and in, or end it and run `schtasks /Run /TN {task}`"
+                ),
+            ),
             StatusReply::Silent => check(
                 false,
                 "daemon answers",
@@ -429,6 +436,10 @@ enum StatusReply {
     /// Busy on every one of [`BUSY_TRIES`] asks: one command has held the
     /// daemon far longer than any should.
     Stuck,
+    /// Windows or the pipe client turned the answer away: the process on
+    /// the control pipe is not the elevated daemon. Doctor asks only from an
+    /// elevated terminal, which the real daemon lets in.
+    NotElevated,
     /// No answer, or one that does not read.
     Silent,
 }
@@ -459,6 +470,7 @@ fn status_reply(reply: std::io::Result<Option<String>>) -> StatusReply {
             _ => StatusReply::Silent,
         },
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => StatusReply::Busy,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => StatusReply::NotElevated,
         _ => StatusReply::Silent,
     }
 }
@@ -863,6 +875,21 @@ mod tests {
         assert!(matches!(status_reply(Err(busy)), StatusReply::Busy));
         let gone = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         assert!(matches!(status_reply(Err(gone)), StatusReply::Silent));
+        // What the pipe client says of a server that is not elevated, and
+        // what Windows says when it refuses the open.
+        let impostor = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the process answering on Daifuku's control pipe is not the elevated daemon",
+        );
+        assert!(matches!(
+            status_reply(Err(impostor)),
+            StatusReply::NotElevated
+        ));
+        let refused = std::io::Error::from_raw_os_error(5);
+        assert!(matches!(
+            status_reply(Err(refused)),
+            StatusReply::NotElevated
+        ));
         let garbled = Ok(Some("not json\n".to_owned()));
         assert!(matches!(status_reply(garbled), StatusReply::Silent));
         let line = to_line(&Response::Status(Status::default())).unwrap();
