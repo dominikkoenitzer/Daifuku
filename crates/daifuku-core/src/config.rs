@@ -364,14 +364,42 @@ impl JsonSchema for MonitorPick {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // The enum is what an editor offers; the last pattern takes every
+        // word the loader takes, in any case, `mouse` included.
         schemars::json_schema!({
             "description": "portrait, landscape, primary, secondary, cursor, or a device name such as \\\\.\\DISPLAY2",
             "anyOf": [
                 { "enum": ["portrait", "landscape", "primary", "secondary", "cursor"] },
-                { "type": "string", "pattern": r"^\\\\\.\\" }
+                { "type": "string", "pattern": r"^\\\\\.\\" },
+                { "type": "string", "pattern": any_case(&MONITOR_WORDS) }
             ]
         })
     }
+}
+
+/// Every word [`MonitorPick`] reads as a keyword, in lower case.
+const MONITOR_WORDS: [&str; 6] = [
+    "portrait",
+    "landscape",
+    "primary",
+    "secondary",
+    "cursor",
+    "mouse",
+];
+
+/// A pattern that matches exactly one of `words`, in any case. Written with
+/// a class per letter, which every JSON schema validator reads, not with an
+/// inline flag, which many do not.
+fn any_case(words: &[&str]) -> String {
+    let alternatives: Vec<String> = words
+        .iter()
+        .map(|w| {
+            w.chars()
+                .map(|c| format!("[{c}{}]", c.to_ascii_uppercase()))
+                .collect()
+        })
+        .collect();
+    format!("^({})$", alternatives.join("|"))
 }
 
 /// A hotkey as written in the file. Kept as text so the file round-trips as
@@ -679,6 +707,53 @@ mod tests {
         // Any other string is a misspelt keyword, which editors should flag.
         assert_eq!(defs["MonitorPick"]["anyOf"][1]["pattern"], r"^\\\\\.\\");
         assert_eq!(defs["Colour"]["pattern"], "^#?[0-9a-fA-F]{6}$");
+    }
+
+    /// Whether `text` matches `pattern`, a pattern as [`any_case`] writes
+    /// it: alternatives of one bracketed class per letter.
+    fn matches_any_case(pattern: &str, text: &str) -> bool {
+        let inner = pattern
+            .strip_prefix("^(")
+            .and_then(|p| p.strip_suffix(")$"))
+            .unwrap();
+        inner.split('|').any(|alternative| {
+            let classes: Vec<&str> = alternative
+                .split(']')
+                .filter(|c| !c.is_empty())
+                .map(|c| c.strip_prefix('[').unwrap())
+                .collect();
+            classes.len() == text.chars().count()
+                && classes.iter().zip(text.chars()).all(|(c, t)| c.contains(t))
+        })
+    }
+
+    #[test]
+    fn the_schema_takes_every_monitor_word_the_loader_takes() {
+        let schema: serde_json::Value = serde_json::from_str(&Config::schema()).unwrap();
+        let pattern = schema["$defs"]["MonitorPick"]["anyOf"][2]["pattern"]
+            .as_str()
+            .unwrap();
+        for text in [
+            "Portrait",
+            "mouse",
+            "MOUSE",
+            "Cursor",
+            "landscape",
+            "SECONDARY",
+        ] {
+            let json = format!(r#"{{"fleets":[{{"name":"a","monitor":"{text}"}}]}}"#);
+            assert!(Config::from_json(&json).is_ok(), "the loader takes {text}");
+            assert!(matches_any_case(pattern, text), "the schema takes {text}");
+        }
+        for text in ["sideways", "Wide", "DISPLAY2", "portraits", "mous"] {
+            assert!(!matches_any_case(pattern, text), "{text}");
+        }
+        for word in MONITOR_WORDS {
+            assert!(
+                !matches!(word.parse::<MonitorPick>(), Ok(MonitorPick::Device(_))),
+                "{word} is a keyword to the loader"
+            );
+        }
     }
 
     #[test]
