@@ -407,6 +407,31 @@ mod tests {
         assert!(sid.starts_with("S-1-"), "{sid}");
     }
 
+    /// What `schtasks /Query /XML` wrote for the task an earlier install
+    /// registered, `\Daifuku\Daemon`, byte for byte as it comes out of the
+    /// pipe: in the OEM code page whatever the declaration says, with the
+    /// CR CR LF line ends it writes. Only the SID and the account are swapped
+    /// for test ones.
+    const LEGACY_TASK: &[u8] = include_bytes!("../tests/fixtures/legacy-task.xml");
+
+    #[test]
+    fn an_earlier_installs_task_reads_back_with_both_its_users() {
+        let xml = xml_text(LEGACY_TASK);
+        assert!(xml.contains(r"<URI>\Daifuku\Daemon</URI>"), "{xml}");
+        // Task Scheduler gives the principal back as the SID and the logon
+        // trigger as the account, so both forms have to count as the user.
+        assert_eq!(
+            daifuku_core::task::task_users(&xml),
+            ["S-1-5-21-1-2-3-1001", r"PC\ada"]
+        );
+        // The same task as UTF-16, the other way schtasks may write it.
+        let wide: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(xml.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(xml_text(&wide), xml);
+    }
+
     #[test]
     fn what_schtasks_writes_is_read_in_the_oem_code_page() {
         windows_core::link!("kernel32.dll" "system" fn GetOEMCP() -> u32);

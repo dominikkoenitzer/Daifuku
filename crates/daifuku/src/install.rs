@@ -872,6 +872,24 @@ mod tests {
         );
     }
 
+    /// The users of a real `\Daifuku\Daemon` task as Task Scheduler gives
+    /// them back (daifuku-win's fixture): the principal as a SID, the logon
+    /// trigger as `PC\ada`. Install removes it for that user only.
+    #[test]
+    fn an_earlier_installs_real_task_is_removed_for_its_user_only() {
+        let legacy = include_str!("../../daifuku-win/tests/fixtures/legacy-task.xml");
+        let users = task_users(legacy);
+        let sid = "S-1-5-21-1-2-3-1001";
+        assert!(runs_for(&users, sid, Some(r"PC\ada")));
+        assert!(runs_for(&users, sid, Some(r"pc\ADA")), "names ignore case");
+        assert!(
+            !runs_for(&users, sid, None),
+            "without the account the trigger's user is unknown, so it stays"
+        );
+        assert!(!runs_for(&users, "S-1-5-21-1-2-3-1002", Some(r"PC\bob")));
+        assert!(!runs_for(&users, sid, Some(r"WORK\ada")));
+    }
+
     #[test]
     fn only_refused_hotkeys_count_as_refused() {
         let hotkeys = [
