@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- Each user gets a logon task of their own, `\Daifuku\Daemon-<SID>`, so one
+  user's install no longer takes over another's autostart. Install and
+  uninstall remove the one task earlier installs shared, `\Daifuku\Daemon`,
+  when it runs for that user; another user's stays theirs until they install
+  again.
+- Fleets and agent states survive a daemon restart. The daemon saves them to
+  `ProgramData\Daifuku\state.json` and takes them back after an install or a
+  restart on error, within the same start of Windows, checking every window
+  again.
+- A window with several tabs waits since the tab still waiting, and a second
+  tab that asks chimes too.
+- A clock set back no longer makes the daemon take every later event as late:
+  hook events carry the interrupt time.
+- Install and uninstall change Claude Code's and Codex's settings only with
+  the signed-in user's own rights, and say how to go on when there is no
+  desktop shell to borrow them from.
+- Windows PowerShell gets `-ExecutionPolicy RemoteSigned` only when the
+  policy in the registry would refuse a local script, so a policy you or
+  your organisation set is kept.
+- `daifuku doctor` waits about twenty seconds for a busy daemon and reports
+  one that stays busy, with how to restart it. The restart hint ends only
+  this session's daemon.
+- The daemon's elevated check fails when another process holds its control
+  pipe.
+- The schema takes every monitor word the config loader takes, in any case.
+
 ## 0.1.2, 2026-10-02
 
 - Ctrl+Alt+F4, `close` in `hotkeys`, closes the terminals of every open
