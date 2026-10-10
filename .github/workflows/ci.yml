@@ -145,6 +145,30 @@ jobs:
         with:
           key: install
       - run: cargo build --locked --release --workspace
+      # Only a double click from Explorer, alone in its own console, offers to
+      # install. Started bare from a shell it prints the help and exits; were
+      # it to wait for Enter there, a script would hang on a prompt nobody sees.
+      - name: No command prints the help and exits
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          # -NoNewWindow shares this shell's console, as a terminal does. Input
+          # is an empty file, so a prompt reads nothing; the timeout catches a
+          # wait of any other kind.
+          $empty = New-TemporaryFile
+          $out = New-TemporaryFile
+          $err = New-TemporaryFile
+          $p = Start-Process -FilePath target/release/daifuku.exe -NoNewWindow -PassThru -RedirectStandardInput $empty -RedirectStandardOutput $out -RedirectStandardError $err
+          if (-not $p.WaitForExit(20000)) {
+              $p.Kill()
+              throw 'daifuku with no command was still running after 20 s'
+          }
+          $text = "$(Get-Content -Raw $out)$(Get-Content -Raw $err)"
+          Remove-Item $empty, $out, $err
+          Write-Output $text
+          if ($text -notmatch 'Usage: daifuku') { throw 'daifuku with no command did not print its help' }
+          Write-Output 'no command: the help, and no wait for input'
       - name: Install, check, uninstall
         shell: pwsh
         run: |
