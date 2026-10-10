@@ -35,7 +35,13 @@ for a person and may change. Read the fields you need and ignore the rest.
 
 A command that worked exits with 0. The commands that talk to the daemon
 (`status`, `open`, `snap`, `next`, `close`, `demo`, `reload` and `stop`) need
-an administrator terminal, with `--json` too.
+an administrator terminal, with `--json` too. That is on purpose: the
+daemon's control pipe can open administrator terminals, so only elevated
+processes may use it, `status` included
+([security](security.md#talking-to-the-daemon)). From any other terminal
+they fail with `not_elevated`, and the message ends with the command to run
+in an administrator terminal. `daifuku doctor --json` works from any
+terminal and says whether the daemon runs.
 
 ### `status`
 
@@ -113,7 +119,7 @@ with a non-zero exit code:
 |---|---|---|
 | `usage` | 2 | The command line did not parse and had `--json` in it, such as `--json` before the command's name or on `install`. `--help` and `--version` print their text as always. |
 | `daemon_not_running` | 1 | No daemon answers in this session. |
-| `not_elevated` | 1 | The terminal is not elevated, and only an elevated process may talk to the daemon. |
+| `not_elevated` | 1 | The terminal is not elevated, and only an elevated process may talk to the daemon. The message ends with `run: ` and the command to run in an administrator terminal, such as `daifuku status --json`. |
 | `ipc` | 1 | The pipe to the daemon failed, or the daemon's answer was missing or did not read. |
 | `daemon` | 1 | The daemon answered that the request did not work, such as a fleet name the config does not have. |
 | `config` | 1 | There is no config file to open or no ProgramData folder, no editor started, or Windows was not given permission to start one. |
