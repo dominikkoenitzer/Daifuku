@@ -44,7 +44,8 @@ Administrators are in its access list, and it carries a high mandatory label,
 so no process below high integrity can open it whatever else is true. The
 command line also checks that whoever answers on the pipe runs elevated before
 it sends anything, so a process that squatted the name cannot collect
-commands.
+commands. `daifuku status` goes through it too, so it needs an administrator
+terminal; from any other, the command line says which command to run there.
 
 **The hook pipe** takes state reports from agent hooks. The signed-in user,
 by their own SID, may open it to read and to write data from a normal process
