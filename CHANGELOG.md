@@ -52,6 +52,11 @@
 - `daifuku install --dry-run` and `daifuku uninstall --dry-run` print every
   file, folder, `PATH` entry, task and hook the real command would change,
   and change nothing; with `--json` too. The real commands run the same plan.
+- Each release has one file to download, `daifuku.exe` (`daifuku-arm64.exe`
+  on ARM), with the daemon inside it: double-click it and it installs, no
+  zip to extract. Install writes out the daemon it carries and copies itself
+  to Program Files as `daifuku.exe`, whatever the download was called. The
+  zips stay, with the two programs as files.
 
 ## 0.1.2, 2026-10-02
 
