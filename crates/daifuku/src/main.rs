@@ -301,7 +301,7 @@ fn edit_config() -> anyhow::Result<()> {
             Ok(()) => {
                 println!("opened       {}", file.display());
                 println!(
-                    "\nEvery key is optional; what you leave out keeps its default. Save the file, then run `daifuku reload` in an administrator terminal."
+                    "\nEvery key is optional; what you leave out keeps its default. Daifuku applies the file within two seconds of each save."
                 );
                 return Ok(());
             }
