@@ -108,7 +108,7 @@ linked schema completes and checks the keys.
 | `count` | `6` | 1 to 16 terminals |
 | `monitor` | `"portrait"` | `portrait`, `landscape`, `primary`, `secondary`, `cursor`, or a device name |
 | `command` | `"claude"` | the PowerShell command each terminal runs; `{n}` is its number; `null` for a plain shell |
-| `directory` | your profile | where the terminals start; `{n}` is its number (after 0.1.1) |
+| `directory` | your profile | where the terminals start; `{n}` is its number |
 | `admin` | `true` | open as administrator |
 | `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet; a second fleet needs its own, or `null` |
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
@@ -156,7 +156,7 @@ window show the most urgent of their states.
 No hook reports your answer at a permission prompt, so after you approve one
 the border stays yellow until the approved tool has run. A Claude Code turn
 you interrupt, with Esc or by saying no at a permission prompt, turns green
-once Claude Code reports its prompt idle, about a minute later (after 0.1.1).
+once Claude Code reports its prompt idle, about a minute later.
 
 ## Security
 
