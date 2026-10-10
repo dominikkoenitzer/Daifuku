@@ -3,10 +3,13 @@
 //! Install, in order, each step safe to repeat:
 //!
 //! 1. Stop a running daemon, so its files can be replaced.
-//! 2. Copy `daifuku.exe` and `daifukud.exe` next to this program into
-//!    `%ProgramFiles%\Daifuku`, where only administrators can change them.
-//!    The daemon runs elevated, so a binary an ordinary process could swap
-//!    would hand that process administrator rights at the next logon.
+//! 2. Copy this program into `%ProgramFiles%\Daifuku` as `daifuku.exe`, and
+//!    the daemon next to it: the one this program carries inside, as the
+//!    `daifuku.exe` a release publishes on its own does, or else the
+//!    `daifukud.exe` next to this program, as in the zip. Only
+//!    administrators can change them there. The daemon runs elevated, so a
+//!    binary an ordinary process could swap would hand that process
+//!    administrator rights at the next logon.
 //! 3. Add that folder to the machine `PATH`, so `daifuku` runs in any new
 //!    terminal, and tell running programs the variable changed. A `PATH`
 //!    that cannot be changed is reported and the install goes on: the
@@ -39,6 +42,39 @@ use crate::output::{Finding, Plan, PlanStep};
 
 const BINARIES: [&str; 2] = ["daifuku.exe", "daifukud.exe"];
 
+/// `daifukud.exe`, inside the `daifuku.exe` a release publishes on its own
+/// (see build.rs); `None` in every other build.
+#[cfg(embedded_daemon)]
+const CARRIED_DAEMON: Option<&[u8]> = Some(include_bytes!(env!("DAIFUKU_EMBEDDED_DAEMON")));
+#[cfg(not(embedded_daemon))]
+const CARRIED_DAEMON: Option<&[u8]> = None;
+
+/// Where install takes `daifukud.exe` from.
+#[derive(Clone)]
+pub enum Daemon {
+    /// The daemon this program carries inside.
+    Carried(&'static [u8]),
+    /// The file next to this program, as in the zip.
+    Beside(PathBuf),
+}
+
+/// Where install takes the daemon from when this program is `exe` and
+/// carries `carried`: what it carries, which was built and checked with it,
+/// before a `daifukud.exe` next to it, which may be left from another
+/// version. `None` when there is neither.
+fn daemon_source(exe: &Path, carried: Option<&'static [u8]>) -> Option<Daemon> {
+    if let Some(bytes) = carried {
+        return Some(Daemon::Carried(bytes));
+    }
+    let beside = exe.with_file_name("daifukud.exe");
+    beside.is_file().then_some(Daemon::Beside(beside))
+}
+
+/// Where install takes the daemon from when this program runs as `exe`.
+pub fn daemon_for(exe: &Path) -> Option<Daemon> {
+    daemon_source(exe, CARRIED_DAEMON)
+}
+
 /// What `install` should skip.
 pub struct Options {
     /// Leave Claude Code's and Codex's settings alone.
@@ -52,14 +88,17 @@ pub struct Options {
 pub struct Facts {
     /// Whether this terminal is elevated.
     pub elevated: bool,
+    /// This program, under whatever name it was downloaded.
+    pub exe: PathBuf,
     /// The folder this program runs from.
     pub from: PathBuf,
     /// `%ProgramFiles%\Daifuku`.
     pub to: PathBuf,
     /// `%ProgramData%\Daifuku`.
     pub data: PathBuf,
-    /// The binaries missing next to this program.
-    pub missing: Vec<&'static str>,
+    /// Where the daemon comes from; `None` when this program carries none
+    /// and there is no `daifukud.exe` next to it.
+    pub daemon: Option<Daemon>,
     /// Whether the install folder is on the machine `PATH` already.
     pub on_path: bool,
     /// Whether the install folder exists.
@@ -102,8 +141,13 @@ pub struct HookFacts {
 pub enum Step {
     /// Stop a running daemon, so its files can be replaced or removed.
     StopDaemon,
-    /// Copy the binaries next to this program into `to`.
-    Binaries { from: PathBuf, to: PathBuf },
+    /// Copy `exe`, this program, into `to` as `daifuku.exe`, and put the
+    /// daemon next to it.
+    Binaries {
+        exe: PathBuf,
+        daemon: Option<Daemon>,
+        to: PathBuf,
+    },
     /// Put `dir` on the machine `PATH`; `present` when it is there already.
     AddToPath { dir: PathBuf, present: bool },
     /// Lock the data folder to administrators; `found` as [`Facts::data_locked`].
@@ -150,7 +194,8 @@ pub enum Step {
 impl Facts {
     /// Finds everything install and uninstall decide on, changing nothing.
     pub fn gather() -> anyhow::Result<Self> {
-        let from = std::env::current_exe()?
+        let this = std::env::current_exe()?;
+        let from = this
             .parent()
             .map(Path::to_path_buf)
             .context("no folder for this program")?;
@@ -208,10 +253,8 @@ impl Facts {
             .collect();
         Ok(Self {
             elevated: process::current_is_elevated(),
-            missing: BINARIES
-                .into_iter()
-                .filter(|b| !from.join(b).is_file())
-                .collect(),
+            daemon: daemon_for(&this),
+            exe: this,
             installed: to.is_dir(),
             config_exists: data.join("daifuku.json").is_file(),
             terminal: terminal::find().is_some(),
@@ -264,7 +307,8 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
     let mut steps = vec![Step::StopDaemon];
     if facts.from != facts.to {
         steps.push(Step::Binaries {
-            from: facts.from.clone(),
+            exe: facts.exe.clone(),
+            daemon: facts.daemon.clone(),
             to: facts.to.clone(),
         });
     }
@@ -380,16 +424,22 @@ impl Step {
                 "daifukud",
                 Some("if it runs, so its files can be replaced".into()),
             )],
-            Self::Binaries { from, to } => BINARIES
-                .iter()
-                .map(|b| {
-                    at(
-                        "copy",
-                        &to.join(b),
-                        Some(format!("from {}", from.display())),
-                    )
-                })
-                .collect(),
+            Self::Binaries { exe, daemon, to } => vec![
+                at(
+                    "copy",
+                    &to.join("daifuku.exe"),
+                    Some(format!("from {}", exe.display())),
+                ),
+                at(
+                    "copy",
+                    &to.join("daifukud.exe"),
+                    Some(match daemon {
+                        Some(Daemon::Carried(_)) => format!("carried inside {}", exe.display()),
+                        Some(Daemon::Beside(file)) => format!("from {}", file.display()),
+                        None => format!("missing next to {}", exe.display()),
+                    }),
+                ),
+            ],
             Self::AddToPath { dir, present: true } => vec![at(
                 "keep_path",
                 dir,
@@ -502,11 +552,11 @@ pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
         plan.notes
             .push("the real `daifuku install` needs an administrator terminal".into());
     }
-    if facts.from != facts.to && !facts.missing.is_empty() {
-        plan.notes.push(format!(
-            "{} missing next to this program, so the install would stop at the copy",
-            facts.missing.join(" and ")
-        ));
+    if facts.from != facts.to && facts.daemon.is_none() {
+        plan.notes.push(
+            "daifukud.exe is missing next to this program, so the install would stop at the copy"
+                .into(),
+        );
     }
     if !options.no_hooks {
         for h in &facts.hooks {
@@ -592,15 +642,11 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
 fn run(step: &Step) -> anyhow::Result<()> {
     match step {
         Step::StopDaemon => stop_daemon(),
-        Step::Binaries { from, to } => {
-            std::fs::create_dir_all(to)?;
-            for name in BINARIES {
-                let src = from.join(name);
-                if !src.is_file() {
-                    bail!("{} is missing next to this program", name);
-                }
-                copy_retrying(&src, &to.join(name))?;
-            }
+        Step::Binaries { exe, daemon, to } => {
+            let daemon = daemon
+                .as_ref()
+                .context("daifukud.exe is missing next to this program")?;
+            put_binaries(exe, daemon, to)?;
             println!("installed    {}", to.display());
         }
         Step::AddToPath { dir, .. } => match environment::add_to_machine_path(dir) {
@@ -1138,18 +1184,32 @@ fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<(
     (left, std::fs::remove_dir(dir))
 }
 
-/// Copies, retrying for a few seconds while a stopping daemon still holds the
-/// file open.
-fn copy_retrying(from: &Path, to: &Path) -> anyhow::Result<()> {
+/// Copies `exe` into `to` as `daifuku.exe`, whatever the download was
+/// called, and puts the daemon next to it as `daifukud.exe`: writes out the
+/// one `exe` carries, or copies the file next to it.
+fn put_binaries(exe: &Path, daemon: &Daemon, to: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(to)?;
+    let [program, daemon_file] = BINARIES.map(|name| to.join(name));
+    retrying(&program, || std::fs::copy(exe, &program).map(drop))?;
+    match daemon {
+        Daemon::Carried(bytes) => retrying(&daemon_file, || std::fs::write(&daemon_file, bytes)),
+        Daemon::Beside(file) => {
+            retrying(&daemon_file, || std::fs::copy(file, &daemon_file).map(drop))
+        }
+    }
+}
+
+/// Runs `write`, which makes `to`, again for a few seconds while it fails,
+/// as it does while a stopping daemon still holds the file open.
+fn retrying(to: &Path, mut write: impl FnMut() -> std::io::Result<()>) -> anyhow::Result<()> {
     let start = Instant::now();
     loop {
-        match std::fs::copy(from, to) {
-            Ok(_) => return Ok(()),
-            Err(e) if start.elapsed() < Duration::from_secs(5) => {
-                let _ = e;
+        match write() {
+            Ok(()) => return Ok(()),
+            Err(_) if start.elapsed() < Duration::from_secs(5) => {
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Err(e) => return Err(e).with_context(|| format!("could not copy {}", to.display())),
+            Err(e) => return Err(e).with_context(|| format!("could not write {}", to.display())),
         }
     }
 }
@@ -1349,14 +1409,17 @@ mod tests {
 
     const SID: &str = "S-1-5-21-1-2-3-1001";
 
-    /// A machine Daifuku was never installed on, run from a download folder.
+    /// A machine Daifuku was never installed on, run from an extracted zip.
     fn fresh() -> Facts {
         Facts {
             elevated: true,
+            exe: PathBuf::from(r"C:\Users\u\Downloads\daifuku\daifuku.exe"),
             from: PathBuf::from(r"C:\Users\u\Downloads\daifuku"),
             to: PathBuf::from(r"C:\Program Files\Daifuku"),
             data: PathBuf::from(r"C:\ProgramData\Daifuku"),
-            missing: Vec::new(),
+            daemon: Some(Daemon::Beside(PathBuf::from(
+                r"C:\Users\u\Downloads\daifuku\daifukud.exe",
+            ))),
             on_path: false,
             installed: false,
             data_locked: None,
@@ -1592,11 +1655,207 @@ mod tests {
         assert_eq!(json["steps"][0]["action"], "stop_daemon");
         assert_eq!(
             json["steps"][1]["detail"],
-            r"from C:\Users\u\Downloads\daifuku"
+            r"from C:\Users\u\Downloads\daifuku\daifuku.exe"
+        );
+        assert_eq!(
+            json["steps"][2]["detail"],
+            r"from C:\Users\u\Downloads\daifuku\daifukud.exe"
         );
         assert_eq!(json["steps"][7]["action"], "start_task");
         assert_eq!(json["steps"][7]["detail"], serde_json::Value::Null);
         assert_eq!(json["notes"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// The one file a release publishes, as a browser saves it a second time.
+    fn downloaded() -> Facts {
+        let mut f = fresh();
+        f.exe = PathBuf::from(r"C:\Users\u\Downloads\daifuku (1).exe");
+        f.from = PathBuf::from(r"C:\Users\u\Downloads");
+        f.daemon = Some(Daemon::Carried(b"MZ"));
+        f
+    }
+
+    fn copies(facts: &Facts) -> Vec<(String, Option<String>)> {
+        install_plan(facts, &ALL)
+            .iter()
+            .flat_map(Step::describe)
+            .filter(|s| s.action == "copy")
+            .map(|s| (s.target, s.detail))
+            .collect()
+    }
+
+    #[test]
+    fn the_one_file_download_installs_itself_and_the_daemon_it_carries() {
+        let facts = downloaded();
+        assert_eq!(
+            copies(&facts),
+            [
+                (
+                    r"C:\Program Files\Daifuku\daifuku.exe".to_owned(),
+                    Some(r"from C:\Users\u\Downloads\daifuku (1).exe".to_owned())
+                ),
+                (
+                    r"C:\Program Files\Daifuku\daifukud.exe".to_owned(),
+                    Some(r"carried inside C:\Users\u\Downloads\daifuku (1).exe".to_owned())
+                ),
+            ]
+        );
+        let mut plan = Plan::new("install", true);
+        for step in install_plan(&facts, &ALL) {
+            plan.steps.extend(step.describe());
+        }
+        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+    }
+
+    #[test]
+    fn without_a_daemon_the_copy_says_it_is_missing() {
+        let mut facts = downloaded();
+        facts.daemon = None;
+        assert_eq!(
+            copies(&facts)[1],
+            (
+                r"C:\Program Files\Daifuku\daifukud.exe".to_owned(),
+                Some(r"missing next to C:\Users\u\Downloads\daifuku (1).exe".to_owned())
+            )
+        );
+    }
+
+    /// A folder of its own in the temp folder, gone again when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("daifuku-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_daemon_carried_inside_comes_before_one_next_to_it() {
+        let dir = Scratch::new("source");
+        let exe = dir.0.join("daifuku.exe");
+        std::fs::write(&exe, "program").unwrap();
+
+        let alone = daemon_source(&exe, None);
+        std::fs::write(dir.0.join("daifukud.exe"), "MZ older").unwrap();
+        let beside = daemon_source(&exe, None);
+        let both = daemon_source(&exe, Some(b"MZ carried"));
+
+        assert!(alone.is_none(), "neither carried nor next to it");
+        assert!(
+            matches!(&beside, Some(Daemon::Beside(f)) if *f == dir.0.join("daifukud.exe")),
+            "the zip's daemon"
+        );
+        assert!(
+            matches!(both, Some(Daemon::Carried(b"MZ carried"))),
+            "what it carries wins over a file that may be left from another version"
+        );
+    }
+
+    #[test]
+    fn the_carried_daemon_is_written_out_and_the_download_installed_as_daifuku_exe() {
+        let dir = Scratch::new("put");
+        let exe = dir.0.join("daifuku (1).exe");
+        std::fs::write(&exe, "program").unwrap();
+        let to = dir.0.join("Program Files").join("Daifuku");
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("daifukud.exe"), "MZ the old daemon, longer").unwrap();
+
+        put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to).unwrap();
+        let program = std::fs::read(to.join("daifuku.exe")).unwrap();
+        let daemon = std::fs::read(to.join("daifukud.exe")).unwrap();
+        let mut names: Vec<_> = std::fs::read_dir(&to)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+
+        assert_eq!(program, b"program");
+        assert_eq!(daemon, b"MZ new", "replaced whole, nothing of the old left");
+        assert_eq!(names, ["daifuku.exe", "daifukud.exe"]);
+    }
+
+    #[test]
+    fn the_zips_daemon_is_copied_from_next_to_the_program() {
+        let dir = Scratch::new("zip");
+        let exe = dir.0.join("daifuku.exe");
+        std::fs::write(&exe, "program").unwrap();
+        std::fs::write(dir.0.join("daifukud.exe"), "MZ from the zip").unwrap();
+        let to = dir.0.join("Daifuku");
+
+        let daemon = daemon_source(&exe, None).unwrap();
+        put_binaries(&exe, &daemon, &to).unwrap();
+
+        assert_eq!(std::fs::read(to.join("daifuku.exe")).unwrap(), b"program");
+        assert_eq!(
+            std::fs::read(to.join("daifukud.exe")).unwrap(),
+            b"MZ from the zip"
+        );
+    }
+
+    /// A daemon that has not quite exited still holds its file; the write
+    /// waits for it instead of failing the install.
+    #[test]
+    fn a_daemon_file_still_held_is_written_once_it_is_let_go() {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_SHARE_READ`.
+        const FILE_SHARE_READ: u32 = 1;
+        let dir = Scratch::new("held");
+        let exe = dir.0.join("daifuku.exe");
+        std::fs::write(&exe, "program").unwrap();
+        let to = dir.0.join("Daifuku");
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("daifukud.exe"), "MZ running").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(to.join("daifukud.exe"))
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(600));
+            drop(held);
+        });
+
+        let put = put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to);
+        release.join().unwrap();
+
+        put.unwrap();
+        assert_eq!(std::fs::read(to.join("daifukud.exe")).unwrap(), b"MZ new");
+    }
+
+    #[test]
+    fn without_a_daemon_the_install_stops_before_it_copies_anything() {
+        let dir = Scratch::new("none");
+        let to = dir.0.join("Daifuku");
+        let step = Step::Binaries {
+            exe: dir.0.join("daifuku.exe"),
+            daemon: None,
+            to: to.clone(),
+        };
+        let error = run(&step).map_err(|e| e.to_string());
+        assert_eq!(
+            error,
+            Err("daifukud.exe is missing next to this program".to_owned())
+        );
+        assert!(!to.exists(), "nothing was made");
+    }
+
+    /// Only a build made with DAIFUKU_EMBED_DAEMON carries a daemon, and
+    /// what it carries is a program.
+    #[test]
+    fn a_build_carries_a_daemon_only_when_made_to() {
+        assert_eq!(CARRIED_DAEMON.is_some(), cfg!(embedded_daemon));
+        if let Some(bytes) = CARRIED_DAEMON {
+            assert!(bytes.starts_with(b"MZ"));
+        }
     }
 
     #[test]

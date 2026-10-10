@@ -382,7 +382,9 @@ fn from_explorer() -> Option<ExitCode> {
     let Ok(exe) = std::env::current_exe() else {
         return Some(ExitCode::FAILURE);
     };
-    if !exe.with_file_name("daifukud.exe").is_file() {
+    // The daifuku.exe a release publishes on its own carries the daemon;
+    // the one in the zip needs it next to it.
+    if install::daemon_for(&exe).is_none() {
         println!("daifukud.exe is not in this folder, and Daifuku needs both programs.");
         println!(
             "If you opened daifuku.exe inside the zip, extract the zip first (right-click it, Extract All), then open daifuku.exe in the new folder."
