@@ -7,13 +7,17 @@
 //!    `%ProgramFiles%\Daifuku`, where only administrators can change them.
 //!    The daemon runs elevated, so a binary an ordinary process could swap
 //!    would hand that process administrator rights at the next logon.
-//! 3. Lock `%ProgramData%\Daifuku` to administrators, for the same reason,
+//! 3. Add that folder to the machine `PATH`, so `daifuku` runs in any new
+//!    terminal, and tell running programs the variable changed. A `PATH`
+//!    that cannot be changed is reported and the install goes on: the
+//!    commands still run by their full path.
+//! 4. Lock `%ProgramData%\Daifuku` to administrators, for the same reason,
 //!    and write a starter config there if there is none. A folder there that
 //!    an earlier install did not lock is removed first, config and all.
-//! 4. Register this user's logon task that starts the daemon elevated, and
+//! 5. Register this user's logon task that starts the daemon elevated, and
 //!    start it. The one task per machine earlier installs registered goes
 //!    when it is this user's.
-//! 5. Add the hooks to Claude Code's settings and, if Codex is installed,
+//! 6. Add the hooks to Claude Code's settings and, if Codex is installed,
 //!    to Codex's, leaving everything else in each file as it was.
 
 use std::ffi::OsString;
@@ -24,10 +28,11 @@ use anyhow::{Context, anyhow, bail};
 use daifuku_core::agents::{self, Agent, CLAUDE, CODEX};
 use daifuku_core::config;
 use daifuku_core::config::Config;
+use daifuku_core::path_list;
 use daifuku_core::protocol::{Request, Response, Status, from_line, to_line};
 use daifuku_core::task::{LEGACY_TASK_NAME, task_name, task_users, xml};
 use daifuku_win::pipe::{Pipe, send};
-use daifuku_win::{paths, process, setup, terminal};
+use daifuku_win::{environment, paths, process, setup, terminal};
 
 const BINARIES: [&str; 2] = ["daifuku.exe", "daifukud.exe"];
 
@@ -74,6 +79,14 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
             copy_retrying(&src, &to.join(name))?;
         }
         println!("installed    {}", to.display());
+    }
+    match environment::add_to_machine_path(&to) {
+        Ok(true) => {
+            environment::broadcast_environment_change();
+            println!("on PATH      {}", to.display());
+        }
+        Ok(false) => println!("kept PATH    {}", to.display()),
+        Err(e) => println!("PATH         {} not added: {e}", to.display()),
     }
 
     let removed =
@@ -201,6 +214,14 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         }
     }
     if let Some(dir) = paths::install_dir() {
+        match environment::remove_from_machine_path(&dir) {
+            Ok(true) => {
+                environment::broadcast_environment_change();
+                println!("removed      {} from PATH", dir.display());
+            }
+            Ok(false) => {}
+            Err(e) => println!("left         {} on PATH ({e})", dir.display()),
+        }
         let (left, removed) = remove_binaries(&dir, &std::env::temp_dir());
         match removed {
             Ok(()) => println!("removed      {}", dir.display()),
@@ -245,6 +266,16 @@ pub fn doctor() -> bool {
         installed,
         "installed in Program Files",
         "run `daifuku install` from an administrator terminal",
+    );
+    // The hooks call `daifuku` by its full path, so nothing else would show
+    // that a terminal cannot find it by name.
+    let on_path = paths::install_dir().is_some_and(|d| {
+        environment::machine_path().is_ok_and(|p| path_list::contains(&p, &d.to_string_lossy()))
+    });
+    check(
+        on_path,
+        "Program Files folder on the machine PATH",
+        "run `daifuku install` again",
     );
     let task = setup::user_sid().map(|sid| task_name(&sid));
     check(
