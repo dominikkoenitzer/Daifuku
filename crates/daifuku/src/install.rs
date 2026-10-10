@@ -35,7 +35,7 @@ use daifuku_core::task::{LEGACY_TASK_NAME, task_name, task_users, xml};
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{environment, paths, process, setup, terminal};
 
-use crate::output::Finding;
+use crate::output::{Finding, Plan, PlanStep};
 
 const BINARIES: [&str; 2] = ["daifuku.exe", "daifukud.exe"];
 
@@ -45,6 +45,504 @@ pub struct Options {
     pub no_hooks: bool,
     /// Register the task but do not start the daemon now.
     pub no_start: bool,
+}
+
+/// What install and uninstall find before they change anything. Read only,
+/// so a dry run gathers the same facts the real command does.
+pub struct Facts {
+    /// Whether this terminal is elevated.
+    pub elevated: bool,
+    /// The folder this program runs from.
+    pub from: PathBuf,
+    /// `%ProgramFiles%\Daifuku`.
+    pub to: PathBuf,
+    /// `%ProgramData%\Daifuku`.
+    pub data: PathBuf,
+    /// The binaries missing next to this program.
+    pub missing: Vec<&'static str>,
+    /// Whether the install folder is on the machine `PATH` already.
+    pub on_path: bool,
+    /// Whether the install folder exists.
+    pub installed: bool,
+    /// The data folder: `Some(true)` locked as an install leaves it,
+    /// `Some(false)` there but not locked, `None` not there.
+    pub data_locked: Option<bool>,
+    /// Whether the data folder holds a config.
+    pub config_exists: bool,
+    /// This user's SID.
+    pub sid: String,
+    /// Whether the task earlier installs shared runs for this user.
+    pub legacy_task_ours: bool,
+    /// Each agent's settings file and what install and uninstall would do
+    /// to it.
+    pub hooks: Vec<HookFacts>,
+    /// Whether Windows Terminal is installed.
+    pub terminal: bool,
+}
+
+/// One agent's settings file, as [`Facts`] finds it.
+pub struct HookFacts {
+    pub agent: &'static Agent,
+    /// The file in the profile, the one install writes.
+    pub file: PathBuf,
+    /// Whether the file exists.
+    pub exists: bool,
+    /// Whether the agent is installed: its folder exists, in the profile or
+    /// where its variable points.
+    pub agent_installed: bool,
+    /// The file the agent reads instead, when its variable points elsewhere.
+    pub instead: Option<PathBuf>,
+    /// Install's edit: hooks updated and added, or why the file stays as it is.
+    pub install: Result<(usize, usize), String>,
+    /// Uninstall's edit: hooks removed, or why the file stays as it is.
+    pub uninstall: Result<usize, String>,
+}
+
+/// One step of an install or an uninstall, in the order they run.
+pub enum Step {
+    /// Stop a running daemon, so its files can be replaced or removed.
+    StopDaemon,
+    /// Copy the binaries next to this program into `to`.
+    Binaries { from: PathBuf, to: PathBuf },
+    /// Put `dir` on the machine `PATH`; `present` when it is there already.
+    AddToPath { dir: PathBuf, present: bool },
+    /// Lock the data folder to administrators; `found` as [`Facts::data_locked`].
+    DataFolder { dir: PathBuf, found: Option<bool> },
+    /// Keep the config, or write the starter one when there is none.
+    Config { file: PathBuf, write: bool },
+    /// Register this user's logon task.
+    RegisterTask {
+        name: String,
+        daemon: PathBuf,
+        sid: String,
+        data: PathBuf,
+    },
+    /// Remove the task earlier installs shared, which runs for this user.
+    RemoveLegacyTask { sid: String },
+    /// Start the logon task now.
+    StartTask { name: String },
+    /// Add or update Daifuku's hooks in one agent's settings.
+    Hooks {
+        agent: &'static Agent,
+        file: PathBuf,
+        exe: String,
+        instead: Option<PathBuf>,
+        change: Result<(usize, usize), String>,
+    },
+    /// Remove this user's logon task.
+    RemoveTask { name: String },
+    /// Remove Daifuku's hooks from one agent's settings.
+    RemoveHooks {
+        agent: &'static Agent,
+        file: PathBuf,
+        change: Result<usize, String>,
+    },
+    /// Take `dir` off the machine `PATH`; `present` when it is on it.
+    RemoveFromPath { dir: PathBuf, present: bool },
+    /// Delete the binaries and their folder; `present` when it exists.
+    RemoveBinaries { dir: PathBuf, present: bool },
+    /// Delete the data folder: the config, the logs, the saved state.
+    RemoveData { dir: PathBuf },
+    /// Keep the data folder.
+    KeepData { dir: PathBuf },
+}
+
+impl Facts {
+    /// Finds everything install and uninstall decide on, changing nothing.
+    pub fn gather() -> anyhow::Result<Self> {
+        let from = std::env::current_exe()?
+            .parent()
+            .map(Path::to_path_buf)
+            .context("no folder for this program")?;
+        let to = paths::install_dir().context("no Program Files folder")?;
+        let data = paths::data_dir().context("no ProgramData folder")?;
+        let sid = setup::user_sid().context("could not read this user's SID")?;
+        let on_path = environment::machine_path()
+            .is_ok_and(|p| path_list::contains(&p, &to.to_string_lossy()));
+        let data_locked = match setup::is_locked(&data) {
+            Ok(locked) => Some(locked),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => Some(false),
+        };
+        let legacy_task_ours = setup::task_xml(LEGACY_TASK_NAME).is_some_and(|definition| {
+            runs_for(&task_users(&definition), &sid, this_account().as_deref())
+        });
+        let shell = !matches!(
+            process::as_shell_user(|| ()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        );
+        let profile = paths::profile_dir();
+        let exe = to.join("daifuku.exe").to_string_lossy().into_owned();
+        let hooks = hook_files()
+            .into_iter()
+            .map(|(agent, file)| {
+                let instead = read_instead(&file, std::env::var_os(folder_variable(agent)));
+                let agent_installed = file.parent().is_some_and(Path::is_dir)
+                    || instead
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .is_some_and(Path::is_dir);
+                let mut updated = 0;
+                let install = predict_edit(&file, shell, profile.as_deref(), |s| {
+                    updated = agents::update_hooks(s, &exe);
+                    agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))
+                })
+                .map(|added| (updated, added));
+                let uninstall = if file.is_file() {
+                    predict_edit(&file, shell, profile.as_deref(), |s| {
+                        Ok(agents::remove_hooks(s))
+                    })
+                } else {
+                    Ok(0)
+                };
+                HookFacts {
+                    agent,
+                    exists: file.is_file(),
+                    agent_installed,
+                    instead,
+                    install,
+                    uninstall,
+                    file,
+                }
+            })
+            .collect();
+        Ok(Self {
+            elevated: process::current_is_elevated(),
+            missing: BINARIES
+                .into_iter()
+                .filter(|b| !from.join(b).is_file())
+                .collect(),
+            installed: to.is_dir(),
+            config_exists: data.join("daifuku.json").is_file(),
+            terminal: terminal::find().is_some(),
+            from,
+            to,
+            data,
+            on_path,
+            data_locked,
+            sid,
+            legacy_task_ours,
+            hooks,
+        })
+    }
+}
+
+/// What [`edit_agent_file`] would do to `path`, worked out on a copy in
+/// memory: the number `edit` returns, or why the file would stay as it is.
+fn predict_edit(
+    path: &Path,
+    shell: bool,
+    profile: Option<&Path>,
+    edit: impl FnOnce(&mut serde_json::Value) -> anyhow::Result<usize>,
+) -> Result<usize, String> {
+    let profile = profile.ok_or("no profile folder")?;
+    if !shell {
+        return Err(format!(
+            "{:#}",
+            shell_refused(std::io::ErrorKind::NotFound.into(), path)
+        ));
+    }
+    if !stays_inside(path, profile) {
+        return Err(format!(
+            "{} leads outside your profile, left untouched",
+            path.display()
+        ));
+    }
+    let text = match read_settings(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_owned(),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    let mut settings: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| format!("{} is not valid JSON, left untouched", path.display()))?;
+    edit(&mut settings).map_err(|e| format!("{e:#}"))
+}
+
+/// The steps of an install, in order. Pure: the real install runs exactly
+/// these, and `install --dry-run` prints them.
+pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
+    let mut steps = vec![Step::StopDaemon];
+    if facts.from != facts.to {
+        steps.push(Step::Binaries {
+            from: facts.from.clone(),
+            to: facts.to.clone(),
+        });
+    }
+    steps.push(Step::AddToPath {
+        dir: facts.to.clone(),
+        present: facts.on_path,
+    });
+    steps.push(Step::DataFolder {
+        dir: facts.data.clone(),
+        found: facts.data_locked,
+    });
+    steps.push(Step::Config {
+        file: facts.data.join("daifuku.json"),
+        // A folder that is not locked goes, config and all.
+        write: !(facts.config_exists && facts.data_locked == Some(true)),
+    });
+    let name = task_name(&facts.sid);
+    steps.push(Step::RegisterTask {
+        name: name.clone(),
+        daemon: facts.to.join("daifukud.exe"),
+        sid: facts.sid.clone(),
+        data: facts.data.clone(),
+    });
+    if facts.legacy_task_ours {
+        steps.push(Step::RemoveLegacyTask {
+            sid: facts.sid.clone(),
+        });
+    }
+    if !options.no_start {
+        steps.push(Step::StartTask { name });
+    }
+    if !options.no_hooks {
+        let exe = facts.to.join("daifuku.exe").to_string_lossy().into_owned();
+        for h in &facts.hooks {
+            // Codex only if it is installed.
+            if h.agent.name == CODEX.name && !h.agent_installed {
+                continue;
+            }
+            steps.push(Step::Hooks {
+                agent: h.agent,
+                file: h.file.clone(),
+                exe: exe.clone(),
+                instead: h.instead.clone(),
+                change: h.install.clone(),
+            });
+        }
+    }
+    steps
+}
+
+/// The steps of an uninstall, in order. Pure: the real uninstall runs
+/// exactly these, and `uninstall --dry-run` prints them.
+pub fn uninstall_plan(facts: &Facts, purge: bool) -> Vec<Step> {
+    let mut steps = vec![
+        Step::StopDaemon,
+        Step::RemoveTask {
+            name: task_name(&facts.sid),
+        },
+    ];
+    if facts.legacy_task_ours {
+        steps.push(Step::RemoveLegacyTask {
+            sid: facts.sid.clone(),
+        });
+    }
+    for h in facts.hooks.iter().filter(|h| h.exists) {
+        steps.push(Step::RemoveHooks {
+            agent: h.agent,
+            file: h.file.clone(),
+            change: h.uninstall.clone(),
+        });
+    }
+    steps.push(Step::RemoveFromPath {
+        dir: facts.to.clone(),
+        present: facts.on_path,
+    });
+    steps.push(Step::RemoveBinaries {
+        dir: facts.to.clone(),
+        present: facts.installed,
+    });
+    steps.push(if purge {
+        Step::RemoveData {
+            dir: facts.data.clone(),
+        }
+    } else {
+        Step::KeepData {
+            dir: facts.data.clone(),
+        }
+    });
+    steps
+}
+
+impl Step {
+    /// What the step would do, for a dry run: one entry per change, none
+    /// for a step that would change nothing.
+    pub fn describe(&self) -> Vec<PlanStep> {
+        fn at(action: &'static str, target: &Path, detail: Option<String>) -> PlanStep {
+            PlanStep {
+                action,
+                target: target.display().to_string(),
+                detail,
+            }
+        }
+        fn named(action: &'static str, target: &str, detail: Option<String>) -> PlanStep {
+            PlanStep {
+                action,
+                target: target.to_owned(),
+                detail,
+            }
+        }
+        match self {
+            Self::StopDaemon => vec![named(
+                "stop_daemon",
+                "daifukud",
+                Some("if it runs, so its files can be replaced".into()),
+            )],
+            Self::Binaries { from, to } => BINARIES
+                .iter()
+                .map(|b| {
+                    at(
+                        "copy",
+                        &to.join(b),
+                        Some(format!("from {}", from.display())),
+                    )
+                })
+                .collect(),
+            Self::AddToPath { dir, present: true } => vec![at(
+                "keep_path",
+                dir,
+                Some("already on the machine PATH".into()),
+            )],
+            Self::AddToPath {
+                dir,
+                present: false,
+            } => vec![at("add_to_path", dir, Some("the machine PATH".into()))],
+            Self::DataFolder {
+                dir,
+                found: Some(true),
+            } => vec![at(
+                "keep_folder",
+                dir,
+                Some("locked to administrators already".into()),
+            )],
+            Self::DataFolder {
+                dir,
+                found: Some(false),
+            } => vec![at(
+                "replace_folder",
+                dir,
+                Some("not locked to administrators, so it is deleted and made anew, locked".into()),
+            )],
+            Self::DataFolder { dir, found: None } => vec![at(
+                "create_folder",
+                dir,
+                Some("locked to administrators".into()),
+            )],
+            Self::Config { file, write: true } => {
+                vec![at("write_config", file, Some("the starter config".into()))]
+            }
+            Self::Config { file, write: false } => vec![at("keep_config", file, None)],
+            Self::RegisterTask { name, daemon, .. } => vec![named(
+                "register_task",
+                name,
+                Some(format!("starts {} elevated at sign-in", daemon.display())),
+            )],
+            Self::RemoveLegacyTask { .. } => vec![named(
+                "remove_task",
+                LEGACY_TASK_NAME,
+                Some("of an earlier install".into()),
+            )],
+            Self::StartTask { name } => vec![named("start_task", name, None)],
+            Self::Hooks {
+                agent,
+                file,
+                change,
+                ..
+            } => vec![match change {
+                Ok((0, 0)) => at("keep_hooks", file, Some(format!("{} has them", agent.name))),
+                Ok((updated, added)) => at(
+                    "add_hooks",
+                    file,
+                    Some(format!("{}: {added} added, {updated} updated", agent.name)),
+                ),
+                Err(why) => at("leave_hooks", file, Some(why.clone())),
+            }],
+            Self::RemoveTask { name } => vec![named("remove_task", name, None)],
+            Self::RemoveHooks {
+                agent,
+                file,
+                change,
+            } => match change {
+                Ok(0) => Vec::new(),
+                Ok(n) => vec![at(
+                    "remove_hooks",
+                    file,
+                    Some(format!("{}: {n}", agent.name)),
+                )],
+                Err(why) => vec![at("leave_hooks", file, Some(why.clone()))],
+            },
+            Self::RemoveFromPath { dir, present } => {
+                if *present {
+                    vec![at("remove_from_path", dir, Some("the machine PATH".into()))]
+                } else {
+                    Vec::new()
+                }
+            }
+            Self::RemoveBinaries { dir, present } => {
+                if *present {
+                    vec![at("remove_folder", dir, Some("the program".into()))]
+                } else {
+                    Vec::new()
+                }
+            }
+            Self::RemoveData { dir } => vec![at(
+                "remove_folder",
+                dir,
+                Some("config, logs and saved state".into()),
+            )],
+            Self::KeepData { dir } => vec![at(
+                "keep_folder",
+                dir,
+                Some("config, logs and saved state; --purge removes them".into()),
+            )],
+        }
+    }
+}
+
+/// The plan `install --dry-run` prints.
+pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
+    let facts = Facts::gather()?;
+    let mut plan = Plan::new("install", facts.elevated);
+    for step in install_plan(&facts, options) {
+        plan.steps.extend(step.describe());
+    }
+    if !facts.elevated {
+        plan.notes
+            .push("the real `daifuku install` needs an administrator terminal".into());
+    }
+    if facts.from != facts.to && !facts.missing.is_empty() {
+        plan.notes.push(format!(
+            "{} missing next to this program, so the install would stop at the copy",
+            facts.missing.join(" and ")
+        ));
+    }
+    if !options.no_hooks {
+        for h in &facts.hooks {
+            if let Some(other) = &h.instead
+                && (h.agent.name != CODEX.name || h.agent_installed)
+            {
+                plan.notes.push(format!(
+                    "{} reads {} ({}), which install does not write: copy Daifuku's hooks there from {}",
+                    h.agent.name,
+                    other.display(),
+                    folder_variable(h.agent),
+                    h.file.display()
+                ));
+            }
+        }
+    }
+    if !facts.terminal {
+        plan.notes.push(
+            "Windows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)".into(),
+        );
+    }
+    Ok(plan)
+}
+
+/// The plan `uninstall --dry-run` prints.
+pub fn uninstall_dry_run(purge: bool) -> anyhow::Result<Plan> {
+    let facts = Facts::gather()?;
+    let mut plan = Plan::new("uninstall", facts.elevated);
+    for step in uninstall_plan(&facts, purge) {
+        plan.steps.extend(step.describe());
+    }
+    if !facts.elevated {
+        plan.notes
+            .push("the real `daifuku uninstall` needs an administrator terminal".into());
+    }
+    Ok(plan)
 }
 
 pub fn install(options: &Options) -> anyhow::Result<()> {
@@ -63,91 +561,110 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
             "this terminal runs as another account than the one signed in, as it does when a standard user's prompt takes an administrator's password, or under Windows Administrator protection, which Daifuku does not support: install from an administrator terminal of the account that runs the agents"
         );
     }
-    let from = std::env::current_exe()?
-        .parent()
-        .map(Path::to_path_buf)
-        .context("no folder for this program")?;
-    let to = paths::install_dir().context("no Program Files folder")?;
-    let data = paths::data_dir().context("no ProgramData folder")?;
-
-    stop_daemon();
-
-    if from != to {
-        std::fs::create_dir_all(&to)?;
-        for name in BINARIES {
-            let src = from.join(name);
-            if !src.is_file() {
-                bail!("{} is missing next to this program", name);
-            }
-            copy_retrying(&src, &to.join(name))?;
-        }
-        println!("installed    {}", to.display());
-    }
-    match environment::add_to_machine_path(&to) {
-        Ok(true) => {
-            environment::broadcast_environment_change();
-            println!("on PATH      {}", to.display());
-        }
-        Ok(false) => println!("kept PATH    {}", to.display()),
-        Err(e) => println!("PATH         {} not added: {e}", to.display()),
+    let facts = Facts::gather()?;
+    for step in install_plan(&facts, options) {
+        run(&step)?;
     }
 
-    let removed =
-        setup::harden_dir(&data).with_context(|| format!("could not lock {}", data.display()))?;
-    if removed {
+    if terminal::find().is_none() {
         println!(
-            "removed      {} (it was not locked to administrators, so anyone could have written what was in it)",
-            data.display()
+            "\nWindows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)."
         );
     }
-    let config = data.join("daifuku.json");
-    if config.is_file() {
-        println!("kept config  {}", config.display());
-    } else {
-        std::fs::write(&config, starter_config())?;
-        println!("wrote config {}", config.display());
+    // From the config on disk, which an update keeps, so the key named is
+    // the one the daemon registers.
+    let kept = std::fs::read(facts.data.join("daifuku.json"))
+        .and_then(|b| config::decode(&b))
+        .map_err(|e| e.to_string())
+        .and_then(|t| Config::from_json(&t).map_err(|e| e.to_string()));
+    match kept.map(|c| how_to_open(&c)) {
+        Ok(Some(how)) if options.no_start => {
+            println!("\nAfter your next sign-in, {how} to open your first fleet.");
+        }
+        Ok(Some(how)) => println!("\nTo open your first fleet, {how}."),
+        Ok(None) => {}
+        Err(e) => println!("\nThe config does not read, so the daemon runs on its defaults: {e}"),
     }
+    Ok(())
+}
 
-    let sid = setup::user_sid().context("could not read this user's SID")?;
-    let task = task_name(&sid);
-    let daemon = to.join("daifukud.exe");
-    setup::create_task(&task, &xml(&daemon.to_string_lossy(), &sid), &data)
-        .context("could not register the logon task")?;
-    println!("logon task   {task}");
-    remove_legacy_task(&sid);
-    if !options.no_start {
-        setup::run_task(&task).context("could not start the daemon")?;
-        println!("started      daifukud");
-    }
-
-    if !options.no_hooks {
-        let exe = to.join("daifuku.exe").to_string_lossy().into_owned();
-        for (agent, file) in hook_files() {
-            let variable = folder_variable(agent);
-            let instead = read_instead(&file, std::env::var_os(variable));
-            // Codex only if it is installed: its folder exists, in the
-            // profile or where its variable points.
-            if agent.name == CODEX.name
-                && !file.parent().is_some_and(Path::is_dir)
-                && !instead
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .is_some_and(Path::is_dir)
-            {
-                continue;
+/// Runs one step of an install or an uninstall and says what it did.
+fn run(step: &Step) -> anyhow::Result<()> {
+    match step {
+        Step::StopDaemon => stop_daemon(),
+        Step::Binaries { from, to } => {
+            std::fs::create_dir_all(to)?;
+            for name in BINARIES {
+                let src = from.join(name);
+                if !src.is_file() {
+                    bail!("{} is missing next to this program", name);
+                }
+                copy_retrying(&src, &to.join(name))?;
             }
-            if let Some(other) = &instead {
+            println!("installed    {}", to.display());
+        }
+        Step::AddToPath { dir, .. } => match environment::add_to_machine_path(dir) {
+            Ok(true) => {
+                environment::broadcast_environment_change();
+                println!("on PATH      {}", dir.display());
+            }
+            Ok(false) => println!("kept PATH    {}", dir.display()),
+            Err(e) => println!("PATH         {} not added: {e}", dir.display()),
+        },
+        Step::DataFolder { dir, .. } => {
+            let removed = setup::harden_dir(dir)
+                .with_context(|| format!("could not lock {}", dir.display()))?;
+            if removed {
                 println!(
-                    "hooks        {} reads {} ({variable}), which install does not write: copy Daifuku's hooks there from {}",
+                    "removed      {} (it was not locked to administrators, so anyone could have written what was in it)",
+                    dir.display()
+                );
+            }
+        }
+        // Asked again: the folder may just have gone, config and all.
+        Step::Config { file, .. } => {
+            if file.is_file() {
+                println!("kept config  {}", file.display());
+            } else {
+                std::fs::write(file, starter_config())?;
+                println!("wrote config {}", file.display());
+            }
+        }
+        Step::RegisterTask {
+            name,
+            daemon,
+            sid,
+            data,
+        } => {
+            setup::create_task(name, &xml(&daemon.to_string_lossy(), sid), data)
+                .context("could not register the logon task")?;
+            println!("logon task   {name}");
+        }
+        Step::RemoveLegacyTask { sid } => remove_legacy_task(sid),
+        Step::StartTask { name } => {
+            setup::run_task(name).context("could not start the daemon")?;
+            println!("started      daifukud");
+        }
+        Step::Hooks {
+            agent,
+            file,
+            exe,
+            instead,
+            ..
+        } => {
+            if let Some(other) = instead {
+                println!(
+                    "hooks        {} reads {} ({}), which install does not write: copy Daifuku's hooks there from {}",
                     agent.name,
                     other.display(),
+                    folder_variable(agent),
                     file.display()
                 );
             }
             let mut updated = 0;
-            let edited = edit_agent_file(&file, |s| {
-                updated = agents::update_hooks(s, &exe);
-                Ok(updated + agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))?)
+            let edited = edit_agent_file(file, |s| {
+                updated = agents::update_hooks(s, exe);
+                Ok(updated + agent.add_hooks(s, exe).map_err(|e| anyhow!(e))?)
             });
             match edited {
                 Ok(0) => println!("hooks        {} already has them", agent.name),
@@ -162,26 +679,50 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
                 Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
             }
         }
-    }
-
-    if terminal::find().is_none() {
-        println!(
-            "\nWindows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)."
-        );
-    }
-    // From the config on disk, which an update keeps, so the key named is
-    // the one the daemon registers.
-    let kept = std::fs::read(&config)
-        .and_then(|b| config::decode(&b))
-        .map_err(|e| e.to_string())
-        .and_then(|t| Config::from_json(&t).map_err(|e| e.to_string()));
-    match kept.map(|c| how_to_open(&c)) {
-        Ok(Some(how)) if options.no_start => {
-            println!("\nAfter your next sign-in, {how} to open your first fleet.");
+        Step::RemoveTask { name } => {
+            setup::delete_task(name).context("could not remove the logon task")?;
+            println!("removed      logon task");
         }
-        Ok(Some(how)) => println!("\nTo open your first fleet, {how}."),
-        Ok(None) => {}
-        Err(e) => println!("\nThe config does not read, so the daemon runs on its defaults: {e}"),
+        Step::RemoveHooks { agent, file, .. } => {
+            if file.is_file() {
+                match edit_agent_file(file, |s| Ok(agents::remove_hooks(s))) {
+                    Ok(0) => {}
+                    Ok(1) => println!("removed      1 hook from {}", file.display()),
+                    Ok(n) => println!("removed      {n} hooks from {}", file.display()),
+                    Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
+                }
+            }
+        }
+        Step::RemoveFromPath { dir, .. } => match environment::remove_from_machine_path(dir) {
+            Ok(true) => {
+                environment::broadcast_environment_change();
+                println!("removed      {} from PATH", dir.display());
+            }
+            Ok(false) => {}
+            Err(e) => println!("left         {} on PATH ({e})", dir.display()),
+        },
+        Step::RemoveBinaries { dir, .. } => {
+            let (left, removed) = remove_binaries(dir, &std::env::temp_dir());
+            match removed {
+                Ok(()) => println!("removed      {}", dir.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    for file in &left {
+                        println!("left         {}", file.display());
+                    }
+                    println!("left         {} ({e})", dir.display());
+                }
+            }
+        }
+        Step::RemoveData { dir } => {
+            std::fs::remove_dir_all(dir)
+                .with_context(|| format!("could not remove {}", dir.display()))?;
+            println!("removed      {}", dir.display());
+        }
+        Step::KeepData { dir } => println!(
+            "kept         {} (config, logs and saved state; --purge removes them)",
+            dir.display()
+        ),
     }
     Ok(())
 }
@@ -200,52 +741,9 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
     if !process::current_is_elevated() {
         bail!("uninstalling needs an administrator terminal");
     }
-    stop_daemon();
-    let sid = setup::user_sid().context("could not read this user's SID")?;
-    setup::delete_task(&task_name(&sid)).context("could not remove the logon task")?;
-    println!("removed      logon task");
-    remove_legacy_task(&sid);
-    for (agent, file) in hook_files() {
-        if !file.is_file() {
-            continue;
-        }
-        match edit_agent_file(&file, |s| Ok(agents::remove_hooks(s))) {
-            Ok(0) => {}
-            Ok(1) => println!("removed      1 hook from {}", file.display()),
-            Ok(n) => println!("removed      {n} hooks from {}", file.display()),
-            Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
-        }
-    }
-    if let Some(dir) = paths::install_dir() {
-        match environment::remove_from_machine_path(&dir) {
-            Ok(true) => {
-                environment::broadcast_environment_change();
-                println!("removed      {} from PATH", dir.display());
-            }
-            Ok(false) => {}
-            Err(e) => println!("left         {} on PATH ({e})", dir.display()),
-        }
-        let (left, removed) = remove_binaries(&dir, &std::env::temp_dir());
-        match removed {
-            Ok(()) => println!("removed      {}", dir.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                for file in &left {
-                    println!("left         {}", file.display());
-                }
-                println!("left         {} ({e})", dir.display());
-            }
-        }
-    }
-    if purge && let Some(dir) = paths::data_dir() {
-        std::fs::remove_dir_all(&dir)
-            .with_context(|| format!("could not remove {}", dir.display()))?;
-        println!("removed      {}", dir.display());
-    } else if let Some(dir) = paths::data_dir() {
-        println!(
-            "kept         {} (config, logs and saved state; --purge removes them)",
-            dir.display()
-        );
+    let facts = Facts::gather()?;
+    for step in uninstall_plan(&facts, purge) {
+        run(&step)?;
     }
     Ok(())
 }

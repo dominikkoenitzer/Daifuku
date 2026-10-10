@@ -73,6 +73,64 @@ pub struct ConfigPath {
     pub path: String,
 }
 
+/// What `install --dry-run` and `uninstall --dry-run` print: the steps the
+/// real command would take, worked out by the same code.
+#[derive(Debug, Serialize)]
+pub struct Plan {
+    /// Always true: nothing was changed.
+    pub dry_run: bool,
+    /// `install` or `uninstall`.
+    pub command: &'static str,
+    /// Whether this terminal is elevated, as the real command needs.
+    pub elevated: bool,
+    /// Every change, in the order the real command makes it.
+    pub steps: Vec<PlanStep>,
+    /// Remarks that are not steps.
+    pub notes: Vec<String>,
+}
+
+/// One change of a [`Plan`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlanStep {
+    /// What happens, such as `copy` or `register_task`.
+    pub action: &'static str,
+    /// The file, folder or task it happens to.
+    pub target: String,
+    /// More about it, or null.
+    pub detail: Option<String>,
+}
+
+impl Plan {
+    pub const fn new(command: &'static str, elevated: bool) -> Self {
+        Self {
+            dry_run: true,
+            command,
+            elevated,
+            steps: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// The lines a dry run prints without `--json`.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = vec![format!(
+            "dry run      nothing changes; `daifuku {}` would do this:",
+            self.command
+        )];
+        for s in &self.steps {
+            let label = format!("would {}", s.action.replace('_', " "));
+            out.push(match &s.detail {
+                Some(d) => format!("{label:<22} {} ({d})", s.target),
+                None => format!("{label:<22} {}", s.target),
+            });
+        }
+        for n in &self.notes {
+            out.push(format!("--    {n}"));
+        }
+        out
+    }
+}
+
 /// One line of the doctor's report, as it is found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
