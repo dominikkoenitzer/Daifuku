@@ -201,13 +201,29 @@ The commands that talk to the daemon, `open` to `stop`, need an
 administrator terminal, as the daemon runs elevated. The hotkeys work from
 anywhere.
 
-## Build
+## Build from source
+
+Windows only. In PowerShell, install the C++ build tools with the Windows
+SDK, then Rust and Git:
 
 ```powershell
-cargo build --release
+winget install --id Microsoft.VisualStudio.BuildTools -e --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install --id Rustlang.Rustup -e
+winget install --id Git.Git -e
 ```
 
-Rust stable, Windows only. `cargo test` runs the suite.
+Then, in a new terminal:
+
+```powershell
+git clone https://github.com/dominikkoenitzer/Daifuku
+cd Daifuku
+cargo build --release --locked
+```
+
+The first `cargo` command in the folder fetches the stable toolchain that
+`rust-toolchain.toml` names. To install what you built, double-click
+`target\release\daifuku.exe`, or run `.\target\release\daifuku.exe install`
+from an administrator terminal. `cargo test` runs the suite.
 
 ## Licence
 
