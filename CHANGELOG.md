@@ -40,6 +40,11 @@
 - The release zips have fixed names, `daifuku-windows-x64.zip` and
   `daifuku-windows-arm64.zip`, so the link to the latest download never
   changes.
+- Every command that reports state or acts takes `--json`: one JSON document
+  on standard output, an error as an `error` object with a `code` and a
+  `message`, and a non-zero exit code. `docs/json-output.md` lists each shape
+  and code. `daifuku status --json` keeps its shape; its errors take the new
+  one.
 
 ## 0.1.2, 2026-10-02
 
