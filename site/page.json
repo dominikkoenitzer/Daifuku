@@ -1,0 +1,102 @@
+{
+  "slug": "daifuku",
+  "name": "Daifuku",
+  "description": "Daifuku opens a grid of AI agent terminals with one key and colours each window's border by what its agent is doing.",
+  "colours": {
+    "light": { "accent": "#225ebf", "accent-hover": "#1d51a5", "accent-ink": "#225ebf", "band": "#e5ebf7", "tile": "#eef2fb", "stage": "#e8eef9" },
+    "dark": { "accent": "#2566d0", "accent-hover": "#2d6dd6", "accent-ink": "#89b4fa", "band": "#121a2c", "tile": "#172139", "stage": "#141c2d" }
+  },
+  "platforms": { "windows": "Windows", "windows-arm": "Windows on ARM" },
+  "hero": {
+    "lede": "Daifuku opens a grid of AI agent terminals with one key and colours each window's border by what its agent is doing.",
+    "notes": ["For Windows 10 and 11 with Windows Terminal, on an account that is an administrator. On an ARM PC, take the <a href=\"/download/windows-arm64\">ARM64 version</a>.", "If Windows says it protected your PC, click More info, then Run anyway."],
+    "away": "Daifuku runs on Windows. Open this page on your PC to download it.",
+    "image": { "name": "hero", "w": 1880, "h": 986, "dark": false, "alt": "Six agent terminals in a grid: two waiting with yellow borders, one failed in red, two working in blue and one done in green" }
+  },
+  "features": [
+    {
+      "label": "Next",
+      "title": "One key to the waiting agent",
+      "body": ["<kbd>Ctrl+Alt+N</kbd> brings up the agent that has waited longest, then the failed ones. Press it again for the next one.", "Yellow means waiting, red failed, blue working and green done."],
+      "main": { "name": "f1", "w": 1920, "h": 1020, "dark": false, "pos": "0 0", "alt": "The three waiting terminals brought to the front" },
+      "detail": { "name": "c1", "w": 650, "h": 515, "dark": false, "style": "width: 38%" }
+    },
+    {
+      "label": "Setup",
+      "title": "Double-click to install",
+      "body": ["Double-click daifuku.exe, press Enter and allow it. It copies itself to Program Files, lists itself in Settings, Apps and starts at every sign-in.", "<code>daifuku doctor</code> checks the whole setup and says how to fix anything that is off."],
+      "main": { "name": "f2", "w": 1595, "h": 759, "dark": false, "pos": "0 0", "alt": "daifuku doctor with every check passing" },
+      "detail": { "name": "c4", "w": 900, "h": 206, "dark": false, "style": "width: 66%" }
+    },
+    {
+      "label": "Scripts",
+      "title": "Every command speaks JSON",
+      "body": ["Add <code>--json</code> and a command prints one JSON document, errors included. A script or an assistant reads each agent's state from <code>daifuku status --json</code>."],
+      "main": { "name": "f3", "w": 1862, "h": 959, "dark": false, "pos": "0 0", "alt": "daifuku status --json and the same output as a table of agents and states" },
+      "detail": { "name": "c3", "w": 820, "h": 250, "dark": false, "style": "width: 52%" }
+    },
+    {
+      "label": "Colours",
+      "title": "Readable to every eye",
+      "body": ["Every state has its own border width, so the states read without colour. A colour-blind palette is one line in the config."],
+      "main": { "name": "f5", "w": 1880, "h": 986, "dark": false, "pos": "50% 0", "alt": "The grid with the colour-blind palette" },
+      "detail": { "name": "c5", "w": 628, "h": 515, "dark": false, "style": "width: 36%" }
+    }
+  ],
+  "assistant": {
+    "label": "Config",
+    "title": "Every key is optional",
+    "body": [
+      "The defaults work without editing. <code>daifuku config</code> opens the file, and the daemon picks up every saved change within two seconds.",
+      "Set how many terminals a fleet opens, on which monitor, in which folder and with which key. <code>daifuku config validate</code> checks the file the way the daemon reads it."
+    ],
+    "caption": "C:\\ProgramData\\Daifuku\\daifuku.json",
+    "code": "{\n  \"fleets\": [\n    { \"name\": \"agents\", \"count\": 6, \"monitor\": \"portrait\" },\n    {\n      \"name\": \"site\",\n      \"count\": 4,\n      \"monitor\": \"primary\",\n      \"directory\": \"C:\\\\src\\\\site\",\n      \"hotkey\": \"ctrl + alt + w\"\n    }\n  ]\n}"
+  },
+  "new": {
+    "version": "0.1.3",
+    "items": [
+      "Double-clicking daifuku.exe installs it, one file instead of a zip.",
+      "Daifuku is listed in Settings, Apps, and its Uninstall button removes it.",
+      "Install adds Daifuku to the PATH, so <code>daifuku</code> works by name.",
+      "Fleets and agent states survive a restart of the daemon.",
+      "<code>daifuku status</code> works from a normal terminal."
+    ]
+  },
+  "requirements": [
+    "Windows 10 or 11, x64 or ARM64",
+    "Windows Terminal",
+    "An account that is an administrator itself",
+    "About 4 MB to download",
+    "No internet connection"
+  ],
+  "privacy": {
+    "title": "Nothing goes online",
+    "body": ["Daifuku has no network access, no telemetry and no update check. Agents report their state over a local pipe on your PC."]
+  },
+  "data": {
+    "title": "One folder for config and logs",
+    "body": ["The config, the saved state and a log a day live in <code>C:\\ProgramData\\Daifuku</code>. The program itself is in <code>C:\\Program Files\\Daifuku</code>."]
+  },
+  "keys": [
+    ["Ctrl+Alt+Enter", "Open the fleet in its grid"],
+    ["Ctrl+Alt+N", "Go to the agent waiting longest"],
+    ["Ctrl+Alt+Backspace", "Put every terminal back in its cell"],
+    ["Ctrl+Alt+F4", "Close every fleet at once"]
+  ],
+  "keys_note": "Global keys, all of them changeable in the config.",
+  "basics": [
+    { "title": "Get started", "steps": ["Download daifuku.exe.", "Double-click it, press Enter and allow it.", "Press <kbd>Ctrl+Alt+Enter</kbd> to open your first fleet."] },
+    { "title": "Updates", "body": ["Download the new daifuku.exe and double-click it again. Your config and hooks are kept."] },
+    { "title": "Removing it", "body": ["Settings, Apps, Installed apps, the three dots next to Daifuku, Uninstall. Config and logs stay; <code>daifuku uninstall --purge</code> from an administrator terminal removes those too."] }
+  ],
+  "faq": [
+    { "q": "Is Daifuku free?", "a": ["Yes. It is open source under the GPL-3.0 licence."] },
+    { "q": "Why does Windows say it protected my PC?", "a": ["Daifuku is not signed with a paid certificate, so Windows warns about it the first time. Click More info, then Run anyway."] },
+    { "q": "Can I try it without an agent?", "a": ["Yes. <code>daifuku demo</code> from an administrator terminal opens six scripted agents."] },
+    { "q": "Why does it need administrator rights?", "a": ["The daemon runs as administrator so that no ordinary program can change what it starts, and fleets open as administrator by default. <code>\"admin\": false</code> on a fleet opens its terminals as you."] },
+    { "q": "Where does my data live?", "a": ["In <code>C:\\ProgramData\\Daifuku</code>: the config, the saved state and the logs. Nothing leaves your PC."] }
+  ],
+  "closing": { "title": "Get Daifuku", "sub": "Free for Windows 10 and 11, x64 and ARM64." },
+  "footer": ["For AI assistants: <a href=\"/skill/daifuku.zip\">the Daifuku skill</a> and <a href=\"/llms.txt\">llms.txt</a>."]
+}
