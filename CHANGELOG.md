@@ -47,6 +47,8 @@
   one.
 - A daemon command from a terminal that is not elevated names the command
   to run in an administrator terminal, `--json` and fleet name included.
+- `daifuku config validate [file]` checks a config file the way the daemon
+  reads it, from any terminal, with `--json` too, and changes nothing.
 
 ## 0.1.2, 2026-10-02
 
