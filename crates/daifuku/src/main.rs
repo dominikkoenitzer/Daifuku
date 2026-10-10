@@ -579,7 +579,8 @@ fn control(request: &Request, json: bool) -> ExitCode {
         Ok(None) => return ExitCode::FAILURE,
         Err(e) => {
             let elevated = daifuku_win::process::current_is_elevated();
-            return fail(control_code(&e, elevated), &control_error(&e, elevated));
+            let message = control_error(&e, elevated, &command_line(request, json));
+            return fail(control_code(&e, elevated), &message);
         }
     };
     match from_line::<Response>(&reply) {
@@ -614,14 +615,59 @@ fn control(request: &Request, json: bool) -> ExitCode {
 }
 
 /// What to say when the daemon could not be asked. Only an elevated process
-/// may open the control pipe, so for any other process every failure but a
-/// missing daemon means Windows refused it.
+/// may open the control pipe, as a request can open administrator terminals,
+/// so for any other process every failure but a missing daemon means Windows
+/// refused it. Then the message ends with `command`, the command to run again
+/// in an administrator terminal.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn control_error(e: &std::io::Error, elevated: bool) -> String {
+fn control_error(e: &std::io::Error, elevated: bool, command: &str) -> String {
     if !elevated && e.kind() != std::io::ErrorKind::NotFound {
-        "daemon commands need an administrator terminal".to_owned()
+        format!(
+            "the daemon answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: {command}"
+        )
     } else {
         e.to_string()
+    }
+}
+
+/// The command line that sends `request`, as a person would type it, with
+/// `--json` when it was given.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn command_line(request: &Request, json: bool) -> String {
+    let with_fleet = |command: &str, fleet: &Option<String>| match fleet {
+        Some(name) => format!("{command} {}", shell_word(name)),
+        None => command.to_owned(),
+    };
+    let command = match request {
+        Request::Open { fleet } => with_fleet("open", fleet),
+        Request::Close { fleet } => with_fleet("close", fleet),
+        Request::CloseAll => "close --all".to_owned(),
+        Request::Snap => "snap".to_owned(),
+        Request::Next => "next".to_owned(),
+        Request::Demo => "demo".to_owned(),
+        Request::Status => "status".to_owned(),
+        Request::Reload => "reload".to_owned(),
+        Request::Stop => "stop".to_owned(),
+    };
+    if json {
+        format!("daifuku {command} --json")
+    } else {
+        format!("daifuku {command}")
+    }
+}
+
+/// `word` as one argument for PowerShell or the command prompt: as it is
+/// when it is plain, in double quotes otherwise.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("\"{word}\"")
     }
 }
 
@@ -769,8 +815,8 @@ mod tests {
         // What the pipe client returns when Windows refuses the open.
         let denied = std::io::Error::from_raw_os_error(5);
         assert_eq!(
-            control_error(&denied, false),
-            "daemon commands need an administrator terminal"
+            control_error(&denied, false, "daifuku status --json"),
+            "the daemon answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status --json"
         );
         // A daemon that is not running is said as it is.
         let missing = std::io::Error::new(
@@ -778,7 +824,7 @@ mod tests {
             "Daifuku is not running; `daifuku doctor` says why",
         );
         assert_eq!(
-            control_error(&missing, false),
+            control_error(&missing, false, "daifuku status"),
             "Daifuku is not running; `daifuku doctor` says why"
         );
         // Elevated already, the terminal is not the problem.
@@ -786,7 +832,104 @@ mod tests {
             std::io::ErrorKind::PermissionDenied,
             "the process answering on Daifuku's control pipe is not the elevated daemon",
         );
-        assert_eq!(control_error(&spoofed, true), spoofed.to_string());
+        assert_eq!(
+            control_error(&spoofed, true, "daifuku status"),
+            spoofed.to_string()
+        );
+    }
+
+    #[test]
+    fn the_command_to_run_again_is_the_one_that_was_asked() {
+        assert_eq!(command_line(&Request::Status, false), "daifuku status");
+        assert_eq!(
+            command_line(&Request::Status, true),
+            "daifuku status --json"
+        );
+        assert_eq!(
+            command_line(
+                &Request::Open {
+                    fleet: Some("my agents".into())
+                },
+                true
+            ),
+            "daifuku open \"my agents\" --json"
+        );
+        assert_eq!(
+            command_line(
+                &Request::Open {
+                    fleet: Some("mochi".into())
+                },
+                false
+            ),
+            "daifuku open mochi"
+        );
+        assert_eq!(
+            command_line(&Request::Open { fleet: None }, false),
+            "daifuku open"
+        );
+        assert_eq!(
+            command_line(
+                &Request::Close {
+                    fleet: Some("agents".into())
+                },
+                false
+            ),
+            "daifuku close agents"
+        );
+        assert_eq!(
+            command_line(&Request::CloseAll, false),
+            "daifuku close --all"
+        );
+        assert_eq!(command_line(&Request::Stop, false), "daifuku stop");
+        assert_eq!(command_line(&Request::Next, true), "daifuku next --json");
+    }
+
+    #[test]
+    fn a_fleet_name_is_quoted_only_when_it_needs_it() {
+        assert_eq!(shell_word("agents-2.b_c"), "agents-2.b_c");
+        assert_eq!(shell_word("my agents"), "\"my agents\"");
+        assert_eq!(shell_word("a&b"), "\"a&b\"");
+        assert_eq!(shell_word(""), "\"\"");
+    }
+
+    #[test]
+    fn every_request_is_named_as_the_command_line_takes_it() {
+        // The command printed must parse back to the request it came from.
+        for request in [
+            Request::Open { fleet: None },
+            Request::Open {
+                fleet: Some("mochi".into()),
+            },
+            Request::Snap,
+            Request::Close { fleet: None },
+            Request::Close {
+                fleet: Some("agents".into()),
+            },
+            Request::CloseAll,
+            Request::Next,
+            Request::Demo,
+            Request::Status,
+            Request::Reload,
+            Request::Stop,
+        ] {
+            let line = command_line(&request, true);
+            let cli =
+                Cli::try_parse_from(line.split(' ')).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(json_flag(&cli.command), Some(true), "{line}");
+            let back = match cli.command {
+                Command::Open { fleet, .. } => Request::Open { fleet },
+                Command::Snap { .. } => Request::Snap,
+                Command::Close { all: true, .. } => Request::CloseAll,
+                Command::Close { fleet, .. } => Request::Close { fleet },
+                Command::Next { .. } => Request::Next,
+                Command::Demo { .. } => Request::Demo,
+                Command::Status { .. } => Request::Status,
+                Command::Reload { .. } => Request::Reload,
+                Command::Stop { .. } => Request::Stop,
+                _ => panic!("{line} is not a daemon command"),
+            };
+            assert_eq!(back, request, "{line}");
+        }
     }
 
     #[test]
