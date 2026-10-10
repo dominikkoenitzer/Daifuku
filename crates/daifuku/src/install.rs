@@ -1347,6 +1347,258 @@ fn starter_config() -> String {
 mod tests {
     use super::*;
 
+    const SID: &str = "S-1-5-21-1-2-3-1001";
+
+    /// A machine Daifuku was never installed on, run from a download folder.
+    fn fresh() -> Facts {
+        Facts {
+            elevated: true,
+            from: PathBuf::from(r"C:\Users\u\Downloads\daifuku"),
+            to: PathBuf::from(r"C:\Program Files\Daifuku"),
+            data: PathBuf::from(r"C:\ProgramData\Daifuku"),
+            missing: Vec::new(),
+            on_path: false,
+            installed: false,
+            data_locked: None,
+            config_exists: false,
+            sid: SID.into(),
+            legacy_task_ours: false,
+            hooks: vec![
+                HookFacts {
+                    agent: &CLAUDE,
+                    file: PathBuf::from(r"C:\Users\u\.claude\settings.json"),
+                    exists: true,
+                    agent_installed: true,
+                    instead: None,
+                    install: Ok((0, 5)),
+                    uninstall: Ok(0),
+                },
+                HookFacts {
+                    agent: &CODEX,
+                    file: PathBuf::from(r"C:\Users\u\.codex\hooks.json"),
+                    exists: false,
+                    agent_installed: true,
+                    instead: None,
+                    install: Ok((0, 4)),
+                    uninstall: Ok(0),
+                },
+            ],
+            terminal: true,
+        }
+    }
+
+    /// The same machine after an install, run from Program Files.
+    fn installed() -> Facts {
+        let mut f = fresh();
+        f.from = f.to.clone();
+        f.on_path = true;
+        f.installed = true;
+        f.data_locked = Some(true);
+        f.config_exists = true;
+        for h in &mut f.hooks {
+            h.exists = true;
+            h.install = Ok((0, 0));
+        }
+        f.hooks[0].uninstall = Ok(5);
+        f.hooks[1].uninstall = Ok(4);
+        f
+    }
+
+    const ALL: Options = Options {
+        no_hooks: false,
+        no_start: false,
+    };
+
+    fn actions(steps: &[Step]) -> Vec<(&'static str, String)> {
+        steps
+            .iter()
+            .flat_map(Step::describe)
+            .map(|s| (s.action, s.target))
+            .collect()
+    }
+
+    fn names(steps: &[Step]) -> Vec<&'static str> {
+        actions(steps).into_iter().map(|(a, _)| a).collect()
+    }
+
+    #[test]
+    fn a_fresh_install_does_every_step_in_order() {
+        let task = task_name(SID);
+        assert_eq!(
+            actions(&install_plan(&fresh(), &ALL)),
+            [
+                ("stop_daemon", "daifukud".to_owned()),
+                ("copy", r"C:\Program Files\Daifuku\daifuku.exe".to_owned()),
+                ("copy", r"C:\Program Files\Daifuku\daifukud.exe".to_owned()),
+                ("add_to_path", r"C:\Program Files\Daifuku".to_owned()),
+                ("create_folder", r"C:\ProgramData\Daifuku".to_owned()),
+                (
+                    "write_config",
+                    r"C:\ProgramData\Daifuku\daifuku.json".to_owned()
+                ),
+                ("register_task", task.clone()),
+                ("start_task", task),
+                ("add_hooks", r"C:\Users\u\.claude\settings.json".to_owned()),
+                ("add_hooks", r"C:\Users\u\.codex\hooks.json".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_install_over_itself_copies_nothing_and_keeps_what_is_there() {
+        assert_eq!(
+            names(&install_plan(&installed(), &ALL)),
+            [
+                "stop_daemon",
+                "keep_path",
+                "keep_folder",
+                "keep_config",
+                "register_task",
+                "start_task",
+                "keep_hooks",
+                "keep_hooks",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_hooks_and_no_start_leave_out_their_steps() {
+        let plan = install_plan(
+            &fresh(),
+            &Options {
+                no_hooks: true,
+                no_start: true,
+            },
+        );
+        let names = names(&plan);
+        assert!(!names.contains(&"start_task"), "{names:?}");
+        assert!(!names.iter().any(|a| a.ends_with("_hooks")), "{names:?}");
+        assert!(names.contains(&"register_task"));
+    }
+
+    #[test]
+    fn a_folder_not_locked_is_replaced_and_its_config_written_anew() {
+        let mut f = installed();
+        f.data_locked = Some(false);
+        let steps = install_plan(&f, &ALL);
+        let names = names(&steps);
+        assert!(names.contains(&"replace_folder"), "{names:?}");
+        assert!(names.contains(&"write_config"), "{names:?}");
+        assert!(!names.contains(&"keep_config"), "{names:?}");
+    }
+
+    #[test]
+    fn without_a_desktop_shell_the_hooks_are_left_and_say_why() {
+        let mut f = fresh();
+        let why = "no desktop shell is running".to_owned();
+        for h in &mut f.hooks {
+            h.install = Err(why.clone());
+        }
+        let described: Vec<PlanStep> = install_plan(&f, &ALL)
+            .iter()
+            .flat_map(Step::describe)
+            .filter(|s| s.action.ends_with("_hooks"))
+            .collect();
+        assert_eq!(described.len(), 2);
+        for s in described {
+            assert_eq!(s.action, "leave_hooks");
+            assert_eq!(s.detail.as_deref(), Some(why.as_str()));
+        }
+    }
+
+    #[test]
+    fn codex_gets_hooks_only_when_it_is_installed() {
+        let mut f = fresh();
+        f.hooks[1].agent_installed = false;
+        let plan = actions(&install_plan(&f, &ALL));
+        assert!(!plan.iter().any(|(_, t)| t.contains(".codex")), "{plan:?}");
+        assert!(plan.iter().any(|(_, t)| t.contains(".claude")), "{plan:?}");
+    }
+
+    #[test]
+    fn an_earlier_shared_task_of_this_user_goes_after_the_new_one_is_registered() {
+        let mut f = installed();
+        f.legacy_task_ours = true;
+        let plan = actions(&install_plan(&f, &ALL));
+        let at = |name: &str, target: &str| {
+            plan.iter()
+                .position(|(a, t)| *a == name && t == target)
+                .unwrap_or_else(|| panic!("{name} {target}: {plan:?}"))
+        };
+        assert!(
+            at("register_task", &task_name(SID)) < at("remove_task", LEGACY_TASK_NAME),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
+    fn an_uninstall_removes_everything_but_the_data_unless_purged() {
+        let task = task_name(SID);
+        assert_eq!(
+            actions(&uninstall_plan(&installed(), false)),
+            [
+                ("stop_daemon", "daifukud".to_owned()),
+                ("remove_task", task),
+                (
+                    "remove_hooks",
+                    r"C:\Users\u\.claude\settings.json".to_owned()
+                ),
+                ("remove_hooks", r"C:\Users\u\.codex\hooks.json".to_owned()),
+                ("remove_from_path", r"C:\Program Files\Daifuku".to_owned()),
+                ("remove_folder", r"C:\Program Files\Daifuku".to_owned()),
+                ("keep_folder", r"C:\ProgramData\Daifuku".to_owned()),
+            ]
+        );
+        let purged = actions(&uninstall_plan(&installed(), true));
+        assert_eq!(
+            purged.last(),
+            Some(&("remove_folder", r"C:\ProgramData\Daifuku".to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_uninstall_lists_only_the_hooks_that_are_there() {
+        let mut f = installed();
+        f.hooks[0].uninstall = Ok(0);
+        f.hooks[1].exists = false;
+        f.on_path = false;
+        f.installed = false;
+        assert_eq!(
+            names(&uninstall_plan(&f, false)),
+            ["stop_daemon", "remove_task", "keep_folder"]
+        );
+    }
+
+    #[test]
+    fn a_dry_run_reads_as_lines_and_as_json() {
+        let mut plan = Plan::new("install", false);
+        for step in install_plan(&fresh(), &ALL) {
+            plan.steps.extend(step.describe());
+        }
+        plan.notes
+            .push("the real `daifuku install` needs an administrator terminal".into());
+        let lines = plan.lines();
+        assert!(lines[0].starts_with("dry run"), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("would copy") && l.contains("daifukud.exe")),
+            "{lines:?}"
+        );
+        let json: serde_json::Value = serde_json::from_str(&crate::output::to_json(&plan)).unwrap();
+        assert_eq!(json["dry_run"], true);
+        assert_eq!(json["command"], "install");
+        assert_eq!(json["elevated"], false);
+        assert_eq!(json["steps"][0]["action"], "stop_daemon");
+        assert_eq!(
+            json["steps"][1]["detail"],
+            r"from C:\Users\u\Downloads\daifuku"
+        );
+        assert_eq!(json["steps"][7]["action"], "start_task");
+        assert_eq!(json["steps"][7]["detail"], serde_json::Value::Null);
+        assert_eq!(json["notes"].as_array().map(Vec::len), Some(1));
+    }
+
     #[test]
     fn the_starter_config_is_valid_and_links_the_schema() {
         let text = starter_config();
