@@ -19,17 +19,32 @@
 //! ```
 //!
 //! Double-clicked in Explorer, with no command, it offers to install.
+//!
+//! Every command but install, uninstall and the hidden ones takes `--json`:
+//! one JSON document on standard output, errors included, described in
+//! `docs/json-output.md`.
 
 #[cfg(windows)]
 mod demo;
 #[cfg(windows)]
 mod install;
+mod output;
 
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use daifuku_core::config::Config;
 use daifuku_core::protocol::Request;
+use output::{ErrorCode, ErrorDoc};
+
+// The `--json` flag, the same on every command that takes it. A doc comment
+// here would become the about text of each command it is flattened into.
+#[derive(Args, Debug, Clone, Copy, Default)]
+struct Format {
+    /// Print one JSON document on standard output, errors included.
+    #[arg(long)]
+    json: bool,
+}
 
 #[derive(Parser)]
 #[command(
@@ -50,9 +65,14 @@ enum Command {
     Open {
         /// The fleet's name.
         fleet: Option<String>,
+        #[command(flatten)]
+        format: Format,
     },
     /// Put every fleet terminal back in its cell.
-    Snap,
+    Snap {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Close a fleet's terminals. The first fleet when no name is given.
     Close {
         /// The fleet's name.
@@ -60,11 +80,19 @@ enum Command {
         /// Close every open fleet instead.
         #[arg(long, conflicts_with = "fleet")]
         all: bool,
+        #[command(flatten)]
+        format: Format,
     },
     /// Focus the agent that has waited longest for you.
-    Next,
+    Next {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Open six scripted demo agents: Daifuku without a real agent.
-    Demo,
+    Demo {
+        #[command(flatten)]
+        format: Format,
+    },
     /// One scripted demo agent. `daifuku demo` starts these.
     #[command(hide = true)]
     DemoAgent {
@@ -73,20 +101,28 @@ enum Command {
     },
     /// Show fleets, agents, hotkeys and the config in use.
     Status {
-        /// Print the raw JSON reply.
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        format: Format,
     },
     /// Re-read the config file.
-    Reload,
+    Reload {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Stop the daemon.
-    Stop,
+    Stop {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Report one hook event, read from standard input. Agents call this;
     /// it never prints and always exits 0, so it can never disturb one.
     #[command(hide = true)]
     Hook,
     /// Print the config file's JSON schema.
-    Schema,
+    Schema {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Open the config file in your editor, asking Windows for
     /// administrator rights when this terminal has none. Every key in it is
     /// optional.
@@ -94,6 +130,8 @@ enum Command {
         /// Print where the config file is instead.
         #[arg(long)]
         path: bool,
+        #[command(flatten)]
+        format: Format,
     },
     /// Install for this user: Program Files, the logon task, the hooks for
     /// Claude Code and Codex. Needs an administrator terminal.
@@ -119,7 +157,10 @@ enum Command {
         purge: bool,
     },
     /// Check the setup and say how to fix anything wrong.
-    Doctor,
+    Doctor {
+        #[command(flatten)]
+        format: Format,
+    },
 }
 
 fn main() -> ExitCode {
@@ -129,18 +170,43 @@ fn main() -> ExitCode {
     {
         return code;
     }
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => return usage_error(&e, std::env::args_os().any(|a| a == "--json")),
+    };
     match cli.command {
         Command::Hook => {
             hook();
             ExitCode::SUCCESS
         }
-        Command::Schema => {
+        // The schema is JSON already; --json leaves it as it is.
+        Command::Schema { .. } => {
             print!("{}", Config::schema());
             ExitCode::SUCCESS
         }
-        Command::Config { path: true } => config_path(),
-        Command::Config { path: false } => setup_result(edit_config()),
+        Command::Config {
+            path: true,
+            format,
+        } => config_path(format.json),
+        Command::Config {
+            path: false,
+            format: Format { json: false },
+        } => setup_result(edit_config().map(|file| {
+            println!("opened       {}", file.display());
+            println!(
+                "\nEvery key is optional; what you leave out keeps its default. Daifuku applies the file within two seconds of each save."
+            );
+        })),
+        Command::Config {
+            path: false,
+            format: Format { json: true },
+        } => match edit_config() {
+            Ok(_) => {
+                output::print_json(&output::Done { ok: true });
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail_json(ErrorCode::Config, &format!("{e:#}")),
+        },
         Command::Install {
             no_hooks,
             no_start,
@@ -157,27 +223,55 @@ fn main() -> ExitCode {
             code
         }
         Command::Uninstall { purge } => setup_result(uninstall_cmd(purge)),
-        Command::Doctor => {
-            if doctor_cmd() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
-        }
-        Command::Open { fleet } => control(&Request::Open { fleet }, false),
-        Command::Snap => control(&Request::Snap, false),
-        Command::Close { all: true, .. } => control(&Request::CloseAll, false),
-        Command::Close { fleet, .. } => control(&Request::Close { fleet }, false),
-        Command::Next => control(&Request::Next, false),
-        Command::Demo => control(&Request::Demo, false),
+        Command::Doctor { format } => doctor_cmd(format.json),
+        Command::Open { fleet, format } => control(&Request::Open { fleet }, format.json),
+        Command::Snap { format } => control(&Request::Snap, format.json),
+        Command::Close {
+            all: true, format, ..
+        } => control(&Request::CloseAll, format.json),
+        Command::Close { fleet, format, .. } => control(&Request::Close { fleet }, format.json),
+        Command::Next { format } => control(&Request::Next, format.json),
+        Command::Demo { format } => control(&Request::Demo, format.json),
         Command::DemoAgent { number } => {
             demo_agent(number);
             ExitCode::SUCCESS
         }
-        Command::Status { json } => control(&Request::Status, json),
-        Command::Reload => control(&Request::Reload, false),
-        Command::Stop => control(&Request::Stop, false),
+        Command::Status { format } => control(&Request::Status, format.json),
+        Command::Reload { format } => control(&Request::Reload, format.json),
+        Command::Stop { format } => control(&Request::Stop, format.json),
     }
+}
+
+/// A command line that did not parse. With `--json` anywhere in it, the
+/// error is the JSON error with code `usage`; help and version requests,
+/// and everything without `--json`, go the way clap always takes them.
+fn usage_error(e: &clap::Error, json: bool) -> ExitCode {
+    use clap::error::ErrorKind;
+    let asked = matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+    if !json || asked {
+        e.exit();
+    }
+    output::print_json(&ErrorDoc::new(ErrorCode::Usage, &usage_message(e)));
+    // What clap exits with on a usage error.
+    ExitCode::from(2)
+}
+
+/// The first line of clap's error, without its `error: ` in front.
+fn usage_message(e: &clap::Error) -> String {
+    let text = e.render().to_string();
+    let first = text.lines().next().unwrap_or_default();
+    first.strip_prefix("error: ").unwrap_or(first).to_owned()
+}
+
+/// Prints the JSON error and returns the failure exit code.
+fn fail_json(code: ErrorCode, message: &str) -> ExitCode {
+    output::print_json(&ErrorDoc::new(code, message));
+    ExitCode::FAILURE
 }
 
 /// What `daifuku` started with no command does.
@@ -273,10 +367,11 @@ fn wait_for_enter() {
 }
 
 /// Opens the config in the program Windows opens `.json` files with, or in
-/// Notepad. Only administrators may change the config, so from a terminal
-/// that is not elevated the editor starts after the Windows prompt.
+/// Notepad, and returns the file. Only administrators may change the config,
+/// so from a terminal that is not elevated the editor starts after the
+/// Windows prompt.
 #[cfg(windows)]
-fn edit_config() -> anyhow::Result<()> {
+fn edit_config() -> anyhow::Result<std::path::PathBuf> {
     use anyhow::Context;
     use daifuku_win::{elevate, paths, process};
 
@@ -298,13 +393,7 @@ fn edit_config() -> anyhow::Result<()> {
             elevate::run_elevated(&editor, &quoted)
         };
         match started {
-            Ok(()) => {
-                println!("opened       {}", file.display());
-                println!(
-                    "\nEvery key is optional; what you leave out keeps its default. Daifuku applies the file within two seconds of each save."
-                );
-                return Ok(());
-            }
+            Ok(()) => return Ok(file),
             Err(e) if elevate::declined(&e) => {
                 anyhow::bail!("Windows was not given permission, so the config stays as it is");
             }
@@ -318,7 +407,7 @@ fn edit_config() -> anyhow::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn edit_config() -> anyhow::Result<()> {
+fn edit_config() -> anyhow::Result<std::path::PathBuf> {
     anyhow::bail!("daifuku runs on Windows only")
 }
 
@@ -350,9 +439,23 @@ fn uninstall_cmd(purge: bool) -> anyhow::Result<()> {
     install::uninstall(purge)
 }
 
+/// Runs the doctor. Its exit code says whether every check passed, with
+/// `--json` too.
 #[cfg(windows)]
-fn doctor_cmd() -> bool {
-    install::doctor()
+fn doctor_cmd(json: bool) -> ExitCode {
+    let ok = if json {
+        let mut report = output::DoctorReport::new();
+        install::doctor(&mut |f| report.add(f));
+        output::print_json(&report);
+        report.ok
+    } else {
+        install::doctor(&mut |f| println!("{}", f.line()))
+    };
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(not(windows))]
@@ -366,8 +469,12 @@ fn uninstall_cmd(_: bool) -> anyhow::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn doctor_cmd() -> bool {
-    false
+fn doctor_cmd(json: bool) -> ExitCode {
+    if json {
+        fail_json(ErrorCode::Unsupported, "daifuku runs on Windows only")
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(windows)]
@@ -409,12 +516,19 @@ fn hook() {
 }
 
 #[cfg(windows)]
-fn config_path() -> ExitCode {
+fn config_path(json: bool) -> ExitCode {
     match daifuku_win::paths::config_file() {
+        Some(p) if json => {
+            output::print_json(&output::ConfigPath {
+                path: p.display().to_string(),
+            });
+            ExitCode::SUCCESS
+        }
         Some(p) => {
             println!("{}", p.display());
             ExitCode::SUCCESS
         }
+        None if json => fail_json(ErrorCode::Config, "no ProgramData folder"),
         None => {
             eprintln!("daifuku: no ProgramData folder");
             ExitCode::FAILURE
@@ -423,90 +537,73 @@ fn config_path() -> ExitCode {
 }
 
 #[cfg(not(windows))]
-fn config_path() -> ExitCode {
+fn config_path(json: bool) -> ExitCode {
+    if json {
+        return fail_json(ErrorCode::Unsupported, "daifuku runs on Windows only");
+    }
     eprintln!("daifuku runs on Windows only");
     ExitCode::FAILURE
 }
 
 #[cfg(windows)]
-fn control(request: &Request, raw: bool) -> ExitCode {
+fn control(request: &Request, json: bool) -> ExitCode {
     use daifuku_core::protocol::{Response, from_line, to_line};
     use daifuku_win::pipe::{Pipe, send};
 
-    let Ok(line) = to_line(request) else {
-        return ExitCode::FAILURE;
-    };
-    let reply = match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
-        Ok(Some(reply)) => reply,
-        Ok(None) => return ExitCode::FAILURE,
-        Err(e) => {
-            eprintln!(
-                "daifuku: {}",
-                control_error(&e, daifuku_win::process::current_is_elevated())
-            );
-            return ExitCode::FAILURE;
+    // Without --json a failure prints on stderr, as it always has.
+    let fail = |code: ErrorCode, message: &str| {
+        if json {
+            fail_json(code, message)
+        } else {
+            eprintln!("daifuku: {message}");
+            ExitCode::FAILURE
         }
     };
-    if raw {
-        // A script reads this through a pipe, which PowerShell decodes in the
-        // console's code page, not UTF-8; escaped, a title arrives intact.
-        print!("{}", ascii_json(&reply));
-        // A script checks the exit code before it reads the JSON.
-        return if done(&reply) {
-            ExitCode::SUCCESS
+    let Ok(line) = to_line(request) else {
+        return if json {
+            fail_json(ErrorCode::Internal, "could not write the request")
         } else {
             ExitCode::FAILURE
         };
-    }
+    };
+    let reply = match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
+        Ok(Some(reply)) => reply,
+        Ok(None) if json => return fail_json(ErrorCode::Ipc, "the daemon did not answer"),
+        Ok(None) => return ExitCode::FAILURE,
+        Err(e) => {
+            let elevated = daifuku_win::process::current_is_elevated();
+            return fail(control_code(&e, elevated), &control_error(&e, elevated));
+        }
+    };
     match from_line::<Response>(&reply) {
+        Ok(Response::Ok { .. }) if json => {
+            output::print_json(&output::Done { ok: true });
+            ExitCode::SUCCESS
+        }
         Ok(Response::Ok { message }) => {
             if let Some(m) = message {
                 println!("{m}");
             }
             ExitCode::SUCCESS
         }
+        Ok(Response::Status(status)) if json => {
+            // Written again from what was read, so every documented field is
+            // there even when an older daemon left one out. A script reads
+            // this through a pipe, which PowerShell decodes in the console's
+            // code page, not UTF-8; escaped, a title arrives intact.
+            print!(
+                "{}",
+                output::ascii_json(&to_line(&Response::Status(status)).unwrap_or_default())
+            );
+            ExitCode::SUCCESS
+        }
         Ok(Response::Status(status)) => {
             print_status(&status);
             ExitCode::SUCCESS
         }
-        Ok(Response::Error { message }) => {
-            eprintln!("daifuku: {message}");
-            ExitCode::FAILURE
-        }
-        Err(e) => {
-            eprintln!("daifuku: unreadable reply: {e}");
-            ExitCode::FAILURE
-        }
+        Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
+        Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
     }
-}
-
-/// `json` with every character past ASCII written as a `\u` escape. JSON has
-/// such characters only inside strings, where the escape means the same, so
-/// any parser reads the same value, in whatever code page it arrives.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn ascii_json(json: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(json.len());
-    for c in json.chars() {
-        if c.is_ascii() {
-            out.push(c);
-        } else {
-            for unit in c.encode_utf16(&mut [0; 2]) {
-                let _ = write!(out, "\\u{unit:04x}");
-            }
-        }
-    }
-    out
-}
-
-/// Whether a reply says the request was done: readable, and not an error.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn done(reply: &str) -> bool {
-    use daifuku_core::protocol::{Response, from_line};
-    matches!(
-        from_line::<Response>(reply),
-        Ok(Response::Ok { .. } | Response::Status(_))
-    )
 }
 
 /// What to say when the daemon could not be asked. Only an elevated process
@@ -521,8 +618,24 @@ fn control_error(e: &std::io::Error, elevated: bool) -> String {
     }
 }
 
+/// The error code for a daemon that could not be asked, matching
+/// [`control_error`].
+#[cfg_attr(not(windows), allow(dead_code))]
+fn control_code(e: &std::io::Error, elevated: bool) -> ErrorCode {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        ErrorCode::DaemonNotRunning
+    } else if !elevated {
+        ErrorCode::NotElevated
+    } else {
+        ErrorCode::Ipc
+    }
+}
+
 #[cfg(not(windows))]
-fn control(_: &Request, _: bool) -> ExitCode {
+fn control(_: &Request, json: bool) -> ExitCode {
+    if json {
+        return fail_json(ErrorCode::Unsupported, "daifuku runs on Windows only");
+    }
     eprintln!("daifuku runs on Windows only");
     ExitCode::FAILURE
 }
@@ -670,20 +783,9 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_reply_counts_as_done_only_when_it_is_not_an_error() {
-        assert!(done("{\"result\":\"ok\"}\n"));
-        assert!(done("{\"result\":\"ok\",\"message\":\"opened\"}\n"));
-        assert!(!done(
-            "{\"result\":\"error\",\"message\":\"the daemon did not answer in time\"}\n"
-        ));
-        assert!(!done(""));
-        assert!(!done("{\"result\""));
-    }
-
-    #[test]
     fn json_for_a_script_is_ascii_and_reads_the_same() {
         let reply = "{\"title\":\"\u{2733} Gr\u{fc}ezi \u{1f600}\",\"a\\\\b\":1}\n";
-        let ascii = ascii_json(reply);
+        let ascii = output::ascii_json(reply);
         assert_eq!(
             ascii,
             "{\"title\":\"\\u2733 Gr\\u00fcezi \\ud83d\\ude00\",\"a\\\\b\":1}\n"
@@ -721,9 +823,9 @@ mod tests {
     #[test]
     fn config_opens_the_file_and_prints_its_path_on_request() {
         let cli = Cli::parse_from(["daifuku", "config"]);
-        assert!(matches!(cli.command, Command::Config { path: false }));
+        assert!(matches!(cli.command, Command::Config { path: false, .. }));
         let cli = Cli::parse_from(["daifuku", "config", "--path"]);
-        assert!(matches!(cli.command, Command::Config { path: true }));
+        assert!(matches!(cli.command, Command::Config { path: true, .. }));
     }
 
     #[test]
@@ -742,8 +844,8 @@ mod tests {
     #[test]
     fn open_takes_an_optional_fleet() {
         let cli = Cli::parse_from(["daifuku", "open", "mochi"]);
-        assert!(matches!(cli.command, Command::Open { fleet: Some(ref f) } if f == "mochi"));
+        assert!(matches!(cli.command, Command::Open { fleet: Some(ref f), .. } if f == "mochi"));
         let cli = Cli::parse_from(["daifuku", "open"]);
-        assert!(matches!(cli.command, Command::Open { fleet: None }));
+        assert!(matches!(cli.command, Command::Open { fleet: None, .. }));
     }
 }

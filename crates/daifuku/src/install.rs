@@ -35,6 +35,8 @@ use daifuku_core::task::{LEGACY_TASK_NAME, task_name, task_users, xml};
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{environment, paths, process, setup, terminal};
 
+use crate::output::Finding;
+
 const BINARIES: [&str; 2] = ["daifuku.exe", "daifukud.exe"];
 
 /// What `install` should skip.
@@ -248,22 +250,36 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Hands each finding to `report` as it is made, and returns whether every
+/// check passed.
+struct Doctor<'a> {
+    ok: bool,
+    report: &'a mut dyn FnMut(Finding),
+}
+
+impl Doctor<'_> {
+    fn check(&mut self, good: bool, label: &str, fix: &str) {
+        self.ok &= good;
+        (self.report)(Finding::Check {
+            name: label.to_owned(),
+            fix: (!good).then(|| fix.to_owned()),
+        });
+    }
+
+    fn note(&mut self, text: &str) {
+        (self.report)(Finding::Note(text.to_owned()));
+    }
+}
+
 /// Checks everything that can stop Daifuku from working, and says what to do
-/// about each problem.
-pub fn doctor() -> bool {
-    let mut ok = true;
-    let mut check = |good: bool, label: &str, fix: &str| {
-        if good {
-            println!("ok    {label}");
-        } else {
-            ok = false;
-            println!("FIX   {label}: {fix}");
-        }
-    };
+/// about each problem. Each finding goes to `report` as it is made; the
+/// result says whether every check passed.
+pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
+    let mut doctor = Doctor { ok: true, report };
 
     let installed =
         paths::install_dir().is_some_and(|d| BINARIES.iter().all(|b| d.join(b).is_file()));
-    check(
+    doctor.check(
         installed,
         "installed in Program Files",
         "run `daifuku install` from an administrator terminal",
@@ -273,19 +289,19 @@ pub fn doctor() -> bool {
     let on_path = paths::install_dir().is_some_and(|d| {
         environment::machine_path().is_ok_and(|p| path_list::contains(&p, &d.to_string_lossy()))
     });
-    check(
+    doctor.check(
         on_path,
         "Program Files folder on the machine PATH",
         "run `daifuku install` again",
     );
     let task = setup::user_sid().map(|sid| task_name(&sid));
-    check(
+    doctor.check(
         task.as_deref().is_some_and(setup::task_exists),
         "logon task registered",
         "run `daifuku install`",
     );
     let task = task.unwrap_or_else(|| task_name("<your SID>"));
-    check(
+    doctor.check(
         terminal::find().is_some(),
         "Windows Terminal found",
         "winget install Microsoft.WindowsTerminal",
@@ -301,9 +317,9 @@ pub fn doctor() -> bool {
             },
         );
     match config {
-        Some(Ok(_)) => check(true, "config valid", ""),
-        Some(Err(e)) => check(false, "config valid", &e),
-        None => check(false, "config valid", "no ProgramData folder"),
+        Some(Ok(_)) => doctor.check(true, "config valid", ""),
+        Some(Err(e)) => doctor.check(false, "config valid", &e),
+        None => doctor.check(false, "config valid", "no ProgramData folder"),
     }
 
     // The hooks must all be there and call the installed copy: a hook left
@@ -330,7 +346,7 @@ pub fn doctor() -> bool {
             ),
             None => fix,
         });
-        check(
+        doctor.check(
             fix.is_none(),
             &format!("{} hooks present and current", agent.name),
             fix.as_deref().unwrap_or_default(),
@@ -338,7 +354,7 @@ pub fn doctor() -> bool {
     }
 
     let running = send(Pipe::Hook, "{}\n", Duration::from_millis(200)).is_ok();
-    check(
+    doctor.check(
         running,
         "daemon running",
         &format!("sign out and in, or `schtasks /Run /TN {task}`"),
@@ -355,20 +371,20 @@ pub fn doctor() -> bool {
                     .and_then(|l| send(Pipe::Control, &l, Duration::from_secs(2))),
             );
             if matches!(reply, StatusReply::Busy) && !std::mem::replace(&mut told, true) {
-                println!(
-                    "--    daemon busy with another command, such as opening a fleet: waiting for it"
+                doctor.note(
+                    "daemon busy with another command, such as opening a fleet: waiting for it",
                 );
             }
             reply
         });
         match reply {
             StatusReply::Status(s) => {
-                check(
+                doctor.check(
                     s.elevated,
                     "daemon elevated",
                     "start it through the logon task, not by hand",
                 );
-                check(
+                doctor.check(
                     s.version == env!("CARGO_PKG_VERSION"),
                     "daemon up to date",
                     &format!(
@@ -378,7 +394,7 @@ pub fn doctor() -> bool {
                     ),
                 );
                 let refused = refused_hotkeys(&s.hotkeys);
-                check(
+                doctor.check(
                     refused.is_empty(),
                     "hotkeys registered",
                     &format!(
@@ -387,33 +403,33 @@ pub fn doctor() -> bool {
                     ),
                 );
             }
-            StatusReply::Busy | StatusReply::Stuck => check(
+            StatusReply::Busy | StatusReply::Stuck => doctor.check(
                 false,
                 "daemon answers",
                 &stuck_fix(process::session(), &task),
             ),
-            StatusReply::NotElevated => check(
+            StatusReply::NotElevated => doctor.check(
                 false,
                 "daemon elevated",
                 &format!(
                     "the process answering on Daifuku's control pipe is not the elevated daemon: sign out and in, or end it and run `schtasks /Run /TN {task}`"
                 ),
             ),
-            StatusReply::Silent => check(
+            StatusReply::Silent => doctor.check(
                 false,
                 "daemon answers",
                 &format!("restart it: `daifuku stop`, then `schtasks /Run /TN {task}`"),
             ),
         }
     } else {
-        println!(
-            "--    elevation and hotkeys: run doctor from an administrator terminal to check those too"
+        doctor.note(
+            "elevation and hotkeys: run doctor from an administrator terminal to check those too",
         );
     }
     if let Some(logs) = paths::log_dir(true) {
-        println!("logs  {}", logs.display());
+        (doctor.report)(Finding::Logs(logs.display().to_string()));
     }
-    ok
+    doctor.ok
 }
 
 /// What to do so that `file` holds all of `agent`'s hooks, calling `exe`, or
