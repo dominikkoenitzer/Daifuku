@@ -40,6 +40,7 @@ use daifuku_win::apps::{self, Value};
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{environment, paths, process, setup, terminal};
 
+use crate::local;
 use crate::output::{Finding, Plan, PlanStep};
 
 const BINARIES: [&str; 2] = ["daifuku.exe", "daifukud.exe"];
@@ -947,6 +948,66 @@ fn aside_name(name: &str) -> String {
     format!("daifuku-old-{}-{name}", std::process::id())
 }
 
+/// Whether both programs are in Program Files.
+fn is_installed() -> bool {
+    paths::install_dir().is_some_and(|d| BINARIES.iter().all(|b| d.join(b).is_file()))
+}
+
+/// What `daifuku status` reads on this PC from a terminal that is not
+/// elevated: files, the registry, the process list and Task Scheduler.
+/// Nothing in it opens the daemon's pipes.
+pub struct Here;
+
+impl local::Probe for Here {
+    fn installed(&self) -> bool {
+        is_installed()
+    }
+
+    /// This program's version when it is the installed copy, else the one
+    /// install wrote into the entry in Settings > Apps.
+    fn installed_version(&self) -> Option<String> {
+        let same = |a: &Path, b: &Path| matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b);
+        let this_one = paths::install_dir()
+            .zip(std::env::current_exe().ok())
+            .is_some_and(|(dir, exe)| same(&dir.join(BINARIES[0]), &exe));
+        if this_one {
+            Some(env!("CARGO_PKG_VERSION").to_owned())
+        } else {
+            apps::text("DisplayVersion")
+        }
+    }
+
+    fn daemon_running(&self) -> bool {
+        let session = process::session();
+        local::daemon_in(
+            process::snapshot()
+                .values()
+                .map(|p| (p.pid, p.name.as_str())),
+            |pid| process::session_of(pid) == Some(session),
+        )
+    }
+
+    /// This user's task, or the one task earlier installs shared when it
+    /// runs for this user.
+    fn logon_task(&self) -> bool {
+        let Some(sid) = setup::user_sid() else {
+            return false;
+        };
+        setup::task_exists(&task_name(&sid))
+            || setup::task_xml(LEGACY_TASK_NAME).is_some_and(|definition| {
+                runs_for(&task_users(&definition), &sid, this_account().as_deref())
+            })
+    }
+
+    fn config_file(&self) -> Option<PathBuf> {
+        paths::config_file()
+    }
+
+    fn read(&self, file: &Path) -> std::io::Result<Vec<u8>> {
+        std::fs::read(file)
+    }
+}
+
 /// Hands each finding to `report` as it is made, and returns whether every
 /// check passed.
 struct Doctor<'a> {
@@ -974,10 +1035,8 @@ impl Doctor<'_> {
 pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
     let mut doctor = Doctor { ok: true, report };
 
-    let installed =
-        paths::install_dir().is_some_and(|d| BINARIES.iter().all(|b| d.join(b).is_file()));
     doctor.check(
-        installed,
+        is_installed(),
         "installed in Program Files",
         "run `daifuku install` from an administrator terminal",
     );
