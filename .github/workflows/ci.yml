@@ -127,9 +127,9 @@ jobs:
         run: Get-ChildItem "$env:ProgramData\Daifuku\logs", "$env:LOCALAPPDATA\Daifuku\logs" -Filter *.log -ErrorAction SilentlyContinue | Get-Content -Tail 80
 
   # The installer, for real, on a machine where it may do everything it does
-  # on a user's: Program Files, the locked ProgramData folder, the logon task,
-  # the hooks in Claude Code's settings. Then uninstall, and prove every piece
-  # is gone again.
+  # on a user's: Program Files, the machine PATH, the locked ProgramData
+  # folder, the logon task, the hooks in Claude Code's settings. Then
+  # uninstall, and prove every piece is gone again.
   install:
     name: install and uninstall
     timeout-minutes: 30
@@ -169,6 +169,14 @@ jobs:
           foreach ($f in 'daifuku.exe', 'daifukud.exe') {
               if (-not (Test-Path (Join-Path $dir $f))) { throw "$f was not installed" }
           }
+          # The machine PATH as the registry holds it, not this shell's copy,
+          # which was read before the install. Entries compare as Windows
+          # does: any case, with or without a trailing backslash.
+          $onPath = {
+              @([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';' |
+                  Where-Object { $_.Trim().TrimEnd('\') -ieq $dir.TrimEnd('\') }).Count
+          }
+          if ((& $onPath) -ne 1) { throw "$dir is on the machine PATH $(& $onPath) times, not once" }
           $data = Join-Path $env:ProgramData 'Daifuku'
           $acl = (Get-Acl $data)
           if ($acl.Owner -notmatch 'Administrators') { throw "ProgramData\Daifuku is owned by $($acl.Owner)" }
@@ -184,16 +192,17 @@ jobs:
               $json = Get-Content -Raw $settings | ConvertFrom-Json
               if ($json.theme -ne 'dark') { throw 'the install lost a setting' }
               if (@($json.hooks.Stop).Count -ne 2) { throw 'Stop should hold the user hook and Daifuku''s' }
-              Write-Output 'installed: binaries, locked folder, task, hooks next to the user''s own'
+              Write-Output 'installed: binaries, machine PATH, locked folder, task, hooks next to the user''s own'
           } else {
               if ((Get-Content -Raw $settings) -ne $original) { throw 'install changed the settings without a desktop shell' }
-              Write-Output 'installed: binaries, locked folder, task; no desktop shell, so the settings were left alone'
+              Write-Output 'installed: binaries, machine PATH, locked folder, task; no desktop shell, so the settings were left alone'
           }
 
           # Installing twice changes nothing.
           $before = Get-Content -Raw $settings
           ./target/release/daifuku.exe install --no-start | Out-Null
           if ((Get-Content -Raw $settings) -ne $before) { throw 'a second install changed the settings' }
+          if ((& $onPath) -ne 1) { throw "a second install left $dir on the machine PATH $(& $onPath) times" }
 
           & (Join-Path $dir 'daifuku.exe') uninstall --purge
           if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }
@@ -201,12 +210,13 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the logon task survived the uninstall' }
           # Run from there, its own daifuku.exe included.
           if (Test-Path $dir) { throw 'Program Files\Daifuku survived the uninstall' }
+          if ((& $onPath) -ne 0) { throw "$dir is still on the machine PATH after the uninstall" }
           if (Test-Path $data) { throw 'ProgramData\Daifuku survived --purge' }
           $json = Get-Content -Raw $settings | ConvertFrom-Json
           if (@($json.hooks.Stop).Count -ne 1 -or $json.hooks.Stop[0].hooks[0].command -ne 'C:/mine.exe') {
               throw 'the uninstall did not leave exactly the user''s own hook'
           }
-          Write-Output 'uninstalled: binaries, task, data and Daifuku''s hooks gone, the user''s hook kept'
+          Write-Output 'uninstalled: binaries, PATH entry, task, data and Daifuku''s hooks gone, the user''s hook kept'
           # The last native command asked for a task that is gone on purpose and
           # left its exit code 1 behind, which the runner would report as a
           # failure of this whole step.
