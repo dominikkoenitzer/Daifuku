@@ -393,7 +393,9 @@ jobs:
 
   # Every link in the README and the docs resolves, including the schema URL
   # the starter config writes into every user's file. That one only appears
-  # in a code block, which lychee skips unless told to read them.
+  # in a code block, which lychee skips unless told to read them. The
+  # latest-download links are skipped: the fixed-name zips exist only from the
+  # next release on, and the package job checks their names.
   links:
     name: links
     timeout-minutes: 10
@@ -404,7 +406,7 @@ jobs:
           persist-credentials: false
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
-          args: --no-progress --include-fragments --include-verbatim README.md docs
+          args: --no-progress --include-fragments --include-verbatim --exclude '^https://github\.com/dominikkoenitzer/Daifuku/releases/latest/download/' README.md docs
           fail: true
 
   # The release workflow's packaging, on every push, without publishing: a
