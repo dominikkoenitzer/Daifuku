@@ -24,6 +24,9 @@ key and checks its name and type:
 A mistake never takes Daifuku down: an invalid file is reported by
 `daifuku status` and `daifuku doctor`, and the last valid one stays in use,
 or the defaults when the daemon started with the invalid file.
+`daifuku config validate`, from any terminal, checks the file the way the
+daemon reads it before you rely on it; `daifuku config validate <file>`
+checks a copy anywhere else.
 
 ## `fleets`
 
