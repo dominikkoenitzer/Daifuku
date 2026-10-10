@@ -30,6 +30,11 @@ inside the terminal, from the user's own `PATH`. An administrator fleet
 therefore runs the user's `claude` as administrator, which is what the user
 asked for by setting `"admin": true`; Daifuku adds nothing to it.
 
+Install adds `C:\Program Files\Daifuku`, which only administrators can
+write, to the machine `PATH`, and uninstall removes exactly that entry.
+Double-clicking `daifuku.exe`, and `daifuku config` from an ordinary
+terminal, ask for administrator rights through the normal Windows prompt.
+
 ## Talking to the daemon
 
 There are two named pipes, per Remote Desktop session.
