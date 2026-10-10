@@ -292,11 +292,17 @@ fn usage_error(e: &clap::Error, json: bool) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// The first line of clap's error, without its `error: ` in front.
+/// The first line of clap's error, without its `error: ` in front. A line
+/// that ends in a colon takes the next one along, which names what it means.
 fn usage_message(e: &clap::Error) -> String {
     let text = e.render().to_string();
-    let first = text.lines().next().unwrap_or_default();
-    first.strip_prefix("error: ").unwrap_or(first).to_owned()
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or_default();
+    let first = first.strip_prefix("error: ").unwrap_or(first);
+    match lines.next() {
+        Some(next) if first.ends_with(':') => format!("{first} {next}"),
+        _ => first.to_owned(),
+    }
 }
 
 /// Prints the JSON error and returns the failure exit code.
