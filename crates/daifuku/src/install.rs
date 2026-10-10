@@ -9,7 +9,8 @@
 //!    `daifukud.exe` next to this program, as in the zip. Only
 //!    administrators can change them there. The daemon runs elevated, so a
 //!    binary an ordinary process could swap would hand that process
-//!    administrator rights at the next logon.
+//!    administrator rights at the next logon. Then list it in Settings >
+//!    Apps > Installed apps, whose Uninstall runs `daifuku uninstall`.
 //! 3. Add that folder to the machine `PATH`, so `daifuku` runs in any new
 //!    terminal, and tell running programs the variable changed. A `PATH`
 //!    that cannot be changed is reported and the install goes on: the
@@ -35,6 +36,7 @@ use daifuku_core::config::Config;
 use daifuku_core::path_list;
 use daifuku_core::protocol::{Request, Response, Status, from_line, to_line};
 use daifuku_core::task::{LEGACY_TASK_NAME, task_name, task_users, xml};
+use daifuku_win::apps::{self, Value};
 use daifuku_win::pipe::{Pipe, send};
 use daifuku_win::{environment, paths, process, setup, terminal};
 
@@ -117,6 +119,10 @@ pub struct Facts {
     pub hooks: Vec<HookFacts>,
     /// Whether Windows Terminal is installed.
     pub terminal: bool,
+    /// The bytes the two binaries take once installed.
+    pub size: u64,
+    /// Whether Settings > Apps lists Daifuku already.
+    pub app_entry: bool,
 }
 
 /// One agent's settings file, as [`Facts`] finds it.
@@ -148,6 +154,8 @@ pub enum Step {
         daemon: Option<Daemon>,
         to: PathBuf,
     },
+    /// List Daifuku in Settings > Apps with `values`.
+    AppEntry { values: Vec<(&'static str, Value)> },
     /// Put `dir` on the machine `PATH`; `present` when it is there already.
     AddToPath { dir: PathBuf, present: bool },
     /// Lock the data folder to administrators; `found` as [`Facts::data_locked`].
@@ -185,6 +193,8 @@ pub enum Step {
     RemoveFromPath { dir: PathBuf, present: bool },
     /// Delete the binaries and their folder; `present` when it exists.
     RemoveBinaries { dir: PathBuf, present: bool },
+    /// Take Daifuku out of Settings > Apps; `present` when it is listed.
+    RemoveAppEntry { present: bool },
     /// Delete the data folder: the config, the logs, the saved state.
     RemoveData { dir: PathBuf },
     /// Keep the data folder.
@@ -251,9 +261,16 @@ impl Facts {
                 }
             })
             .collect();
+        let daemon = daemon_for(&this);
+        let size = std::fs::metadata(&this).map_or(0, |m| m.len())
+            + match &daemon {
+                Some(Daemon::Carried(bytes)) => bytes.len() as u64,
+                Some(Daemon::Beside(file)) => std::fs::metadata(file).map_or(0, |m| m.len()),
+                None => 0,
+            };
         Ok(Self {
             elevated: process::current_is_elevated(),
-            daemon: daemon_for(&this),
+            daemon,
             exe: this,
             installed: to.is_dir(),
             config_exists: data.join("daifuku.json").is_file(),
@@ -266,8 +283,47 @@ impl Facts {
             sid,
             legacy_task_ours,
             hooks,
+            size,
+            app_entry: apps::exists(),
         })
     }
+}
+
+/// The arguments the Uninstall button in Settings > Apps starts the
+/// installed `daifuku.exe` with.
+pub const FROM_SETTINGS: &str = "uninstall --from-settings";
+
+/// The values of the entry Settings > Apps > Installed apps lists Daifuku
+/// by, for an install in `dir` whose binaries take `size` bytes. Its
+/// Uninstall button runs [`FROM_SETTINGS`]; tools that remove apps without
+/// a window run the plain `uninstall`.
+fn app_entry(dir: &Path, size: u64) -> Vec<(&'static str, Value)> {
+    let exe = dir.join("daifuku.exe");
+    let exe = exe.display();
+    vec![
+        ("DisplayName", Value::Text("Daifuku".into())),
+        (
+            "DisplayVersion",
+            Value::Text(env!("CARGO_PKG_VERSION").into()),
+        ),
+        ("Publisher", Value::Text("Daifuku".into())),
+        ("InstallLocation", Value::Text(dir.display().to_string())),
+        ("DisplayIcon", Value::Text(format!("{exe},0"))),
+        (
+            "EstimatedSize",
+            Value::Number(u32::try_from(size.div_ceil(1024)).unwrap_or(u32::MAX)),
+        ),
+        ("NoModify", Value::Number(1)),
+        ("NoRepair", Value::Number(1)),
+        (
+            "UninstallString",
+            Value::Text(format!("\"{exe}\" {FROM_SETTINGS}")),
+        ),
+        (
+            "QuietUninstallString",
+            Value::Text(format!("\"{exe}\" uninstall")),
+        ),
+    ]
 }
 
 /// What [`edit_agent_file`] would do to `path`, worked out on a copy in
@@ -312,6 +368,9 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
             to: facts.to.clone(),
         });
     }
+    steps.push(Step::AppEntry {
+        values: app_entry(&facts.to, facts.size),
+    });
     steps.push(Step::AddToPath {
         dir: facts.to.clone(),
         present: facts.on_path,
@@ -388,6 +447,9 @@ pub fn uninstall_plan(facts: &Facts, purge: bool) -> Vec<Step> {
         dir: facts.to.clone(),
         present: facts.installed,
     });
+    steps.push(Step::RemoveAppEntry {
+        present: facts.app_entry,
+    });
     steps.push(if purge {
         Step::RemoveData {
             dir: facts.data.clone(),
@@ -440,6 +502,15 @@ impl Step {
                     }),
                 ),
             ],
+            Self::AppEntry { values } => vec![named(
+                "add_app_entry",
+                &format!(r"HKLM\{}", apps::KEY),
+                Some(format!(
+                    "Settings > Apps > Installed apps lists {} {}",
+                    text_of(values, "DisplayName"),
+                    text_of(values, "DisplayVersion")
+                )),
+            )],
             Self::AddToPath { dir, present: true } => vec![at(
                 "keep_path",
                 dir,
@@ -527,6 +598,17 @@ impl Step {
                     Vec::new()
                 }
             }
+            Self::RemoveAppEntry { present } => {
+                if *present {
+                    vec![named(
+                        "remove_app_entry",
+                        &format!(r"HKLM\{}", apps::KEY),
+                        Some("Settings > Apps > Installed apps".into()),
+                    )]
+                } else {
+                    Vec::new()
+                }
+            }
             Self::RemoveData { dir } => vec![at(
                 "remove_folder",
                 dir,
@@ -539,6 +621,17 @@ impl Step {
             )],
         }
     }
+}
+
+/// The text value `name` has in `values`, empty when it has none.
+fn text_of<'a>(values: &'a [(&str, Value)], name: &str) -> &'a str {
+    values
+        .iter()
+        .find_map(|(n, v)| match v {
+            Value::Text(t) if *n == name => Some(t.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// The plan `install --dry-run` prints.
@@ -599,18 +692,9 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     if !process::current_is_elevated() {
         bail!("installing needs an administrator terminal");
     }
-    // A standard user's prompt answered with an administrator's password
-    // runs this as the administrator: the task, the hooks and the settings
-    // would all be theirs, and the user at the desktop would get nothing.
-    // Windows 11's Administrator protection does the same to every
-    // administrator terminal: it runs as a hidden account of its own.
-    if let Err(e) = process::as_shell_user(|| ())
-        && e.kind() == std::io::ErrorKind::PermissionDenied
-    {
-        bail!(
-            "this terminal runs as another account than the one signed in, as it does when a standard user's prompt takes an administrator's password, or under Windows Administrator protection, which Daifuku does not support: install from an administrator terminal of the account that runs the agents"
-        );
-    }
+    refuse_another_account(
+        "install from an administrator terminal of the account that runs the agents",
+    )?;
     let facts = Facts::gather()?;
     for step in install_plan(&facts, options) {
         run(&step)?;
@@ -638,6 +722,26 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refuses to go on as another account than the one signed in, saying to do
+/// `fix` instead.
+///
+/// A standard user's prompt answered with an administrator's password runs
+/// this as the administrator: the task, the hooks and the settings would all
+/// be theirs. An install would give the user at the desktop nothing, and an
+/// uninstall would leave them a logon task and hooks that call a program
+/// that is gone. Windows 11's Administrator protection does the same to
+/// every administrator terminal: it runs as a hidden account of its own.
+fn refuse_another_account(fix: &str) -> anyhow::Result<()> {
+    if let Err(e) = process::as_shell_user(|| ())
+        && e.kind() == std::io::ErrorKind::PermissionDenied
+    {
+        bail!(
+            "this runs as another account than the one signed in, as it does when a standard user's prompt takes an administrator's password, or under Windows Administrator protection, which Daifuku does not support: {fix}"
+        );
+    }
+    Ok(())
+}
+
 /// Runs one step of an install or an uninstall and says what it did.
 fn run(step: &Step) -> anyhow::Result<()> {
     match step {
@@ -649,6 +753,10 @@ fn run(step: &Step) -> anyhow::Result<()> {
             put_binaries(exe, daemon, to)?;
             println!("installed    {}", to.display());
         }
+        Step::AppEntry { values } => match apps::write(values) {
+            Ok(()) => println!("listed       in Settings > Apps > Installed apps"),
+            Err(e) => println!("not listed   in Settings > Apps > Installed apps: {e}"),
+        },
         Step::AddToPath { dir, .. } => match environment::add_to_machine_path(dir) {
             Ok(true) => {
                 environment::broadcast_environment_change();
@@ -760,6 +868,11 @@ fn run(step: &Step) -> anyhow::Result<()> {
                 }
             }
         }
+        Step::RemoveAppEntry { .. } => match apps::remove() {
+            Ok(true) => println!("removed      from Settings > Apps > Installed apps"),
+            Ok(false) => {}
+            Err(e) => println!("left         in Settings > Apps > Installed apps ({e})"),
+        },
         Step::RemoveData { dir } => {
             std::fs::remove_dir_all(dir)
                 .with_context(|| format!("could not remove {}", dir.display()))?;
@@ -787,11 +900,51 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
     if !process::current_is_elevated() {
         bail!("uninstalling needs an administrator terminal");
     }
+    refuse_another_account("remove Daifuku signed in as the account that installed it")?;
     let facts = Facts::gather()?;
     for step in uninstall_plan(&facts, purge) {
         run(&step)?;
     }
+    // This program, moved aside because it runs, goes once it has exited.
+    let moved = std::env::temp_dir().join(aside_name("daifuku.exe"));
+    if moved.is_file()
+        && let Some(args) = delete_after_exit(&moved)
+        && let Some(cmd) = paths::system_dir().map(|d| d.join("cmd.exe"))
+    {
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NO_WINDOW`.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new(cmd)
+            .raw_arg(args)
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
     Ok(())
+}
+
+/// The arguments for a `cmd.exe` without a window that deletes `file` once
+/// no process runs it any more: tried every second or so for about a
+/// minute, which covers the window Settings opened staying up to be read.
+/// `None` for a path with a `%` in it, which `cmd` would read as a variable;
+/// such a file goes at the next restart.
+fn delete_after_exit(file: &Path) -> Option<String> {
+    let file = file.display().to_string();
+    if file.contains('%') {
+        return None;
+    }
+    // ping is the one wait cmd offers that needs no console input.
+    Some(format!(
+        "/d /c for /l %i in (1,1,60) do (ping -n 2 127.0.0.1 >nul & del /f /q \"{file}\" 2>nul & if not exist \"{file}\" exit)"
+    ))
+}
+
+/// The name a binary that cannot be deleted while it runs is moved aside
+/// under.
+fn aside_name(name: &str) -> String {
+    format!("daifuku-old-{}-{name}", std::process::id())
 }
 
 /// Hands each finding to `report` as it is made, and returns whether every
@@ -1154,7 +1307,9 @@ fn stop_daemon() {
 ///
 /// A program that runs cannot be deleted, only renamed: this one, run from
 /// there, or a daemon that did not stop. Such a file is moved into `aside`,
-/// the temp folder, to be cleaned up with it, so the folder can still go.
+/// the temp folder, so the folder can still go, and Windows deletes it at
+/// the next restart if nothing has before: uninstall deletes this program
+/// there once it has exited.
 /// When `aside` is on another drive, the file is renamed next to the folder
 /// instead, under a name of its own, and Windows deletes that name at the
 /// next restart. Never the install path itself: an install before the
@@ -1168,8 +1323,10 @@ fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<(
         if let Err(e) = std::fs::remove_file(&file)
             && e.kind() != std::io::ErrorKind::NotFound
         {
-            let old = format!("daifuku-old-{}-{name}", std::process::id());
+            let old = aside_name(name);
             if std::fs::rename(&file, aside.join(&old)).is_ok() {
+                // In case it still runs when the temp folder is cleaned.
+                let _ = setup::delete_at_restart(&aside.join(&old));
                 continue;
             }
             let beside = dir.parent().map(|p| p.join(&old));
@@ -1447,8 +1604,12 @@ mod tests {
                 },
             ],
             terminal: true,
+            size: 3_000_000,
+            app_entry: false,
         }
     }
+
+    const ENTRY: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku";
 
     /// The same machine after an install, run from Program Files.
     fn installed() -> Facts {
@@ -1456,6 +1617,7 @@ mod tests {
         f.from = f.to.clone();
         f.on_path = true;
         f.installed = true;
+        f.app_entry = true;
         f.data_locked = Some(true);
         f.config_exists = true;
         for h in &mut f.hooks {
@@ -1493,6 +1655,7 @@ mod tests {
                 ("stop_daemon", "daifukud".to_owned()),
                 ("copy", r"C:\Program Files\Daifuku\daifuku.exe".to_owned()),
                 ("copy", r"C:\Program Files\Daifuku\daifukud.exe".to_owned()),
+                ("add_app_entry", ENTRY.to_owned()),
                 ("add_to_path", r"C:\Program Files\Daifuku".to_owned()),
                 ("create_folder", r"C:\ProgramData\Daifuku".to_owned()),
                 (
@@ -1513,6 +1676,7 @@ mod tests {
             names(&install_plan(&installed(), &ALL)),
             [
                 "stop_daemon",
+                "add_app_entry",
                 "keep_path",
                 "keep_folder",
                 "keep_config",
@@ -1609,6 +1773,7 @@ mod tests {
                 ("remove_hooks", r"C:\Users\u\.codex\hooks.json".to_owned()),
                 ("remove_from_path", r"C:\Program Files\Daifuku".to_owned()),
                 ("remove_folder", r"C:\Program Files\Daifuku".to_owned()),
+                ("remove_app_entry", ENTRY.to_owned()),
                 ("keep_folder", r"C:\ProgramData\Daifuku".to_owned()),
             ]
         );
@@ -1626,6 +1791,7 @@ mod tests {
         f.hooks[1].exists = false;
         f.on_path = false;
         f.installed = false;
+        f.app_entry = false;
         assert_eq!(
             names(&uninstall_plan(&f, false)),
             ["stop_daemon", "remove_task", "keep_folder"]
@@ -1661,9 +1827,102 @@ mod tests {
             json["steps"][2]["detail"],
             r"from C:\Users\u\Downloads\daifuku\daifukud.exe"
         );
-        assert_eq!(json["steps"][7]["action"], "start_task");
-        assert_eq!(json["steps"][7]["detail"], serde_json::Value::Null);
+        assert_eq!(json["steps"][3]["action"], "add_app_entry");
+        assert_eq!(json["steps"][3]["target"], ENTRY);
+        assert_eq!(
+            json["steps"][3]["detail"],
+            format!(
+                "Settings > Apps > Installed apps lists Daifuku {}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert_eq!(json["steps"][8]["action"], "start_task");
+        assert_eq!(json["steps"][8]["detail"], serde_json::Value::Null);
         assert_eq!(json["notes"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn the_apps_entry_names_daifuku_and_removes_it_with_the_installed_copy() {
+        let values = app_entry(Path::new(r"C:\Program Files\Daifuku"), 3_000_000);
+        let text = |s: &str| Value::Text(s.to_owned());
+        assert_eq!(
+            values,
+            [
+                ("DisplayName", text("Daifuku")),
+                ("DisplayVersion", text(env!("CARGO_PKG_VERSION"))),
+                ("Publisher", text("Daifuku")),
+                ("InstallLocation", text(r"C:\Program Files\Daifuku")),
+                (
+                    "DisplayIcon",
+                    text(r"C:\Program Files\Daifuku\daifuku.exe,0")
+                ),
+                ("EstimatedSize", Value::Number(2930)),
+                ("NoModify", Value::Number(1)),
+                ("NoRepair", Value::Number(1)),
+                (
+                    "UninstallString",
+                    text(r#""C:\Program Files\Daifuku\daifuku.exe" uninstall --from-settings"#)
+                ),
+                (
+                    "QuietUninstallString",
+                    text(r#""C:\Program Files\Daifuku\daifuku.exe" uninstall"#)
+                ),
+            ]
+        );
+        let huge = app_entry(Path::new(r"C:\Program Files\Daifuku"), u64::MAX);
+        assert!(huge.contains(&("EstimatedSize", Value::Number(u32::MAX))));
+    }
+
+    #[test]
+    fn the_apps_entry_is_written_with_the_binaries_and_removed_after_them() {
+        let install = names(&install_plan(&fresh(), &ALL));
+        let at = |name: &str| install.iter().position(|a| *a == name).unwrap();
+        assert!(at("copy") < at("add_app_entry"), "{install:?}");
+        assert!(at("add_app_entry") < at("add_to_path"), "{install:?}");
+        let mut no_extras = fresh();
+        no_extras.hooks.clear();
+        let bare = names(&install_plan(
+            &no_extras,
+            &Options {
+                no_hooks: true,
+                no_start: true,
+            },
+        ));
+        assert!(bare.contains(&"add_app_entry"), "{bare:?}");
+
+        let uninstall = names(&uninstall_plan(&installed(), true));
+        assert_eq!(
+            uninstall[uninstall.len() - 3..],
+            ["remove_folder", "remove_app_entry", "remove_folder"]
+        );
+        let mut unlisted = installed();
+        unlisted.app_entry = false;
+        assert!(!names(&uninstall_plan(&unlisted, false)).contains(&"remove_app_entry"));
+    }
+
+    #[test]
+    fn this_program_is_deleted_after_it_exits_and_never_through_a_variable() {
+        let file = Path::new(r"C:\Users\ada\AppData\Local\Temp\daifuku-old-7-daifuku.exe");
+        let args = delete_after_exit(file).unwrap();
+        assert!(
+            args.starts_with("/d /c for /l %i in (1,1,60) do ("),
+            "{args}"
+        );
+        assert!(
+            args.contains(
+                r#"del /f /q "C:\Users\ada\AppData\Local\Temp\daifuku-old-7-daifuku.exe""#
+            ),
+            "{args}"
+        );
+        assert!(args.contains(r#"if not exist "C:\Users\ada"#), "{args}");
+        assert_eq!(
+            delete_after_exit(Path::new(r"C:\Users\100%\daifuku-old-7-daifuku.exe")),
+            None
+        );
+        assert_eq!(
+            aside_name("daifuku.exe"),
+            format!("daifuku-old-{}-daifuku.exe", std::process::id())
+        );
     }
 
     /// The one file a release publishes, as a browser saves it a second time.

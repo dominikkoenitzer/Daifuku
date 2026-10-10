@@ -19,10 +19,12 @@
 //! - [`setup`]: what installing needs: a locked folder and a scheduled task.
 //! - [`environment`]: the machine `PATH`, and telling programs it changed.
 //! - [`elevate`]: asking Windows for administrator rights, and the console.
+//! - [`apps`]: the entry Settings > Apps lists Daifuku by.
 
 #![cfg(windows)]
 
 pub mod access;
+pub mod apps;
 pub mod clock;
 pub mod console;
 pub mod dpi;

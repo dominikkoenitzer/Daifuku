@@ -8,11 +8,12 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use windows::Win32::Foundation::ERROR_CANCELLED;
-use windows::Win32::System::Console::GetConsoleProcessList;
+use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, HANDLE};
+use windows::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
 use windows::Win32::UI::Shell::{
     ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, AssocQueryStringW, SEE_MASK_NOASYNC,
-    SHELLEXECUTEINFOW, ShellExecuteExW,
+    SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{PCWSTR, PWSTR};
@@ -29,6 +30,14 @@ pub fn console_is_own() -> bool {
     unsafe { GetConsoleProcessList(&mut pids) == 1 }
 }
 
+/// Lets go of this process's console. A console of its own, as Explorer
+/// and Settings give a command line program, closes its window then, and
+/// whatever is printed afterwards goes nowhere.
+pub fn leave_console() {
+    // SAFETY: FreeConsole only detaches this process from its console.
+    let _ = unsafe { FreeConsole() };
+}
+
 /// Starts `program` with `parameters` as administrator, after the prompt
 /// Windows shows for that. Returns once it has started, not when it ends.
 ///
@@ -36,7 +45,49 @@ pub fn console_is_own() -> bool {
 ///
 /// What Windows said; [`declined`] tells a declined prompt from a failure.
 pub fn run_elevated(program: &Path, parameters: &str) -> io::Result<()> {
-    execute("runas", program, parameters)
+    execute("runas", program, parameters, false).map(drop)
+}
+
+/// [`run_elevated`], keeping hold of the process to wait for.
+///
+/// # Errors
+///
+/// What Windows said; [`declined`] tells a declined prompt from a failure.
+pub fn start_elevated(program: &Path, parameters: &str) -> io::Result<Started> {
+    execute("runas", program, parameters, true).map(Started)
+}
+
+/// A process [`start_elevated`] started.
+pub struct Started(HANDLE);
+
+impl Started {
+    /// Waits for the process to end and returns its exit code.
+    ///
+    /// # Errors
+    ///
+    /// When Windows cannot say how it ended.
+    pub fn wait(self) -> io::Result<u32> {
+        // The shell may hand back no process, as for a document it passes on.
+        if self.0.is_invalid() {
+            return Ok(0);
+        }
+        let mut code = 0u32;
+        // SAFETY: the handle is the process's, open until this is dropped.
+        unsafe {
+            WaitForSingleObject(self.0, INFINITE);
+            GetExitCodeProcess(self.0, &raw mut code)?;
+        }
+        Ok(code)
+    }
+}
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            // SAFETY: the handle came from ShellExecuteExW and is closed only here.
+            let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
 }
 
 /// Starts `program` with `parameters` with this process's own rights.
@@ -45,7 +96,7 @@ pub fn run_elevated(program: &Path, parameters: &str) -> io::Result<()> {
 ///
 /// What Windows said.
 pub fn run(program: &Path, parameters: &str) -> io::Result<()> {
-    execute("open", program, parameters)
+    execute("open", program, parameters, false).map(drop)
 }
 
 /// Whether an error from [`run_elevated`] means the prompt was declined.
@@ -54,7 +105,9 @@ pub fn declined(e: &io::Error) -> bool {
     e.raw_os_error() == i32::try_from(ERROR_CANCELLED.0).ok()
 }
 
-fn execute(verb: &str, program: &Path, parameters: &str) -> io::Result<()> {
+/// Starts `program` with `verb`. With `keep`, returns the process, which
+/// the caller must close; without, no handle is asked for.
+fn execute(verb: &str, program: &Path, parameters: &str, keep: bool) -> io::Result<HANDLE> {
     let verb = to_wide(verb);
     let program = to_wide(&program.to_string_lossy());
     let parameters = to_wide(parameters);
@@ -63,25 +116,31 @@ fn execute(verb: &str, program: &Path, parameters: &str) -> io::Result<()> {
         // The caller may exit right after this returns, as the offer to
         // install does: without this flag the start could still be on its
         // way.
-        fMask: SEE_MASK_NOASYNC,
+        fMask: if keep {
+            SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS
+        } else {
+            SEE_MASK_NOASYNC
+        },
         lpVerb: PCWSTR(verb.as_ptr()),
         lpFile: PCWSTR(program.as_ptr()),
         lpParameters: PCWSTR(parameters.as_ptr()),
         nShow: SW_SHOWNORMAL.0,
         ..Default::default()
     };
-    // SAFETY: every string outlives the call, and no process handle is asked
-    // for, so there is none to close.
-    unsafe { ShellExecuteExW(&raw mut info) }.map_err(|e| {
-        // The shell answers in HRESULTs; a Win32 code inside one is kept as
-        // the plain code, so it reads as text and compares as one.
-        let code = e.code().0.cast_unsigned();
-        if code & 0xFFFF_0000 == 0x8007_0000 {
-            io::Error::from_raw_os_error(i32::try_from(code & 0xFFFF).unwrap_or(0))
-        } else {
-            io::Error::from(e)
-        }
-    })
+    // SAFETY: every string outlives the call, and a process handle is asked
+    // for only with `keep`, which hands it to the caller to close.
+    unsafe { ShellExecuteExW(&raw mut info) }
+        .map(|()| info.hProcess)
+        .map_err(|e| {
+            // The shell answers in HRESULTs; a Win32 code inside one is kept as
+            // the plain code, so it reads as text and compares as one.
+            let code = e.code().0.cast_unsigned();
+            if code & 0xFFFF_0000 == 0x8007_0000 {
+                io::Error::from_raw_os_error(i32::try_from(code & 0xFFFF).unwrap_or(0))
+            } else {
+                io::Error::from(e)
+            }
+        })
 }
 
 /// The program Windows opens files ending in `extension` with, such as

@@ -20,7 +20,8 @@
 //! daifuku doctor         check the setup
 //! ```
 //!
-//! Double-clicked in Explorer, with no command, it offers to install.
+//! Double-clicked in Explorer, with no command, it offers to install. The
+//! Uninstall button in Settings > Apps runs `uninstall --from-settings`.
 //!
 //! Every command but the hidden ones takes `--json`, install and uninstall
 //! only with `--dry-run`: one JSON document on standard output, errors
@@ -175,6 +176,11 @@ enum Command {
         /// With --dry-run, print the plan as one JSON document.
         #[arg(long, requires = "dry_run")]
         json: bool,
+        /// Started by the Uninstall button in Settings > Apps: ask Windows
+        /// for administrator rights when there are none, and keep the
+        /// window open a while at the end.
+        #[arg(long, hide = true, conflicts_with = "dry_run")]
+        from_settings: bool,
     },
     /// Check the setup and say how to fix anything wrong.
     Doctor {
@@ -264,6 +270,7 @@ fn main() -> ExitCode {
             dry_run: true,
             purge,
             json,
+            ..
         } => dry_run_cmd(uninstall_dry_run(purge), json),
         Command::Install {
             no_hooks,
@@ -281,6 +288,11 @@ fn main() -> ExitCode {
             }
             code
         }
+        Command::Uninstall {
+            purge,
+            from_settings: true,
+            ..
+        } => uninstall_from_settings(purge),
         Command::Uninstall { purge, .. } => setup_result(uninstall_cmd(purge)),
         Command::Doctor { format } => doctor_cmd(format.json),
         Command::Open { fleet, format } => control(&Request::Open { fleet }, format.json),
@@ -431,6 +443,92 @@ fn from_explorer() -> Option<ExitCode> {
 fn wait_for_enter() {
     println!("\nPress Enter to close this window.");
     let _ = std::io::stdin().read_line(&mut String::new());
+}
+
+/// How long the window the Uninstall button in Settings opened stays after
+/// the removal, unless Enter closes it sooner.
+#[cfg_attr(not(windows), allow(dead_code))]
+const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Waits for Enter, or [`LINGER`] at most: nobody may be there to press
+/// it, and a window that waited for good would keep Settings waiting too.
+/// Without a keyboard to read from it does not wait at all.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn wait_a_while() {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+    println!(
+        "\nPress Enter to close this window; it closes by itself in {} seconds.",
+        LINGER.as_secs()
+    );
+    let (pressed, enter) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = std::io::stdin().read_line(&mut String::new());
+        let _ = pressed.send(());
+    });
+    let _ = enter.recv_timeout(LINGER);
+}
+
+/// `uninstall` as the Uninstall button in Settings > Apps starts it: in a
+/// console window of its own, maybe without administrator rights. Without
+/// them it asks Windows, runs itself again elevated in a window of its own
+/// and waits for that one, so Settings lists the apps again only once
+/// Daifuku is gone. Elevated, it removes Daifuku, says what it removed and
+/// leaves the window up a while to be read.
+#[cfg(windows)]
+fn uninstall_from_settings(purge: bool) -> ExitCode {
+    use daifuku_win::{elevate, process};
+
+    // Settings may start it in any folder, the one about to be deleted
+    // included, and a folder a process is in cannot be deleted.
+    let _ = std::env::set_current_dir(std::env::temp_dir());
+    if process::current_is_elevated() {
+        println!("Removing Daifuku.\n");
+        let result = uninstall_cmd(purge);
+        if result.is_ok() {
+            println!("\nDaifuku is removed.");
+        }
+        let code = setup_result(result);
+        wait_a_while();
+        return code;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return ExitCode::FAILURE;
+    };
+    println!("Removing Daifuku. Windows asks for permission next.");
+    let mut args = install::FROM_SETTINGS.to_owned();
+    if purge {
+        args.push_str(" --purge");
+    }
+    match elevate::start_elevated(&exe, &args) {
+        Ok(started) => {
+            // The removal shows in the new window; this one has nothing
+            // more to say.
+            if elevate::console_is_own() {
+                elevate::leave_console();
+            }
+            match started.wait() {
+                Ok(0) => ExitCode::SUCCESS,
+                _ => ExitCode::FAILURE,
+            }
+        }
+        Err(e) => {
+            if elevate::declined(&e) {
+                println!("Nothing was removed: Windows was not given permission.");
+            } else {
+                println!("Windows could not start the removal: {e}");
+            }
+            wait_a_while();
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn uninstall_from_settings(purge: bool) -> ExitCode {
+    setup_result(uninstall_cmd(purge))
 }
 
 /// Opens the config in the program Windows opens `.json` files with, or in
@@ -1197,6 +1295,35 @@ mod tests {
         assert!(pause.is_hide_set());
         let cli = Cli::parse_from(["daifuku", "install", "--pause"]);
         assert!(matches!(cli.command, Command::Install { pause: true, .. }));
+    }
+
+    /// What the Uninstall button in Settings > Apps runs parses, and is
+    /// not offered to people.
+    #[cfg(windows)]
+    #[test]
+    fn the_uninstall_settings_runs_parses_and_is_hidden() {
+        let cli = Cli::command();
+        let uninstall = cli.find_subcommand("uninstall").unwrap();
+        let from_settings = uninstall
+            .get_arguments()
+            .find(|a| a.get_id() == "from_settings")
+            .unwrap();
+        assert!(from_settings.is_hide_set());
+        let args = install::FROM_SETTINGS.split(' ');
+        let cli = Cli::try_parse_from(std::iter::once("daifuku").chain(args)).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Uninstall {
+                from_settings: true,
+                purge: false,
+                dry_run: false,
+                ..
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["daifuku", "uninstall", "--from-settings", "--dry-run"]).is_err(),
+            "a dry run is for a terminal"
+        );
     }
 
     /// The `--json` flag of a command, `None` for one that has none.
