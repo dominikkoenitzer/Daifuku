@@ -203,19 +203,25 @@ vulnerabilities as described in [SECURITY.md](SECURITY.md).
 | `daifuku stop` | stop the daemon |
 | `daifuku config` | open the config file |
 | `daifuku config --path` | print where the config file is |
+| `daifuku config validate [path]` | check a config file without the daemon |
 | `daifuku schema` | print the config's JSON schema |
 | `daifuku doctor` | check the setup |
 | `daifuku install [--no-hooks] [--no-start]` | install, or update in place |
+| `daifuku install --dry-run` | list what install would change |
 | `daifuku uninstall [--purge]` | remove it again |
+| `daifuku uninstall --dry-run [--purge]` | list what uninstall would remove |
 
 The commands that talk to the daemon, `open` to `stop`, need an
-administrator terminal, as the daemon runs elevated. The hotkeys work from
-anywhere.
+administrator terminal, as the daemon runs elevated and only answers
+elevated processes. From an ordinary terminal they stop with an error that
+names the command to run. `doctor`, `config validate`, `schema`,
+`config --path` and the dry runs work from any terminal. The hotkeys work
+from anywhere.
 
-Every command here but `install` and `uninstall` takes `--json`: it prints
-one JSON document on standard output, errors included, for a script or an
-assistant to read. [JSON output](docs/json-output.md) lists each shape and
-the error codes.
+Every command here takes `--json`, `install` and `uninstall` only with
+`--dry-run`: it prints one JSON document on standard output, errors
+included, for a script or an assistant to read.
+[JSON output](docs/json-output.md) lists each shape and the error codes.
 
 ## Build from source
 
