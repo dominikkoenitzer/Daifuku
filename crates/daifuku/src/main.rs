@@ -16,14 +16,15 @@
 //! daifuku config validate check a config file without the daemon
 //! daifuku install        install for this user (administrator terminal)
 //! daifuku uninstall      remove it again
+//! daifuku install --dry-run, uninstall --dry-run   what they would do
 //! daifuku doctor         check the setup
 //! ```
 //!
 //! Double-clicked in Explorer, with no command, it offers to install.
 //!
-//! Every command but install, uninstall and the hidden ones takes `--json`:
-//! one JSON document on standard output, errors included, described in
-//! `docs/json-output.md`.
+//! Every command but the hidden ones takes `--json`, install and uninstall
+//! only with `--dry-run`: one JSON document on standard output, errors
+//! included, described in `docs/json-output.md`.
 
 #[cfg(windows)]
 mod demo;
@@ -152,6 +153,13 @@ enum Command {
         /// opened stays until it is read.
         #[arg(long, hide = true)]
         pause: bool,
+        /// Print what install would do and change nothing. Needs no
+        /// administrator terminal.
+        #[arg(long)]
+        dry_run: bool,
+        /// With --dry-run, print the plan as one JSON document.
+        #[arg(long, requires = "dry_run")]
+        json: bool,
     },
     /// Remove the program, the logon task and Daifuku's hooks. Keeps the
     /// config, the logs and the saved state unless --purge. Needs an
@@ -160,6 +168,13 @@ enum Command {
         /// Also delete the config, the logs and the saved state.
         #[arg(long)]
         purge: bool,
+        /// Print what uninstall would do and change nothing. Needs no
+        /// administrator terminal.
+        #[arg(long)]
+        dry_run: bool,
+        /// With --dry-run, print the plan as one JSON document.
+        #[arg(long, requires = "dry_run")]
+        json: bool,
     },
     /// Check the setup and say how to fix anything wrong.
     Doctor {
@@ -239,9 +254,22 @@ fn main() -> ExitCode {
             }
         },
         Command::Install {
+            dry_run: true,
+            no_hooks,
+            no_start,
+            json,
+            ..
+        } => dry_run_cmd(install_dry_run(no_hooks, no_start), json),
+        Command::Uninstall {
+            dry_run: true,
+            purge,
+            json,
+        } => dry_run_cmd(uninstall_dry_run(purge), json),
+        Command::Install {
             no_hooks,
             no_start,
             pause,
+            ..
         } => {
             let result = install_cmd(no_hooks, no_start);
             if pause && result.is_ok() {
@@ -253,7 +281,7 @@ fn main() -> ExitCode {
             }
             code
         }
-        Command::Uninstall { purge } => setup_result(uninstall_cmd(purge)),
+        Command::Uninstall { purge, .. } => setup_result(uninstall_cmd(purge)),
         Command::Doctor { format } => doctor_cmd(format.json),
         Command::Open { fleet, format } => control(&Request::Open { fleet }, format.json),
         Command::Snap { format } => control(&Request::Snap, format.json),
@@ -474,6 +502,51 @@ fn install_cmd(no_hooks: bool, no_start: bool) -> anyhow::Result<()> {
 #[cfg(windows)]
 fn uninstall_cmd(purge: bool) -> anyhow::Result<()> {
     install::uninstall(purge)
+}
+
+#[cfg(windows)]
+fn install_dry_run(no_hooks: bool, no_start: bool) -> anyhow::Result<output::Plan> {
+    install::install_dry_run(&install::Options { no_hooks, no_start })
+}
+
+#[cfg(windows)]
+fn uninstall_dry_run(purge: bool) -> anyhow::Result<output::Plan> {
+    install::uninstall_dry_run(purge)
+}
+
+#[cfg(not(windows))]
+fn install_dry_run(_: bool, _: bool) -> anyhow::Result<output::Plan> {
+    anyhow::bail!("daifuku runs on Windows only")
+}
+
+#[cfg(not(windows))]
+fn uninstall_dry_run(_: bool) -> anyhow::Result<output::Plan> {
+    anyhow::bail!("daifuku runs on Windows only")
+}
+
+/// Prints the plan of a dry run, as lines or as one JSON document.
+fn dry_run_cmd(plan: anyhow::Result<output::Plan>, json: bool) -> ExitCode {
+    match plan {
+        Ok(plan) if json => {
+            output::print_json(&plan);
+            ExitCode::SUCCESS
+        }
+        Ok(plan) => {
+            for line in plan.lines() {
+                println!("{line}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) if json => {
+            let code = if cfg!(windows) {
+                ErrorCode::Internal
+            } else {
+                ErrorCode::Unsupported
+            };
+            fail_json(code, &format!("{e:#}"))
+        }
+        Err(e) => setup_result(Err(e)),
+    }
 }
 
 /// Runs the doctor. Its exit code says whether every check passed, with
@@ -1146,10 +1219,8 @@ mod tests {
                 ..
             }
             | Command::Doctor { format } => Some(format.json),
-            Command::DemoAgent { .. }
-            | Command::Hook
-            | Command::Install { .. }
-            | Command::Uninstall { .. } => None,
+            Command::Install { json, .. } | Command::Uninstall { json, .. } => Some(*json),
+            Command::DemoAgent { .. } | Command::Hook => None,
         }
     }
 
@@ -1176,6 +1247,10 @@ mod tests {
             &["demo", "--json"],
             &["reload", "--json"],
             &["stop", "--json"],
+            &["install", "--dry-run", "--json"],
+            &["install", "--json", "--dry-run", "--no-hooks"],
+            &["uninstall", "--dry-run", "--json"],
+            &["uninstall", "--purge", "--json", "--dry-run"],
         ] {
             let cli = Cli::try_parse_from(std::iter::once("daifuku").chain(args.iter().copied()))
                 .unwrap_or_else(|e| panic!("{args:?}: {e}"));
@@ -1196,12 +1271,7 @@ mod tests {
 
     #[test]
     fn json_is_refused_where_it_does_not_belong_with_a_usage_error() {
-        for args in [
-            &["--json", "status"][..],
-            &["install", "--json"],
-            &["uninstall", "--json"],
-            &["hook", "--json"],
-        ] {
+        for args in [&["--json", "status"][..], &["hook", "--json"]] {
             let e = Cli::try_parse_from(std::iter::once("daifuku").chain(args.iter().copied()))
                 .err()
                 .unwrap_or_else(|| panic!("{args:?} parsed"));
@@ -1211,6 +1281,18 @@ mod tests {
                 "{args:?}"
             );
             assert_eq!(usage_message(&e), "unexpected argument '--json' found");
+        }
+        // Install and uninstall take it only for a dry run.
+        for command in ["install", "uninstall"] {
+            let e = Cli::try_parse_from(["daifuku", command, "--json"])
+                .err()
+                .unwrap_or_else(|| panic!("{command} --json parsed"));
+            assert_eq!(
+                e.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{command}"
+            );
+            assert!(usage_message(&e).contains("--dry-run"), "{command}");
         }
         let e = Cli::try_parse_from(["daifuku", "open", "a", "b", "--json"])
             .err()
