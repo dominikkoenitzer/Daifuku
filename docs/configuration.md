@@ -17,7 +17,7 @@ key and checks its name and type:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json"
+  "$schema": "https://get-daifuku.vercel.app/schema.json"
 }
 ```
 
