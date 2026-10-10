@@ -24,49 +24,56 @@ opens its terminals as you instead.
 
 ## Install
 
-Windows 10 or 11 with Windows Terminal, signed in with an account that is an
-administrator itself; Windows 11's Administrator protection is not supported.
-Download `Daifuku-v<version>-x86_64-pc-windows-msvc.zip` (or the `aarch64`
-zip on Windows on ARM, after 0.1.1) from the
-[Releases page](https://github.com/dominikkoenitzer/Daifuku/releases/latest)
-and unzip it. From an administrator terminal, in that folder:
+1. Download [daifuku-windows-x64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip),
+   or [daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip)
+   on a PC with an ARM processor.
+2. Most PCs need x64. If Settings > System > About shows "ARM-based
+   processor" under System type, you need arm64.
+3. Right-click the zip, choose Extract All, and open the folder. Double-click
+   `daifuku.exe`, press Enter, and say yes when Windows asks for permission.
 
-```powershell
-.\daifuku.exe install
-```
+Daifuku is not signed, so SmartScreen may stop it the first time: choose
+"More info", then "Run anyway".
 
-This copies Daifuku to `Program Files`, starts it at every logon, and adds its
-hooks to `%USERPROFILE%\.claude\settings.json` (and to Codex's
+A second window shows what install did and what to do next; press Enter to
+close it. From an administrator terminal, `.\daifuku.exe install` in the
+extracted folder does the same.
+
+You need Windows 10 or 11 with Windows Terminal, signed in with an account
+that is an administrator itself; Windows 11's Administrator protection is not
+supported.
+
+Install copies Daifuku to `C:\Program Files\Daifuku`, adds that folder to the
+machine `PATH`, starts it at every logon, and adds its hooks to
+`%USERPROFILE%\.claude\settings.json` (and to Codex's
 `%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
 exactly as they are. Claude Code sessions that are already open normally pick
 the hooks up by themselves; restart one that still shows no border. Codex runs
 new hooks only after you trust them in its `/hooks` menu. A settings file
 behind a link that leads out of your profile is left alone, and the installer
-says so (after 0.1.1); make it a real file in your profile and install again.
-Install adds hooks to these two files only. If `CLAUDE_CONFIG_DIR` or
-`CODEX_HOME` moves an agent's settings elsewhere, copy Daifuku's hooks into
-the file there yourself, and remove them there when you uninstall; install
-names that file, and doctor names it when the hooks there are missing (after
-0.1.1).
+says so; make it a real file in your profile and install again. Install adds
+hooks to these two files only. If `CLAUDE_CONFIG_DIR` or `CODEX_HOME` moves an
+agent's settings elsewhere, copy Daifuku's hooks into the file there
+yourself, and remove them there when you uninstall; install names that file,
+and doctor names it when the hooks there are missing.
 
-The installer does not add Daifuku to `PATH`, so run its commands by their
-full path:
+Press Ctrl+Alt+Enter to open your first fleet. In a new terminal, `daifuku`
+now works by name:
 
 ```powershell
-& "$env:ProgramFiles\Daifuku\daifuku.exe" doctor
+daifuku doctor
 ```
 
-checks the whole setup and says how to fix anything that is wrong. The daemon
-logs to `C:\ProgramData\Daifuku\logs`, a file a day. To see it work without a
-real agent, `demo` in place of `doctor` opens six scripted ones. Below,
-`daifuku` stands for that full path.
+checks the whole setup and says how to fix anything that is wrong. To see it
+work without a real agent, `daifuku demo` from an administrator terminal opens
+six scripted ones. The daemon logs to `C:\ProgramData\Daifuku\logs`, a file a
+day.
 
-To update, unzip the new release and run `.\daifuku.exe install` there; your
-config and hooks are kept. A `ProgramData\Daifuku` folder that is not locked
-to administrators the way install leaves it, such as one another program made
-or one whose owner or access list was changed so that someone else may write
-it, is deleted with any
-config in it and made anew (after 0.1.1).
+To update, download the new zip, extract it and double-click `daifuku.exe`
+again; your config and hooks are kept. A `ProgramData\Daifuku` folder that is
+not locked to administrators the way install leaves it, such as one another
+program made or one whose owner or access list was changed so that someone
+else may write it, is deleted with any config in it and made anew.
 
 ## Configure
 
