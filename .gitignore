@@ -16,6 +16,7 @@ daifuku-*.json
 
 # Release artefacts built by hand rather than by the workflow
 *.zip
+!site/skill/*.zip
 *.zip.sha256
 
 # Editors and tooling
