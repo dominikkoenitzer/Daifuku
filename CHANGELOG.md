@@ -49,6 +49,9 @@
   to run in an administrator terminal, `--json` and fleet name included.
 - `daifuku config validate [file]` checks a config file the way the daemon
   reads it, from any terminal, with `--json` too, and changes nothing.
+- `daifuku install --dry-run` and `daifuku uninstall --dry-run` print every
+  file, folder, `PATH` entry, task and hook the real command would change,
+  and change nothing; with `--json` too. The real commands run the same plan.
 
 ## 0.1.2, 2026-10-02
 
