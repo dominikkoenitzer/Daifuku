@@ -94,7 +94,9 @@ permission first. The daemon picks up every saved change within two seconds;
 `daifuku reload` from an administrator terminal applies it at once.
 Do not take ownership of the folder or give your account write access to it:
 the next install would delete it, config and all. An editor that reads the
-linked schema completes and checks the keys.
+linked schema completes and checks the keys, and `daifuku config validate`
+checks the file the way the daemon reads it, from any terminal; give it a
+path to check another file first.
 [docs/configuration.md](docs/configuration.md) has every key.
 
 ```json
