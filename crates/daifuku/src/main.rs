@@ -12,11 +12,13 @@
 //! daifuku stop           stop the daemon
 //! daifuku hook           read a hook event on stdin and report it (for agents)
 //! daifuku schema         print the config file's JSON schema
-//! daifuku config         print where the config file is
+//! daifuku config         open the config file in your editor
 //! daifuku install        install for this user (administrator terminal)
 //! daifuku uninstall      remove it again
 //! daifuku doctor         check the setup
 //! ```
+//!
+//! Double-clicked in Explorer, with no command, it offers to install.
 
 #[cfg(windows)]
 mod demo;
@@ -85,8 +87,14 @@ enum Command {
     Hook,
     /// Print the config file's JSON schema.
     Schema,
-    /// Print where the config file is.
-    Config,
+    /// Open the config file in your editor, asking Windows for
+    /// administrator rights when this terminal has none. Every key in it is
+    /// optional.
+    Config {
+        /// Print where the config file is instead.
+        #[arg(long)]
+        path: bool,
+    },
     /// Install for this user: Program Files, the logon task, the hooks for
     /// Claude Code and Codex. Needs an administrator terminal.
     Install {
@@ -97,6 +105,10 @@ enum Command {
         /// next logon.
         #[arg(long)]
         no_start: bool,
+        /// Wait for Enter at the end, so the window the offer to install
+        /// opened stays until it is read.
+        #[arg(long, hide = true)]
+        pause: bool,
     },
     /// Remove the program, the logon task and Daifuku's hooks. Keeps the
     /// config, the logs and the saved state unless --purge. Needs an
@@ -111,6 +123,12 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    if std::env::args_os().len() <= 1
+        && let Some(code) = from_explorer()
+    {
+        return code;
+    }
     let cli = Cli::parse();
     match cli.command {
         Command::Hook => {
@@ -121,8 +139,23 @@ fn main() -> ExitCode {
             print!("{}", Config::schema());
             ExitCode::SUCCESS
         }
-        Command::Config => config_path(),
-        Command::Install { no_hooks, no_start } => setup_result(install_cmd(no_hooks, no_start)),
+        Command::Config { path: true } => config_path(),
+        Command::Config { path: false } => setup_result(edit_config()),
+        Command::Install {
+            no_hooks,
+            no_start,
+            pause,
+        } => {
+            let result = install_cmd(no_hooks, no_start);
+            if pause && result.is_ok() {
+                println!("{INSTALLED}");
+            }
+            let code = setup_result(result);
+            if pause {
+                wait_for_enter();
+            }
+            code
+        }
         Command::Uninstall { purge } => setup_result(uninstall_cmd(purge)),
         Command::Doctor => {
             if doctor_cmd() {
@@ -145,6 +178,148 @@ fn main() -> ExitCode {
         Command::Reload => control(&Request::Reload, false),
         Command::Stop => control(&Request::Stop, false),
     }
+}
+
+/// What `daifuku` started with no command does.
+#[derive(Debug, PartialEq, Eq)]
+enum Bare {
+    /// Print the help, as there is a terminal to type a command in.
+    Help,
+    /// Offer to install: Explorer started it, in a console of its own.
+    /// `elevate` when it has to ask Windows for administrator rights first.
+    Offer { elevate: bool },
+}
+
+/// What to do with no command: offer to install only when this process is
+/// alone in its console and someone can answer at the keyboard. In a
+/// terminal, or with input from a file or a pipe, it prints the help.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn bare(own_console: bool, typed_input: bool, elevated: bool) -> Bare {
+    if own_console && typed_input {
+        Bare::Offer { elevate: !elevated }
+    } else {
+        Bare::Help
+    }
+}
+
+/// The last word of an install started by a double click.
+#[cfg_attr(not(windows), allow(dead_code))]
+const INSTALLED: &str = "\nDaifuku is installed and starts at every sign-in. In a new terminal, `daifuku doctor` checks the setup and `daifuku config` opens the settings.";
+
+/// The offer to install, when Explorer started this with no command.
+/// `None` when this is not that case and the help should print instead.
+#[cfg(windows)]
+fn from_explorer() -> Option<ExitCode> {
+    use daifuku_win::{elevate, process};
+    use std::io::IsTerminal;
+
+    let Bare::Offer { elevate: ask } = bare(
+        elevate::console_is_own(),
+        std::io::stdin().is_terminal(),
+        process::current_is_elevated(),
+    ) else {
+        return None;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return Some(ExitCode::FAILURE);
+    };
+    if !exe.with_file_name("daifukud.exe").is_file() {
+        println!("daifukud.exe is not in this folder, and Daifuku needs both programs.");
+        println!(
+            "If you opened daifuku.exe inside the zip, extract the zip first (right-click it, Extract All), then open daifuku.exe in the new folder."
+        );
+        wait_for_enter();
+        return Some(ExitCode::FAILURE);
+    }
+    println!(
+        "This installs Daifuku: it copies it to Program Files, starts it at every sign-in and adds its hooks to Claude Code and Codex."
+    );
+    println!(
+        "Windows asks for permission next. Press Enter to install, or close this window to stop."
+    );
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+        return Some(ExitCode::FAILURE);
+    }
+    if !ask {
+        let result = install_cmd(false, false);
+        if result.is_ok() {
+            println!("{INSTALLED}");
+        }
+        let code = setup_result(result);
+        wait_for_enter();
+        return Some(code);
+    }
+    // The install runs in a window of its own, which waits for Enter at the
+    // end; this one has nothing left to say and closes.
+    match elevate::run_elevated(&exe, "install --pause") {
+        Ok(()) => Some(ExitCode::SUCCESS),
+        Err(e) => {
+            if elevate::declined(&e) {
+                println!("Nothing was installed: Windows was not given permission.");
+            } else {
+                println!("Windows could not start the install: {e}");
+            }
+            wait_for_enter();
+            Some(ExitCode::FAILURE)
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn wait_for_enter() {
+    println!("\nPress Enter to close this window.");
+    let _ = std::io::stdin().read_line(&mut String::new());
+}
+
+/// Opens the config in the program Windows opens `.json` files with, or in
+/// Notepad. Only administrators may change the config, so from a terminal
+/// that is not elevated the editor starts after the Windows prompt.
+#[cfg(windows)]
+fn edit_config() -> anyhow::Result<()> {
+    use anyhow::Context;
+    use daifuku_win::{elevate, paths, process};
+
+    let file = paths::config_file().context("no ProgramData folder")?;
+    if !file.is_file() {
+        anyhow::bail!(
+            "there is no config at {} yet; `daifuku install` writes one",
+            file.display()
+        );
+    }
+    let elevated = process::current_is_elevated();
+    let notepad = paths::system_dir().map(|d| d.join("notepad.exe"));
+    let quoted = format!("\"{}\"", file.display());
+    let mut last = None;
+    for editor in elevate::opens(".json").into_iter().chain(notepad) {
+        let started = if elevated {
+            elevate::run(&editor, &quoted)
+        } else {
+            elevate::run_elevated(&editor, &quoted)
+        };
+        match started {
+            Ok(()) => {
+                println!("opened       {}", file.display());
+                println!(
+                    "\nEvery key is optional; what you leave out keeps its default. Save the file, then run `daifuku reload` in an administrator terminal."
+                );
+                return Ok(());
+            }
+            Err(e) if elevate::declined(&e) => {
+                anyhow::bail!("Windows was not given permission, so the config stays as it is");
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.map_or_else(
+        || anyhow::anyhow!("found no editor"),
+        |e| anyhow::anyhow!("could not open an editor: {e}"),
+    ))
+}
+
+#[cfg(not(windows))]
+fn edit_config() -> anyhow::Result<()> {
+    anyhow::bail!("daifuku runs on Windows only")
 }
 
 #[cfg(windows)]
@@ -529,6 +704,39 @@ mod tests {
         let cli = Cli::command();
         let hook = cli.find_subcommand("hook").unwrap();
         assert!(hook.is_hide_set());
+    }
+
+    #[test]
+    fn only_a_console_of_its_own_with_a_keyboard_offers_to_install() {
+        assert_eq!(bare(true, true, false), Bare::Offer { elevate: true });
+        assert_eq!(bare(true, true, true), Bare::Offer { elevate: false });
+        // A terminal: its shell shares the console.
+        assert_eq!(bare(false, true, false), Bare::Help);
+        assert_eq!(bare(false, true, true), Bare::Help);
+        // Input from a file or a pipe: nobody to press Enter.
+        assert_eq!(bare(true, false, false), Bare::Help);
+        assert_eq!(bare(false, false, true), Bare::Help);
+    }
+
+    #[test]
+    fn config_opens_the_file_and_prints_its_path_on_request() {
+        let cli = Cli::parse_from(["daifuku", "config"]);
+        assert!(matches!(cli.command, Command::Config { path: false }));
+        let cli = Cli::parse_from(["daifuku", "config", "--path"]);
+        assert!(matches!(cli.command, Command::Config { path: true }));
+    }
+
+    #[test]
+    fn the_pause_after_install_is_not_offered_to_people() {
+        let cli = Cli::command();
+        let install = cli.find_subcommand("install").unwrap();
+        let pause = install
+            .get_arguments()
+            .find(|a| a.get_id() == "pause")
+            .unwrap();
+        assert!(pause.is_hide_set());
+        let cli = Cli::parse_from(["daifuku", "install", "--pause"]);
+        assert!(matches!(cli.command, Command::Install { pause: true, .. }));
     }
 
     #[test]
