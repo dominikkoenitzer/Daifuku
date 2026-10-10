@@ -5,6 +5,25 @@ each window's border shows what its agent is doing.
 
 ![Six agents in a grid, their borders changing colour as they work, wait, fail and finish](docs/demo.gif)
 
+## Install
+
+1. Download [daifuku-windows-x64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip).
+   Most PCs need this one; if Settings > System > About says "ARM-based
+   processor" under System type, take [daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip).
+2. Right-click the zip, choose Extract All, and open the new folder.
+3. Double-click `daifuku.exe`, press Enter, and say yes when Windows asks for
+   permission.
+
+Daifuku is not signed, so SmartScreen may stop it the first time: choose
+"More info", then "Run anyway". A second window shows what install did; press
+Enter to close it.
+
+You need Windows 10 or 11 with Windows Terminal, signed in with an account
+that is an administrator itself; Windows 11's Administrator protection is not
+supported.
+
+## Use
+
 - **Ctrl+Alt+Enter** opens six terminals running Claude Code, in a grid on the
   monitor you choose.
 - Each border shows its agent: **blue** working, **yellow** waiting for you at
@@ -22,26 +41,21 @@ manager's reach, so the two run side by side. The agent in such a terminal,
 and every command it runs, runs as administrator; `"admin": false` on a fleet
 opens its terminals as you instead.
 
-## Install
+After install, `daifuku` works by name in every new terminal:
 
-1. Download [daifuku-windows-x64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip),
-   or [daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip)
-   on a PC with an ARM processor.
-2. Most PCs need x64. If Settings > System > About shows "ARM-based
-   processor" under System type, you need arm64.
-3. Right-click the zip, choose Extract All, and open the folder. Double-click
-   `daifuku.exe`, press Enter, and say yes when Windows asks for permission.
+```powershell
+daifuku doctor
+```
 
-Daifuku is not signed, so SmartScreen may stop it the first time: choose
-"More info", then "Run anyway".
+checks the whole setup and says how to fix anything that is wrong. To see it
+work without a real agent, `daifuku demo` from an administrator terminal opens
+six scripted ones. The daemon logs to `C:\ProgramData\Daifuku\logs`, a file a
+day.
 
-A second window shows what install did and what to do next; press Enter to
-close it. From an administrator terminal, `.\daifuku.exe install` in the
-extracted folder does the same.
+## What install changes
 
-You need Windows 10 or 11 with Windows Terminal, signed in with an account
-that is an administrator itself; Windows 11's Administrator protection is not
-supported.
+From an administrator terminal, `.\daifuku.exe install` in the extracted
+folder does the same as the double click.
 
 Install copies Daifuku to `C:\Program Files\Daifuku`, adds that folder to the
 machine `PATH`, starts it at every logon, and adds its hooks to
@@ -57,23 +71,14 @@ agent's settings elsewhere, copy Daifuku's hooks into the file there
 yourself, and remove them there when you uninstall; install names that file,
 and doctor names it when the hooks there are missing.
 
-Press Ctrl+Alt+Enter to open your first fleet. In a new terminal, `daifuku`
-now works by name:
-
-```powershell
-daifuku doctor
-```
-
-checks the whole setup and says how to fix anything that is wrong. To see it
-work without a real agent, `daifuku demo` from an administrator terminal opens
-six scripted ones. The daemon logs to `C:\ProgramData\Daifuku\logs`, a file a
-day.
-
 To update, download the new zip, extract it and double-click `daifuku.exe`
 again; your config and hooks are kept. A `ProgramData\Daifuku` folder that is
 not locked to administrators the way install leaves it, such as one another
 program made or one whose owner or access list was changed so that someone
 else may write it, is deleted with any config in it and made anew.
+
+`daifuku uninstall` from an administrator terminal takes all of it out
+again, the `PATH` entry too, and keeps your config unless you add `--purge`.
 
 ## Configure
 
