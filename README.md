@@ -191,15 +191,16 @@ From an administrator terminal in its folder, `.\daifuku.exe install` does
 the same as the double click. `--no-hooks` leaves Claude Code's and Codex's
 settings alone, and `--no-start` stops a running daemon and
 leaves it to start at the next sign-in. `.\daifuku.exe install --dry-run`
-lists every file, folder, `PATH` entry, task and hook it would create or
-change, and changes nothing; it runs from any terminal.
+lists every file, folder, `PATH` entry, task, hook and Settings entry it
+would create or change, and changes nothing; it runs from any terminal.
 
 To install a build of your own, see [Build from source](#build-from-source).
 
 ## Your data, updates and removal
 
-Install copies Daifuku to `C:\Program Files\Daifuku`, adds that folder to the
-machine `PATH`, starts it at every logon, and adds its hooks to
+Install copies Daifuku to `C:\Program Files\Daifuku`, lists it in Settings >
+Apps > Installed apps, adds that folder to the machine `PATH`, starts it at
+every logon, and adds its hooks to
 `%USERPROFILE%\.claude\settings.json` (and to Codex's
 `%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
 exactly as they are. Claude Code sessions that are already open normally pick
@@ -222,9 +223,14 @@ not locked to administrators the way install leaves it, such as one another
 program made or one whose owner or access list was changed so that someone
 else may write it, is deleted with any config in it and made anew.
 
-`daifuku uninstall` from an administrator terminal takes out the program, the
-`PATH` entry, the logon task and the hooks, and keeps your config, logs and
-saved state; `daifuku uninstall --purge` removes those too.
+To remove Daifuku, open Settings > Apps > Installed apps, click the three
+dots next to Daifuku and choose Uninstall (on Windows 10, Settings > Apps >
+Apps & features, Daifuku, Uninstall). Windows asks for permission, and a
+window lists what was removed. Uninstall takes out the program, its entry in
+Settings, the `PATH` entry, the logon task and the hooks, and keeps your
+config, logs and saved state. From an administrator terminal,
+`daifuku uninstall` does the same, and `daifuku uninstall --purge` removes
+those too.
 `daifuku uninstall --dry-run`, with `--purge` or without, lists what it would
 remove. The downloaded `daifuku.exe`, or the folder you extracted a zip into,
 can be deleted at any time.
