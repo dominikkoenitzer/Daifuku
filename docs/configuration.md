@@ -1,12 +1,14 @@
 # Configuration
 
-Daifuku reads `C:\ProgramData\Daifuku\daifuku.json`. `daifuku config` prints
-that path. `daifuku reload` applies a change at once; from version 0.1.1 on,
-the daemon also picks up every saved change by itself within two seconds.
+Daifuku reads `C:\ProgramData\Daifuku\daifuku.json`. `daifuku config` opens
+it in your editor, and `daifuku config --path` prints that path. The daemon
+picks up every saved change by itself within two seconds; `daifuku reload`
+applies one at once.
 
 The folder is writable by administrators only, on purpose: the daemon runs
-elevated and the config says what it starts. Edit the file from an
-administrator editor, for example `notepad` in an administrator terminal.
+elevated and the config says what it starts. So `daifuku config` asks
+Windows for permission before it opens the editor, unless the terminal is an
+administrator terminal already.
 
 Every key is optional. An empty file, or no file, is one fleet of six
 administrator terminals running `claude` on the monitor turned on its side.
