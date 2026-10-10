@@ -205,7 +205,14 @@ fn main() -> ExitCode {
                 output::print_json(&output::Done { ok: true });
                 ExitCode::SUCCESS
             }
-            Err(e) => fail_json(ErrorCode::Config, &format!("{e:#}")),
+            Err(e) => {
+                let code = if cfg!(windows) {
+                    ErrorCode::Config
+                } else {
+                    ErrorCode::Unsupported
+                };
+                fail_json(code, &format!("{e:#}"))
+            }
         },
         Command::Install {
             no_hooks,

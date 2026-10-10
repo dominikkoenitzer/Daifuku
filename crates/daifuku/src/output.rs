@@ -24,7 +24,6 @@ pub enum ErrorCode {
     /// The config file could not be found or opened.
     Config,
     /// Daifuku runs on Windows only. Only a build for another system says so.
-    #[cfg_attr(windows, allow(dead_code))]
     Unsupported,
     /// Something that should not fail did.
     Internal,
