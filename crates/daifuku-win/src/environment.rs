@@ -192,7 +192,7 @@ fn write(key: &Key, value: &str, kind: REG_VALUE_TYPE) -> io::Result<()> {
 
 /// A registry result as an `io::Result`, keeping the Windows error code so
 /// `NotFound` and `PermissionDenied` read as such.
-fn check(e: WIN32_ERROR) -> io::Result<()> {
+pub(crate) fn check(e: WIN32_ERROR) -> io::Result<()> {
     if e == ERROR_SUCCESS {
         Ok(())
     } else {
