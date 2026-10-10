@@ -141,6 +141,7 @@ real command's other options: `--no-hooks` and `--no-start` for install,
     { "action": "stop_daemon", "target": "daifukud", "detail": "if it runs, so its files can be replaced" },
     { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifuku.exe", "detail": "from C:\\Users\\you\\Downloads\\daifuku.exe" },
     { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifukud.exe", "detail": "carried inside C:\\Users\\you\\Downloads\\daifuku.exe" },
+    { "action": "add_app_entry", "target": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Daifuku", "detail": "Settings > Apps > Installed apps lists Daifuku 0.1.2" },
     { "action": "add_to_path", "target": "C:\\Program Files\\Daifuku", "detail": "the machine PATH" },
     { "action": "start_task", "target": "\\Daifuku\\Daemon-S-1-5-21-...", "detail": null }
   ],
@@ -155,7 +156,7 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 | `elevated` | boolean | Whether this terminal is elevated, as the real command needs. |
 | `steps` | array of objects | Every change, in the order the real command makes it. A step that would change nothing, such as taking a folder off `PATH` that is not on it, is left out. |
 | `steps[].action` | string | What happens, from the list below. |
-| `steps[].target` | string | The file, folder or task it happens to. |
+| `steps[].target` | string | The file, folder, task or registry key it happens to. |
 | `steps[].detail` | string or null | More about it, such as where a file is copied from or why hooks stay as they are. |
 | `notes` | array of strings | Remarks that are not steps, such as `daifukud.exe` missing next to a `daifuku.exe` that does not carry it, or a missing Windows Terminal. |
 
@@ -163,6 +164,7 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 |---|---|---|
 | `stop_daemon` | both | Stop a running daemon. |
 | `copy` | install | Copy one binary into Program Files: this program as `daifuku.exe`, and the daemon from inside it or from next to it. |
+| `add_app_entry` | install | List Daifuku in Settings > Apps > Installed apps, whose Uninstall runs the installed `daifuku.exe`, or update the entry there is. |
 | `add_to_path` | install | Add the install folder to the machine `PATH`. |
 | `keep_path` | install | It is on the machine `PATH` already. |
 | `create_folder` | install | Create the data folder, locked to administrators. |
@@ -179,6 +181,7 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 | `remove_hooks` | uninstall | Remove Daifuku's hooks from an agent's settings. |
 | `remove_from_path` | uninstall | Take the install folder off the machine `PATH`. |
 | `remove_folder` | uninstall | Delete the install folder, or with `--purge` the data folder. |
+| `remove_app_entry` | uninstall | Take Daifuku out of Settings > Apps > Installed apps. |
 
 The exit code is 0 when the plan was worked out, whatever it says.
 
