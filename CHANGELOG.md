@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `daifuku status` works from a terminal that is not elevated. It leaves
+  the daemon's pipe alone there and says whether Daifuku is installed and
+  which version, whether the daemon process runs, whether the logon task is
+  there, and where the config is and whether it loads, and that fleets,
+  agents and hotkeys need an administrator terminal. With `--json` that is
+  one document with `"result": "local_status"` and
+  `"live_state": "needs_administrator_terminal"`; without, one line. It
+  exits 0 instead of failing with `not_elevated`. The daemon still answers
+  only elevated processes.
 - Daifuku shows up in Settings > Apps > Installed apps, and its Uninstall
   button removes it: Windows asks for permission, and a window says what was
   removed and closes by itself after half a minute. `daifuku uninstall`
