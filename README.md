@@ -230,6 +230,9 @@ The first `cargo` command in the folder fetches the stable toolchain that
 `target\release\daifuku.exe`, or run `.\target\release\daifuku.exe install`
 from an administrator terminal. `cargo test` runs the suite.
 
+Both exes are self-contained: the C runtime is linked in, so they run on any
+Windows PC without installing a runtime.
+
 ## Licence
 
 GPL-3.0-only.
