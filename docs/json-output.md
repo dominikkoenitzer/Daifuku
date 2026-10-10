@@ -139,7 +139,8 @@ real command's other options: `--no-hooks` and `--no-start` for install,
   "elevated": false,
   "steps": [
     { "action": "stop_daemon", "target": "daifukud", "detail": "if it runs, so its files can be replaced" },
-    { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifuku.exe", "detail": "from C:\\Users\\you\\Downloads\\daifuku" },
+    { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifuku.exe", "detail": "from C:\\Users\\you\\Downloads\\daifuku.exe" },
+    { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifukud.exe", "detail": "carried inside C:\\Users\\you\\Downloads\\daifuku.exe" },
     { "action": "add_to_path", "target": "C:\\Program Files\\Daifuku", "detail": "the machine PATH" },
     { "action": "start_task", "target": "\\Daifuku\\Daemon-S-1-5-21-...", "detail": null }
   ],
@@ -156,12 +157,12 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 | `steps[].action` | string | What happens, from the list below. |
 | `steps[].target` | string | The file, folder or task it happens to. |
 | `steps[].detail` | string or null | More about it, such as where a file is copied from or why hooks stay as they are. |
-| `notes` | array of strings | Remarks that are not steps, such as a binary missing next to `daifuku.exe` or a missing Windows Terminal. |
+| `notes` | array of strings | Remarks that are not steps, such as `daifukud.exe` missing next to a `daifuku.exe` that does not carry it, or a missing Windows Terminal. |
 
 | Action | Command | |
 |---|---|---|
 | `stop_daemon` | both | Stop a running daemon. |
-| `copy` | install | Copy one binary into Program Files. |
+| `copy` | install | Copy one binary into Program Files: this program as `daifuku.exe`, and the daemon from inside it or from next to it. |
 | `add_to_path` | install | Add the install folder to the machine `PATH`. |
 | `keep_path` | install | It is on the machine `PATH` already. |
 | `create_folder` | install | Create the data folder, locked to administrators. |
