@@ -23,6 +23,8 @@ pub enum ErrorCode {
     Daemon,
     /// The config file could not be found or opened.
     Config,
+    /// The config file is not one the daemon would load.
+    InvalidConfig,
     /// Daifuku runs on Windows only. Only a build for another system says so.
     Unsupported,
     /// Something that should not fail did.
@@ -54,6 +56,14 @@ impl<'a> ErrorDoc<'a> {
 #[derive(Debug, Serialize)]
 pub struct Done {
     pub ok: bool,
+}
+
+/// What `daifuku config validate --json` prints for a file that passed.
+#[derive(Debug, Serialize)]
+pub struct Validated {
+    pub ok: bool,
+    /// The file that was checked.
+    pub path: String,
 }
 
 /// What `daifuku config --path --json` prints.
@@ -211,6 +221,7 @@ mod tests {
             (ErrorCode::Ipc, "ipc"),
             (ErrorCode::Daemon, "daemon"),
             (ErrorCode::Config, "config"),
+            (ErrorCode::InvalidConfig, "invalid_config"),
             (ErrorCode::Unsupported, "unsupported"),
             (ErrorCode::Internal, "internal"),
         ];
@@ -222,6 +233,18 @@ mod tests {
     #[test]
     fn a_done_command_says_ok() {
         assert_eq!(to_json(&Done { ok: true }), r#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn a_valid_config_says_ok_and_which_file() {
+        let doc = Validated {
+            ok: true,
+            path: "C:\\ProgramData\\Daifuku\\daifuku.json".into(),
+        };
+        assert_eq!(
+            to_json(&doc),
+            r#"{"ok":true,"path":"C:\\ProgramData\\Daifuku\\daifuku.json"}"#
+        );
     }
 
     #[test]
