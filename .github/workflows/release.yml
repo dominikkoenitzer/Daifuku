@@ -178,18 +178,22 @@ jobs:
         shell: bash
         run: ./target/release/daifuku.exe schema > "$STAGE_DIR/daifuku.schema.json"
 
+      # The zips carry no version in their names, so every release calls them
+      # the same and the README can link to /releases/latest/download/ for
+      # good.
       - name: Package
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
-          $zip = "dist/$env:PACKAGE_NAME.zip"
+          $file = 'daifuku-windows-x64.zip'
+          $zip = "dist/$file"
           Compress-Archive -Path "$env:STAGE_DIR/*" -DestinationPath $zip -Force
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
           # LF, not CRLF: `sha256sum -c` takes the whole rest of the line as
           # the file name, so a trailing CR makes it look for a file that does
           # not exist and the check fails on a perfectly good download.
-          $line = "$hash  $env:PACKAGE_NAME.zip`n"
+          $line = "$hash  $file`n"
           [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE/$zip.sha256", $line, [System.Text.UTF8Encoding]::new($false))
           Get-Content "$zip.sha256"
 
@@ -215,12 +219,12 @@ jobs:
               if ($machine -ne 0xAA64) { throw ('{0} is machine 0x{1:X4}, not ARM64' -f $exe, $machine) }
           }
           Copy-Item LICENSE, "$env:STAGE_DIR/daifuku.schema.json" $stage
-          $zip = "dist/$name.zip"
+          $file = 'daifuku-windows-arm64.zip'
+          $zip = "dist/$file"
           Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
-          [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE/$zip.sha256", "$hash  $name.zip`n", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE/$zip.sha256", "$hash  $file`n", [System.Text.UTF8Encoding]::new($false))
           Get-Content "$zip.sha256"
-          "ARM_PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Always available, so a workflow_dispatch without a tag still produces a
       # zip that can be downloaded and tried.
@@ -229,10 +233,10 @@ jobs:
         with:
           name: ${{ env.PACKAGE_NAME }}
           path: |
-            dist/${{ env.PACKAGE_NAME }}.zip
-            dist/${{ env.PACKAGE_NAME }}.zip.sha256
-            dist/${{ env.ARM_PACKAGE_NAME }}.zip
-            dist/${{ env.ARM_PACKAGE_NAME }}.zip.sha256
+            dist/daifuku-windows-x64.zip
+            dist/daifuku-windows-x64.zip.sha256
+            dist/daifuku-windows-arm64.zip
+            dist/daifuku-windows-arm64.zip.sha256
           if-no-files-found: error
           retention-days: 14
 
