@@ -13,6 +13,7 @@
 //! daifuku hook           read a hook event on stdin and report it (for agents)
 //! daifuku schema         print the config file's JSON schema
 //! daifuku config         open the config file in your editor
+//! daifuku config validate check a config file without the daemon
 //! daifuku install        install for this user (administrator terminal)
 //! daifuku uninstall      remove it again
 //! daifuku doctor         check the setup
@@ -29,13 +30,14 @@ mod demo;
 #[cfg(windows)]
 mod install;
 mod output;
+mod validate;
 
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use daifuku_core::config::Config;
 use daifuku_core::protocol::Request;
-use output::{ErrorCode, ErrorDoc};
+use output::{ErrorCode, ErrorDoc, Finding};
 
 // The `--json` flag, the same on every command that takes it. A doc comment
 // here would become the about text of each command it is flattened into.
@@ -126,7 +128,10 @@ enum Command {
     /// Open the config file in your editor, asking Windows for
     /// administrator rights when this terminal has none. Every key in it is
     /// optional.
+    #[command(args_conflicts_with_subcommands = true)]
     Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
         /// Print where the config file is instead.
         #[arg(long)]
         path: bool,
@@ -163,6 +168,18 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Check a config file the way the daemon reads it, without the daemon
+    /// and without administrator rights. Changes nothing.
+    Validate {
+        /// The file to check; the config file in use when left out.
+        file: Option<std::path::PathBuf>,
+        #[command(flatten)]
+        format: Format,
+    },
+}
+
 fn main() -> ExitCode {
     #[cfg(windows)]
     if std::env::args_os().len() <= 1
@@ -185,12 +202,18 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Config {
+            action: Some(ConfigAction::Validate { file, format }),
+            ..
+        } => config_validate(file, format.json),
+        Command::Config {
             path: true,
             format,
+            ..
         } => config_path(format.json),
         Command::Config {
             path: false,
             format: Format { json: false },
+            ..
         } => setup_result(edit_config().map(|file| {
             println!("opened       {}", file.display());
             println!(
@@ -200,6 +223,7 @@ fn main() -> ExitCode {
         Command::Config {
             path: false,
             format: Format { json: true },
+            ..
         } => match edit_config() {
             Ok(_) => {
                 output::print_json(&output::Done { ok: true });
@@ -550,6 +574,68 @@ fn config_path(json: bool) -> ExitCode {
     }
     eprintln!("daifuku runs on Windows only");
     ExitCode::FAILURE
+}
+
+/// Checks a config file, the one in use when `file` is `None`, and says
+/// whether the daemon would load it. Exits 1 when it would not.
+fn config_validate(file: Option<std::path::PathBuf>, json: bool) -> ExitCode {
+    let fail = |code: ErrorCode, message: &str| {
+        if json {
+            fail_json(code, message)
+        } else {
+            eprintln!("daifuku: {message}");
+            ExitCode::FAILURE
+        }
+    };
+    let file = match file.map_or_else(default_config_file, Ok) {
+        Ok(file) => file,
+        Err((code, message)) => return fail(code, &message),
+    };
+    let path = file.display().to_string();
+    match validate::file(&file) {
+        Ok(()) if json => {
+            output::print_json(&output::Validated { ok: true, path });
+            ExitCode::SUCCESS
+        }
+        Ok(()) => {
+            println!(
+                "{}",
+                Finding::Check {
+                    name: path,
+                    fix: None
+                }
+                .line()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(p) if json || p.code != ErrorCode::InvalidConfig => fail(p.code, &p.message),
+        Err(p) => {
+            println!(
+                "{}",
+                Finding::Check {
+                    name: path,
+                    fix: Some(p.message),
+                }
+                .line()
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The config file the daemon reads.
+#[cfg(windows)]
+fn default_config_file() -> Result<std::path::PathBuf, (ErrorCode, String)> {
+    daifuku_win::paths::config_file()
+        .ok_or_else(|| (ErrorCode::Config, "no ProgramData folder".to_owned()))
+}
+
+#[cfg(not(windows))]
+fn default_config_file() -> Result<std::path::PathBuf, (ErrorCode, String)> {
+    Err((
+        ErrorCode::Unsupported,
+        "daifuku runs on Windows only; name the file to check".to_owned(),
+    ))
 }
 
 #[cfg(windows)]
@@ -979,6 +1065,47 @@ mod tests {
     }
 
     #[test]
+    fn config_validate_takes_an_optional_file() {
+        let cli = Cli::parse_from(["daifuku", "config", "validate"]);
+        assert!(matches!(
+            cli.command,
+            Command::Config {
+                action: Some(ConfigAction::Validate { file: None, .. }),
+                path: false,
+                ..
+            }
+        ));
+        let cli = Cli::parse_from(["daifuku", "config", "validate", "x.json"]);
+        let Command::Config {
+            action:
+                Some(ConfigAction::Validate {
+                    file: Some(file), ..
+                }),
+            ..
+        } = cli.command
+        else {
+            panic!("config validate with a file did not parse");
+        };
+        assert_eq!(file, std::path::Path::new("x.json"));
+    }
+
+    #[test]
+    fn config_options_do_not_mix_with_validate() {
+        for args in [
+            &["config", "--path", "validate"][..],
+            &["config", "--json", "validate"],
+            &["config", "validate", "--path"],
+            &["config", "validate", "a.json", "b.json"],
+        ] {
+            assert!(
+                Cli::try_parse_from(std::iter::once("daifuku").chain(args.iter().copied()))
+                    .is_err(),
+                "{args:?} parsed"
+            );
+        }
+    }
+
+    #[test]
     fn the_pause_after_install_is_not_offered_to_people() {
         let cli = Cli::command();
         let install = cli.find_subcommand("install").unwrap();
@@ -1003,7 +1130,15 @@ mod tests {
             | Command::Reload { format }
             | Command::Stop { format }
             | Command::Schema { format }
-            | Command::Config { format, .. }
+            | Command::Config {
+                action: Some(ConfigAction::Validate { format, .. }),
+                ..
+            }
+            | Command::Config {
+                action: None,
+                format,
+                ..
+            }
             | Command::Doctor { format } => Some(format.json),
             Command::DemoAgent { .. }
             | Command::Hook
@@ -1021,6 +1156,9 @@ mod tests {
             &["config", "--json"],
             &["config", "--path", "--json"],
             &["config", "--json", "--path"],
+            &["config", "validate", "--json"],
+            &["config", "validate", "--json", "x.json"],
+            &["config", "validate", "x.json", "--json"],
             &["open", "--json"],
             &["open", "agents", "--json"],
             &["open", "--json", "agents"],
@@ -1043,6 +1181,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Config {
+                action: None,
                 path: true,
                 format: Format { json: true }
             }
