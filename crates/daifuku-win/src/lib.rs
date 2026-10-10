@@ -17,6 +17,8 @@
 //! - [`terminal`]: finding and launching Windows Terminal.
 //! - [`paths`]: where the config, the logs and the binaries live.
 //! - [`setup`]: what installing needs: a locked folder and a scheduled task.
+//! - [`environment`]: the machine `PATH`, and telling programs it changed.
+//! - [`elevate`]: asking Windows for administrator rights, and the console.
 
 #![cfg(windows)]
 
@@ -24,6 +26,8 @@ pub mod access;
 pub mod clock;
 pub mod console;
 pub mod dpi;
+pub mod elevate;
+pub mod environment;
 pub mod monitor;
 pub mod paths;
 pub mod pipe;
