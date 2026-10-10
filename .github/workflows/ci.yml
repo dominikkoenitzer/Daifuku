@@ -236,14 +236,22 @@ jobs:
           $task = "\Daifuku\Daemon-$sid"
           schtasks /Query /TN $task | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'the logon task was not registered' }
+          # The entry Settings > Apps lists it by, whose Uninstall runs the
+          # installed copy.
+          $entry = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku'
+          $app = Get-ItemProperty $entry -ErrorAction SilentlyContinue
+          $uninstall = '"{0}" uninstall --from-settings' -f (Join-Path $dir 'daifuku.exe')
+          if (-not $app -or $app.DisplayName -ne 'Daifuku' -or $app.UninstallString -ne $uninstall) {
+              throw "Settings > Apps does not list Daifuku as it should: $($app | Out-String)"
+          }
           if ($shell) {
               $json = Get-Content -Raw $settings | ConvertFrom-Json
               if ($json.theme -ne 'dark') { throw 'the install lost a setting' }
               if (@($json.hooks.Stop).Count -ne 2) { throw 'Stop should hold the user hook and Daifuku''s' }
-              Write-Output 'installed: binaries, machine PATH, locked folder, task, hooks next to the user''s own'
+              Write-Output 'installed: binaries, Settings entry, machine PATH, locked folder, task, hooks next to the user''s own'
           } else {
               if ((Get-Content -Raw $settings) -ne $original) { throw 'install changed the settings without a desktop shell' }
-              Write-Output 'installed: binaries, machine PATH, locked folder, task; no desktop shell, so the settings were left alone'
+              Write-Output 'installed: binaries, Settings entry, machine PATH, locked folder, task; no desktop shell, so the settings were left alone'
           }
 
           # Installing twice changes nothing, the second time from the zip.
@@ -261,11 +269,12 @@ jobs:
           if (Test-Path $dir) { throw 'Program Files\Daifuku survived the uninstall' }
           if ((& $onPath) -ne 0) { throw "$dir is still on the machine PATH after the uninstall" }
           if (Test-Path $data) { throw 'ProgramData\Daifuku survived --purge' }
+          if (Test-Path $entry) { throw 'the Settings > Apps entry survived the uninstall' }
           $json = Get-Content -Raw $settings | ConvertFrom-Json
           if (@($json.hooks.Stop).Count -ne 1 -or $json.hooks.Stop[0].hooks[0].command -ne 'C:/mine.exe') {
               throw 'the uninstall did not leave exactly the user''s own hook'
           }
-          Write-Output 'uninstalled: binaries, PATH entry, task, data and Daifuku''s hooks gone, the user''s hook kept'
+          Write-Output 'uninstalled: binaries, Settings entry, PATH entry, task, data and Daifuku''s hooks gone, the user''s hook kept'
           # The last native command asked for a task that is gone on purpose and
           # left its exit code 1 behind, which the runner would report as a
           # failure of this whole step.
