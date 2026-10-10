@@ -7,18 +7,14 @@ key, and colours each window's border by what its agent is doing.
 
 ## Download
 
-1. Download [daifuku-windows-x64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip).
-2. Right-click it, choose Extract All, and open the new folder.
-3. Double-click `daifuku.exe`, press Enter, and say yes when Windows asks for
-   permission. A second window shows what install did; press Enter to close
-   it.
+Download [daifuku.exe](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku.exe), then double-click it.
 
 Windows may say "Windows protected your PC": click More info, then Run anyway.
 
 You need Windows 10 or 11 with Windows Terminal, signed in with an account
 that is an administrator itself; Windows 11's Administrator protection is not
-supported. A PC with an ARM processor takes the ARM64 zip under Other ways
-to install.
+supported. A PC with an ARM processor takes the ARM64 download under Other
+ways to install.
 
 ## What it does
 
@@ -180,12 +176,20 @@ codes.
 
 On a PC with an ARM processor (Settings > System > About says "ARM-based
 processor" under System type), download
-[daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip)
-and install it the same way.
+[daifuku-arm64.exe](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-arm64.exe)
+and double-click it the same way.
 
-From an administrator terminal, `.\daifuku.exe install` in the extracted
-folder does the same as the double click. `--no-hooks` leaves Claude Code's
-and Codex's settings alone, and `--no-start` stops a running daemon and
+The zips hold the same program as two files, `daifuku.exe` and
+`daifukud.exe`:
+[daifuku-windows-x64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip)
+and
+[daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip).
+Right-click one, choose Extract All, and double-click `daifuku.exe` in the
+new folder.
+
+From an administrator terminal in its folder, `.\daifuku.exe install` does
+the same as the double click. `--no-hooks` leaves Claude Code's and Codex's
+settings alone, and `--no-start` stops a running daemon and
 leaves it to start at the next sign-in. `.\daifuku.exe install --dry-run`
 lists every file, folder, `PATH` entry, task and hook it would create or
 change, and changes nothing; it runs from any terminal.
@@ -212,8 +216,8 @@ names that file, and doctor names it when the hooks there are missing.
 The config, the saved state and the logs live in `C:\ProgramData\Daifuku`;
 the daemon logs to its `logs` folder, a file a day.
 
-To update, download the new zip, extract it and double-click `daifuku.exe`
-again; your config and hooks are kept. A `ProgramData\Daifuku` folder that is
+To update, download the new `daifuku.exe` and double-click it again; your
+config and hooks are kept. A `ProgramData\Daifuku` folder that is
 not locked to administrators the way install leaves it, such as one another
 program made or one whose owner or access list was changed so that someone
 else may write it, is deleted with any config in it and made anew.
@@ -222,7 +226,7 @@ else may write it, is deleted with any config in it and made anew.
 `PATH` entry, the logon task and the hooks, and keeps your config, logs and
 saved state; `daifuku uninstall --purge` removes those too.
 `daifuku uninstall --dry-run`, with `--purge` or without, lists what it would
-remove. The folder you extracted the zip into
+remove. The downloaded `daifuku.exe`, or the folder you extracted a zip into,
 can be deleted at any time.
 
 ## Build from source
