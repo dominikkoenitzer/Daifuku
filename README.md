@@ -206,6 +206,11 @@ The commands that talk to the daemon, `open` to `stop`, need an
 administrator terminal, as the daemon runs elevated. The hotkeys work from
 anywhere.
 
+Every command here but `install` and `uninstall` takes `--json`: it prints
+one JSON document on standard output, errors included, for a script or an
+assistant to read. [JSON output](docs/json-output.md) lists each shape and
+the error codes.
+
 ## Build from source
 
 Windows only. In PowerShell, install the C++ build tools with the Windows
