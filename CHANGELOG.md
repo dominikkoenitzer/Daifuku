@@ -27,6 +27,19 @@
 - The daemon's elevated check fails when another process holds its control
   pipe.
 - The schema takes every monitor word the config loader takes, in any case.
+- Double-clicking `daifuku.exe` installs it: it says what install does,
+  waits for Enter, and asks Windows for permission. Run from a terminal
+  with no arguments, it prints the help as before. Run from inside the zip,
+  it says to extract the zip first.
+- Install adds `C:\Program Files\Daifuku` to the machine `PATH`, so
+  `daifuku` works by name in a new terminal; uninstall removes exactly that
+  entry, and `daifuku doctor` checks it.
+- `daifuku config` opens the config file in your editor for `.json` files,
+  asking Windows for permission from an ordinary terminal.
+  `daifuku config --path` prints where it is, as `daifuku config` did.
+- The release zips have fixed names, `daifuku-windows-x64.zip` and
+  `daifuku-windows-arm64.zip`, so the link to the latest download never
+  changes.
 
 ## 0.1.2, 2026-10-02
 
