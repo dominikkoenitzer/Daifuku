@@ -11,9 +11,10 @@
 //!    terminal, and tell running programs the variable changed. A `PATH`
 //!    that cannot be changed is reported and the install goes on: the
 //!    commands still run by their full path.
-//! 4. Lock `%ProgramData%\Daifuku` to administrators, for the same reason,
-//!    and write a starter config there if there is none. A folder there that
-//!    an earlier install did not lock is removed first, config and all.
+//! 4. Lock `%ProgramData%\Daifuku` to administrators, for the same reason
+//!    as the binaries, and write a starter config there if there is none. A
+//!    folder there that an earlier install did not lock is removed first,
+//!    config and all.
 //! 5. Register this user's logon task that starts the daemon elevated, and
 //!    start it. The one task per machine earlier installs registered goes
 //!    when it is this user's.
