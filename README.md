@@ -77,12 +77,15 @@ else may write it, is deleted with any config in it and made anew.
 
 ## Configure
 
-`C:\ProgramData\Daifuku\daifuku.json`, then `daifuku reload` (from 0.1.1 on,
-saving is enough). Only administrators may write that folder, so edit the file
-from an administrator editor, such as `notepad` in an administrator terminal.
+Every key is optional, and the defaults work without editing. To change
+them, `daifuku config` opens `C:\ProgramData\Daifuku\daifuku.json` in your
+editor for `.json` files, or Notepad when there is none. Only administrators
+may write that folder, so from an ordinary terminal Windows asks for
+permission first. The daemon picks up every saved change within two seconds;
+`daifuku reload` from an administrator terminal applies it at once.
 Do not take ownership of the folder or give your account write access to it:
-the next install would delete it, config and all. Every key is optional; an
-editor that reads the linked schema completes and checks them.
+the next install would delete it, config and all. An editor that reads the
+linked schema completes and checks the keys.
 [docs/configuration.md](docs/configuration.md) has every key.
 
 ```json
@@ -187,7 +190,8 @@ vulnerabilities as described in [SECURITY.md](SECURITY.md).
 | `daifuku demo` | six scripted agents |
 | `daifuku reload` | re-read the config |
 | `daifuku stop` | stop the daemon |
-| `daifuku config` | print where the config file is |
+| `daifuku config` | open the config file |
+| `daifuku config --path` | print where the config file is |
 | `daifuku schema` | print the config's JSON schema |
 | `daifuku doctor` | check the setup |
 | `daifuku install [--no-hooks] [--no-start]` | install, or update in place |
