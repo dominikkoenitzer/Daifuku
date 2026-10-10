@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json",
+//!   "$schema": "https://get-daifuku.vercel.app/schema.json",
 //!   "fleets": [
 //!     { "name": "agents", "count": 6, "monitor": "portrait", "hotkey": "ctrl + alt + return" },
 //!     { "name": "site", "count": 4, "directory": "C:\\src\\site", "hotkey": "ctrl + alt + w" }
@@ -806,7 +806,7 @@ mod tests {
     #[test]
     fn the_example_in_the_module_docs_parses() {
         let text = r#"{
-          "$schema": "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json",
+          "$schema": "https://get-daifuku.vercel.app/schema.json",
           "fleets": [
             { "name": "agents", "count": 6, "monitor": "portrait", "hotkey": "ctrl + alt + return" },
             { "name": "mochi", "count": 4, "directory": "C:\\src\\Mochi", "hotkey": "ctrl + alt + m" }
