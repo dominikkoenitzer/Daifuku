@@ -1,0 +1,22 @@
+# Daifuku
+
+> Daifuku opens coding agent terminals in a grid in Windows Terminal and colours each window's border by what its agent is doing.
+
+Windows 10 and 11, with Windows Terminal. Works with Claude Code and Codex through their hooks.
+Border states: blue working, yellow waiting for the user, green done, red failed. Each state also has its own width.
+Default hotkeys: Ctrl+Alt+Enter opens a fleet of six terminals, Ctrl+Alt+N focuses the agent that has waited longest, Ctrl+Alt+Backspace puts terminals back in their cells, Ctrl+Alt+F4 closes every fleet.
+Install: download [daifuku.exe](/download/windows) and double-click it ([daifuku-arm64.exe](/download/windows-arm64) on ARM). It installs to C:\Program Files\Daifuku and starts at every sign-in.
+Config: C:\ProgramData\Daifuku\daifuku.json, every key optional. `daifuku config` opens it, `daifuku doctor` checks the whole setup.
+
+## Agent skill
+
+- [Daifuku skill (zip)](/skill/daifuku.zip): install, configure and troubleshoot Daifuku, and explain border colours
+- [SKILL.md](/skill/daifuku/SKILL.md): the skill's instructions
+- [Commands](/skill/daifuku/references/commands.md): every command, its output and exit codes
+- [Configuration](/skill/daifuku/references/configuration.md): every config key with its default
+- [Install and hooks](/skill/daifuku/references/install-and-hooks.md): what install changes, the hook entries, uninstall
+- [Troubleshooting](/skill/daifuku/references/troubleshooting.md): reading `daifuku doctor`, files, logs, undo
+
+## Config
+
+- [JSON schema](/schema.json): the schema for daifuku.json
