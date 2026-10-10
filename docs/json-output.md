@@ -4,7 +4,8 @@ The `daifuku` commands that report state or act take `--json` after the
 command's name, as in `daifuku status --json`. With it, `daifuku` prints
 exactly one JSON document on standard output and nothing else there, errors
 included, so a script or an assistant can read every answer the same way.
-`install`, `uninstall` and the hidden commands do not take it.
+`install` and `uninstall` take it only with `--dry-run`; the hidden commands
+do not take it.
 
 Characters past ASCII are written as `\u` escapes, so a script reads the
 same text in whatever code page its shell decodes the output in.
@@ -33,6 +34,8 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku demo --json` | `{"ok": true}` |
 | `daifuku reload --json` | `{"ok": true}` |
 | `daifuku stop --json` | `{"ok": true}` |
+| `daifuku install --dry-run --json` | the plan, below |
+| `daifuku uninstall --dry-run --json` | the plan, below |
 
 A command that worked exits with 0. The commands that talk to the daemon
 (`status`, `open`, `snap`, `next`, `close`, `demo`, `reload` and `stop`) need
@@ -122,6 +125,62 @@ error, the line and column. Without `--json` it prints `ok    <file>` or
 The report prints whether or not the checks pass. The exit code is 0 when
 every check passed and 1 when one failed, as without `--json`.
 
+### `install --dry-run` and `uninstall --dry-run`
+
+What the real command would do, worked out by the same code that does it,
+and nothing changed. A dry run needs no administrator terminal and takes the
+real command's other options: `--no-hooks` and `--no-start` for install,
+`--purge` for uninstall.
+
+```json
+{
+  "dry_run": true,
+  "command": "install",
+  "elevated": false,
+  "steps": [
+    { "action": "stop_daemon", "target": "daifukud", "detail": "if it runs, so its files can be replaced" },
+    { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifuku.exe", "detail": "from C:\\Users\\you\\Downloads\\daifuku" },
+    { "action": "add_to_path", "target": "C:\\Program Files\\Daifuku", "detail": "the machine PATH" },
+    { "action": "start_task", "target": "\\Daifuku\\Daemon-S-1-5-21-...", "detail": null }
+  ],
+  "notes": ["the real `daifuku install` needs an administrator terminal"]
+}
+```
+
+| Field | Type | |
+|---|---|---|
+| `dry_run` | boolean | Always `true`. |
+| `command` | string | `"install"` or `"uninstall"`. |
+| `elevated` | boolean | Whether this terminal is elevated, as the real command needs. |
+| `steps` | array of objects | Every change, in the order the real command makes it. A step that would change nothing, such as taking a folder off `PATH` that is not on it, is left out. |
+| `steps[].action` | string | What happens, from the list below. |
+| `steps[].target` | string | The file, folder or task it happens to. |
+| `steps[].detail` | string or null | More about it, such as where a file is copied from or why hooks stay as they are. |
+| `notes` | array of strings | Remarks that are not steps, such as a binary missing next to `daifuku.exe` or a missing Windows Terminal. |
+
+| Action | Command | |
+|---|---|---|
+| `stop_daemon` | both | Stop a running daemon. |
+| `copy` | install | Copy one binary into Program Files. |
+| `add_to_path` | install | Add the install folder to the machine `PATH`. |
+| `keep_path` | install | It is on the machine `PATH` already. |
+| `create_folder` | install | Create the data folder, locked to administrators. |
+| `replace_folder` | install | Delete a data folder that is not locked, config and all, and create it anew. |
+| `keep_folder` | both | Keep the data folder as it is. |
+| `write_config` | install | Write the starter config. |
+| `keep_config` | install | Keep the config there is. |
+| `register_task` | install | Register this user's logon task. |
+| `remove_task` | both | Remove this user's logon task, or the one task earlier installs shared. |
+| `start_task` | install | Start the daemon now. |
+| `add_hooks` | install | Add or update Daifuku's hooks in an agent's settings. |
+| `keep_hooks` | install | The settings have the hooks already. |
+| `leave_hooks` | both | The settings stay as they are; `detail` says why. |
+| `remove_hooks` | uninstall | Remove Daifuku's hooks from an agent's settings. |
+| `remove_from_path` | uninstall | Take the install folder off the machine `PATH`. |
+| `remove_folder` | uninstall | Delete the install folder, or with `--purge` the data folder. |
+
+The exit code is 0 when the plan was worked out, whatever it says.
+
 ## Errors
 
 Every error with `--json` is one document of this shape on standard output,
@@ -133,7 +192,7 @@ with a non-zero exit code:
 
 | Code | Exit code | When |
 |---|---|---|
-| `usage` | 2 | The command line did not parse and had `--json` in it, such as `--json` before the command's name or on `install`. `--help` and `--version` print their text as always. |
+| `usage` | 2 | The command line did not parse and had `--json` in it, such as `--json` before the command's name or on `install` without `--dry-run`. `--help` and `--version` print their text as always. |
 | `daemon_not_running` | 1 | No daemon answers in this session. |
 | `not_elevated` | 1 | The terminal is not elevated, and only an elevated process may talk to the daemon. The message ends with `run: ` and the command to run in an administrator terminal, such as `daifuku status --json`. |
 | `ipc` | 1 | The pipe to the daemon failed, or the daemon's answer was missing or did not read. |
