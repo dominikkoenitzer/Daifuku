@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Daifuku shows up in Settings > Apps > Installed apps, and its Uninstall
+  button removes it: Windows asks for permission, and a window says what was
+  removed and closes by itself after half a minute. `daifuku uninstall`
+  still does the same from an administrator terminal, and the dry runs list
+  the entry. Uninstall refuses to run as another account than the one signed
+  in, as install does, and deletes its own `daifuku.exe` once it has exited.
 - Each user gets a logon task of their own, `\Daifuku\Daemon-<SID>`, so one
   user's install no longer takes over another's autostart. Install and
   uninstall remove the one task earlier installs shared, `\Daifuku\Daemon`,
