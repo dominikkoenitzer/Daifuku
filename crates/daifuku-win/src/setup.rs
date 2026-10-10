@@ -123,6 +123,16 @@ pub fn harden_dir(dir: &Path) -> std::io::Result<bool> {
     Ok(removed)
 }
 
+/// Whether [`harden_dir`] would keep `dir` as it is: a real folder only
+/// administrators can change. Reads, changes nothing.
+///
+/// # Errors
+///
+/// When `dir` cannot be opened, `NotFound` when there is nothing there.
+pub fn is_locked(dir: &Path) -> std::io::Result<bool> {
+    trusted(dir)
+}
+
 /// Whether `dir` is a real folder, not a link, owned by Administrators or
 /// SYSTEM, with an access list that lets no one else write, delete or change
 /// it. The folder is opened without following a link, so its answer is about
