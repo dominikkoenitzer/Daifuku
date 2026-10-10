@@ -24,6 +24,7 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku config --path --json` | `{"path": "C:\\ProgramData\\Daifuku\\daifuku.json"}` |
 | `daifuku schema --json` | the config's JSON schema, the same as without `--json` |
 | `daifuku config --json` | `{"ok": true}` once the editor started |
+| `daifuku config validate [file] --json` | `{"ok": true, "path": "..."}` for a file the daemon would load, below |
 | `daifuku open [fleet] --json` | `{"ok": true}` |
 | `daifuku snap --json` | `{"ok": true}` |
 | `daifuku next --json` | `{"ok": true}` |
@@ -77,6 +78,21 @@ terminal and says whether the daemon runs.
 Every field is there even when the daemon is an older version that leaves
 one out: `elevated` is then `false` and `hotkeys` empty.
 
+### `config validate`
+
+```json
+{ "ok": true, "path": "C:\\ProgramData\\Daifuku\\daifuku.json" }
+```
+
+Checks the config file in use, or the file named after `validate`, the way
+the daemon reads it: the same decoding, the same parser and the same rules.
+`schema.json` is generated from the parser's types, so a file that passes
+here also passes the schema. It needs no daemon and no administrator
+terminal, and changes nothing. A file that does not pass is the error
+`invalid_config`, whose message says what is wrong and, for a syntax or key
+error, the line and column. Without `--json` it prints `ok    <file>` or
+`FIX   <file>: <what is wrong>`, and exits 1 for a file that does not pass.
+
 ### `doctor`
 
 ```json
@@ -122,6 +138,7 @@ with a non-zero exit code:
 | `not_elevated` | 1 | The terminal is not elevated, and only an elevated process may talk to the daemon. The message ends with `run: ` and the command to run in an administrator terminal, such as `daifuku status --json`. |
 | `ipc` | 1 | The pipe to the daemon failed, or the daemon's answer was missing or did not read. |
 | `daemon` | 1 | The daemon answered that the request did not work, such as a fleet name the config does not have. |
-| `config` | 1 | There is no config file to open or no ProgramData folder, no editor started, or Windows was not given permission to start one. |
-| `unsupported` | 1 | A build for a system other than Windows. |
+| `config` | 1 | There is no config file to open or check, it could not be read, there is no ProgramData folder, no editor started, or Windows was not given permission to start one. |
+| `invalid_config` | 1 | `config validate` found a file the daemon would not load: not JSON, an unknown key, a value of the wrong type, or a rule such as a hotkey that does not parse or two fleets with one name. |
+| `unsupported` | 1 | A build for a system other than Windows, except `config validate` with a file named. |
 | `internal` | 1 | Something that should not fail did. |
