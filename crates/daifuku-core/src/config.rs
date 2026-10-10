@@ -27,6 +27,9 @@ use crate::grid::{Gaps, Shape};
 use crate::hotkey::Hotkey;
 use crate::state::AgentState;
 
+/// Daifuku's own address. Every link Daifuku writes or prints starts here.
+pub const SITE: &str = "https://get-daifuku.vercel.app";
+
 /// The most terminals one fleet may open. Past this a cell is too small to
 /// read, on any monitor sold today.
 pub const MAX_FLEET: u32 = 16;

@@ -820,10 +820,7 @@ fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
 /// the schema linked so an editor completes and checks every key.
 fn starter_config() -> String {
     let mut c = Config {
-        schema: Some(
-            "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json"
-                .to_owned(),
-        ),
+        schema: Some(format!("{}/schema.json", config::SITE)),
         ..Config::default()
     };
     c.fleets = vec![config::Fleet::default()];
@@ -840,7 +837,7 @@ mod tests {
     fn the_starter_config_is_valid_and_links_the_schema() {
         let text = starter_config();
         let c = Config::from_json(&text).unwrap();
-        assert!(c.schema.is_some());
+        assert_eq!(c.schema, Some(format!("{}/schema.json", config::SITE)));
         assert_eq!(c.fleets.len(), 1);
     }
 
