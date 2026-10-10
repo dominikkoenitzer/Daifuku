@@ -33,8 +33,9 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku reload --json` | `{"ok": true}` |
 | `daifuku stop --json` | `{"ok": true}` |
 
-A command that worked exits with 0. The commands that talk to the daemon,
-`open` to `stop`, need an administrator terminal, with `--json` too.
+A command that worked exits with 0. The commands that talk to the daemon
+(`status`, `open`, `snap`, `next`, `close`, `demo`, `reload` and `stop`) need
+an administrator terminal, with `--json` too.
 
 ### `status`
 
