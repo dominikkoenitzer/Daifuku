@@ -182,3 +182,174 @@ pub fn to_json<T: Serialize>(value: &T) -> String {
 pub fn print_json<T: Serialize>(value: &T) {
     println!("{}", to_json(value));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daifuku_core::protocol::{AgentWindow, FleetStatus, Response, Status, to_line};
+    use daifuku_core::state::AgentState;
+    use serde_json::json;
+
+    fn value<T: Serialize>(v: &T) -> serde_json::Value {
+        serde_json::from_str(&to_json(v)).unwrap()
+    }
+
+    #[test]
+    fn an_error_has_one_shape() {
+        let doc = ErrorDoc::new(ErrorCode::DaemonNotRunning, "Daifuku is not running");
+        assert_eq!(
+            to_json(&doc),
+            r#"{"error":{"code":"daemon_not_running","message":"Daifuku is not running"}}"#
+        );
+    }
+
+    #[test]
+    fn every_error_code_is_snake_case() {
+        let codes = [
+            (ErrorCode::Usage, "usage"),
+            (ErrorCode::DaemonNotRunning, "daemon_not_running"),
+            (ErrorCode::NotElevated, "not_elevated"),
+            (ErrorCode::Ipc, "ipc"),
+            (ErrorCode::Daemon, "daemon"),
+            (ErrorCode::Config, "config"),
+            (ErrorCode::Unsupported, "unsupported"),
+            (ErrorCode::Internal, "internal"),
+        ];
+        for (code, name) in codes {
+            assert_eq!(value(&code), json!(name));
+        }
+    }
+
+    #[test]
+    fn a_done_command_says_ok() {
+        assert_eq!(to_json(&Done { ok: true }), r#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn the_config_path_is_one_field() {
+        let path = ConfigPath {
+            path: "C:\\ProgramData\\Daifuku\\daifuku.json".into(),
+        };
+        assert_eq!(
+            to_json(&path),
+            r#"{"path":"C:\\ProgramData\\Daifuku\\daifuku.json"}"#
+        );
+    }
+
+    #[test]
+    fn the_doctor_report_lists_each_check_with_its_fix() {
+        let mut report = DoctorReport::new();
+        report.add(Finding::Check {
+            name: "installed in Program Files".into(),
+            fix: None,
+        });
+        report.add(Finding::Note("daemon busy".into()));
+        report.add(Finding::Check {
+            name: "daemon running".into(),
+            fix: Some("sign out and in".into()),
+        });
+        report.add(Finding::Logs("C:\\logs".into()));
+        assert!(!report.ok);
+        assert_eq!(
+            value(&report),
+            json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "ok": false,
+                "checks": [
+                    {"name": "installed in Program Files", "status": "ok", "fix": null},
+                    {"name": "daemon running", "status": "fail", "fix": "sign out and in"},
+                ],
+                "notes": ["daemon busy"],
+                "logs": "C:\\logs",
+            })
+        );
+    }
+
+    #[test]
+    fn a_doctor_report_with_no_failure_is_ok() {
+        let mut report = DoctorReport::new();
+        report.add(Finding::Check {
+            name: "config valid".into(),
+            fix: None,
+        });
+        assert!(report.ok);
+        assert_eq!(value(&report)["ok"], json!(true));
+        assert_eq!(value(&report)["logs"], json!(null));
+    }
+
+    #[test]
+    fn doctor_lines_read_as_they_always_have() {
+        let check = |fix: Option<&str>| Finding::Check {
+            name: "config valid".into(),
+            fix: fix.map(str::to_owned),
+        };
+        assert_eq!(check(None).line(), "ok    config valid");
+        assert_eq!(
+            check(Some("no ProgramData folder")).line(),
+            "FIX   config valid: no ProgramData folder"
+        );
+        assert_eq!(
+            Finding::Note("elevation and hotkeys".into()).line(),
+            "--    elevation and hotkeys"
+        );
+        assert_eq!(Finding::Logs("C:\\logs".into()).line(), "logs  C:\\logs");
+    }
+
+    #[test]
+    fn json_past_ascii_is_escaped() {
+        let doc = ErrorDoc::new(ErrorCode::Daemon, "no fleet Gr\u{fc}ezi");
+        assert_eq!(
+            to_json(&doc),
+            r#"{"error":{"code":"daemon","message":"no fleet Gr\u00fcezi"}}"#
+        );
+    }
+
+    #[test]
+    fn status_json_keeps_the_daemon_reply_shape() {
+        let status = Status {
+            version: "0.1.0".into(),
+            config: "C:\\ProgramData\\Daifuku\\daifuku.json".into(),
+            elevated: true,
+            hotkeys: vec!["ctrl + alt + return: open agents".into()],
+            fleets: vec![FleetStatus {
+                name: "agents".into(),
+                monitor: "portrait".into(),
+                windows: vec![1, 2],
+            }],
+            agents: vec![AgentWindow {
+                window: 1,
+                title: "claude".into(),
+                state: AgentState::Waiting,
+                for_seconds: 73,
+            }],
+        };
+        let line = to_line(&Response::Status(status)).unwrap();
+        let read: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            read,
+            json!({
+                "result": "status",
+                "version": "0.1.0",
+                "config": "C:\\ProgramData\\Daifuku\\daifuku.json",
+                "elevated": true,
+                "hotkeys": ["ctrl + alt + return: open agents"],
+                "fleets": [{"name": "agents", "monitor": "portrait", "windows": [1, 2]}],
+                "agents": [{"window": 1, "title": "claude", "state": "waiting", "for_seconds": 73}],
+            })
+        );
+    }
+
+    #[test]
+    fn status_json_from_an_older_daemon_still_has_every_field() {
+        let old = r#"{"result":"status","version":"0.0.9","config":"c","fleets":[],"agents":[]}"#;
+        let Ok(Response::Status(status)) = daifuku_core::protocol::from_line::<Response>(old)
+        else {
+            panic!("an older reply did not read");
+        };
+        let line = to_line(&Response::Status(status)).unwrap();
+        assert_eq!(
+            line,
+            "{\"result\":\"status\",\"version\":\"0.0.9\",\"config\":\"c\",\"elevated\":false,\"hotkeys\":[],\"fleets\":[],\"agents\":[]}\n"
+        );
+    }
+}
