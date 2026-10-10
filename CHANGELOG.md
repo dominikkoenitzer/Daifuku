@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3, 2026-10-10
 
 - `daifuku status` works from a terminal that is not elevated. It leaves
   the daemon's pipe alone there and says whether Daifuku is installed and
