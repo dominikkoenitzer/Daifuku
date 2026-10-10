@@ -183,6 +183,17 @@ pub fn session() -> u32 {
     id
 }
 
+/// The Remote Desktop session another process runs in, `None` when Windows
+/// does not say. Needs no rights over the process beyond what any user has
+/// over an elevated one of their own.
+#[must_use]
+pub fn session_of(pid: u32) -> Option<u32> {
+    let mut id = 0u32;
+    // SAFETY: id is a valid out pointer.
+    unsafe { ProcessIdToSessionId(pid, &raw mut id) }.ok()?;
+    Some(id)
+}
+
 /// Runs `f` on this thread as the user of the desktop shell, with that
 /// user's ordinary rights, and goes back to this process's own rights after.
 ///
