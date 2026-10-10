@@ -440,7 +440,7 @@ jobs:
           persist-credentials: false
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
-          args: --no-progress --include-fragments --include-verbatim --exclude '^https://github\.com/dominikkoenitzer/Daifuku/releases/latest/download/' README.md docs
+          args: --no-progress --include-fragments --include-verbatim README.md docs --exclude '^https://github\.com/dominikkoenitzer/Daifuku/releases/latest/download/'
           fail: true
 
   # The release workflow's packaging, on every push, without publishing: a
