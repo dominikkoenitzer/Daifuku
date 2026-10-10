@@ -6,13 +6,13 @@ use std::io;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD, REG_OPTION_NON_VOLATILE,
-    REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW,
-    RegSetValueExW,
+    REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegCloseKey, RegCreateKeyExW,
+    RegDeleteTreeW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
 };
 use windows::core::PCWSTR;
 
 use crate::environment::check;
-use crate::wide::to_wide;
+use crate::wide::{from_wide, to_wide};
 
 /// The entry's key under `HKEY_LOCAL_MACHINE`.
 pub const KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku";
@@ -112,6 +112,48 @@ pub fn exists() -> bool {
     }
     drop(Key(key));
     true
+}
+
+/// One text value of the entry, such as `DisplayVersion`, `None` when there
+/// is no entry or no such text in it. Any user may read it.
+#[must_use]
+pub fn text(name: &str) -> Option<String> {
+    let key = to_wide(KEY);
+    let value = to_wide(name);
+    let flags = RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY;
+    let mut len = 0u32;
+    // SAFETY: both names are NUL terminated; the first call only reports the
+    // size in bytes, the second writes at most that many into a buffer of
+    // that size.
+    unsafe {
+        let sized = RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            flags,
+            None,
+            None,
+            Some(&raw mut len),
+        );
+        if sized != ERROR_SUCCESS {
+            return None;
+        }
+        let mut buf = vec![0u16; (len as usize).div_ceil(2)];
+        let read = RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            flags,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&raw mut len),
+        );
+        if read != ERROR_SUCCESS {
+            return None;
+        }
+        buf.truncate(len as usize / 2);
+        Some(from_wide(&buf))
+    }
 }
 
 /// An open registry key, closed when dropped.
