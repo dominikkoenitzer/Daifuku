@@ -55,7 +55,9 @@ day.
 ## What install changes
 
 From an administrator terminal, `.\daifuku.exe install` in the extracted
-folder does the same as the double click.
+folder does the same as the double click. `.\daifuku.exe install --dry-run`
+lists every file, folder, `PATH` entry, task and hook it would create or
+change, and changes nothing; it runs from any terminal.
 
 Install copies Daifuku to `C:\Program Files\Daifuku`, adds that folder to the
 machine `PATH`, starts it at every logon, and adds its hooks to
@@ -79,6 +81,8 @@ else may write it, is deleted with any config in it and made anew.
 
 `daifuku uninstall` from an administrator terminal takes all of it out
 again, the `PATH` entry too, and keeps your config unless you add `--purge`.
+`daifuku uninstall --dry-run`, with `--purge` or without, lists what it would
+remove.
 
 ## Configure
 
