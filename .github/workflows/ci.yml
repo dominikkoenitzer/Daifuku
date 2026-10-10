@@ -145,6 +145,23 @@ jobs:
         with:
           key: install
       - run: cargo build --locked --release --workspace
+      # A release is installed two ways: from daifuku.exe alone, carrying the
+      # daemon inside as the release publishes it, and from the zip's
+      # daifuku.exe with daifukud.exe next to it. The first install below
+      # runs from the one, the second from the other.
+      - name: Make both downloads
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'zip'
+          $alone = Join-Path $env:RUNNER_TEMP 'alone'
+          New-Item -ItemType Directory -Force -Path $zip, $alone | Out-Null
+          Copy-Item target/release/daifuku.exe, target/release/daifukud.exe $zip
+          $env:DAIFUKU_EMBED_DAEMON = (Resolve-Path (Join-Path $zip 'daifukud.exe')).Path
+          cargo build --locked --release -p daifuku
+          if ($LASTEXITCODE -ne 0) { throw "the build of daifuku.exe with the daemon inside failed" }
+          Copy-Item target/release/daifuku.exe $alone
       # Only a double click from Explorer, alone in its own console, offers to
       # install. Started bare from a shell it prints the help and exits; were
       # it to wait for Enter there, a script would hang on a prompt nobody sees.
@@ -182,7 +199,9 @@ jobs:
               Set-Content -Encoding utf8 $settings
           $original = Get-Content -Raw $settings
 
-          $out = ./target/release/daifuku.exe install --no-start | Out-String
+          $alone = Join-Path $env:RUNNER_TEMP 'alone/daifuku.exe'
+          $zip = Join-Path $env:RUNNER_TEMP 'zip'
+          $out = & $alone install --no-start | Out-String
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "install exited with $LASTEXITCODE" }
           # The hooks are written with the desktop user's own rights; on a
@@ -192,6 +211,11 @@ jobs:
           $dir = Join-Path $env:ProgramFiles 'Daifuku'
           foreach ($f in 'daifuku.exe', 'daifukud.exe') {
               if (-not (Test-Path (Join-Path $dir $f))) { throw "$f was not installed" }
+          }
+          # The daemon daifuku.exe carried, written out byte for byte.
+          $written = (Get-FileHash (Join-Path $dir 'daifukud.exe')).Hash
+          if ($written -ne (Get-FileHash (Join-Path $zip 'daifukud.exe')).Hash) {
+              throw 'the daemon installed from inside daifuku.exe is not the one it was built with'
           }
           # The machine PATH as the registry holds it, not this shell's copy,
           # which was read before the install. Entries compare as Windows
@@ -222,9 +246,10 @@ jobs:
               Write-Output 'installed: binaries, machine PATH, locked folder, task; no desktop shell, so the settings were left alone'
           }
 
-          # Installing twice changes nothing.
+          # Installing twice changes nothing, the second time from the zip.
           $before = Get-Content -Raw $settings
-          ./target/release/daifuku.exe install --no-start | Out-Null
+          & (Join-Path $zip 'daifuku.exe') install --no-start | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "the install from the zip exited with $LASTEXITCODE" }
           if ((Get-Content -Raw $settings) -ne $before) { throw 'a second install changed the settings' }
           if ((& $onPath) -ne 1) { throw "a second install left $dir on the machine PATH $(& $onPath) times" }
 
