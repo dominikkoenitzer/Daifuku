@@ -841,6 +841,107 @@ mod tests {
         assert!(matches!(cli.command, Command::Install { pause: true, .. }));
     }
 
+    /// The `--json` flag of a command, `None` for one that has none.
+    fn json_flag(command: &Command) -> Option<bool> {
+        match command {
+            Command::Open { format, .. }
+            | Command::Snap { format }
+            | Command::Close { format, .. }
+            | Command::Next { format }
+            | Command::Demo { format }
+            | Command::Status { format }
+            | Command::Reload { format }
+            | Command::Stop { format }
+            | Command::Schema { format }
+            | Command::Config { format, .. }
+            | Command::Doctor { format } => Some(format.json),
+            Command::DemoAgent { .. }
+            | Command::Hook
+            | Command::Install { .. }
+            | Command::Uninstall { .. } => None,
+        }
+    }
+
+    #[test]
+    fn every_command_that_reports_or_acts_takes_json_after_its_name() {
+        for args in [
+            &["status", "--json"][..],
+            &["doctor", "--json"],
+            &["schema", "--json"],
+            &["config", "--json"],
+            &["config", "--path", "--json"],
+            &["config", "--json", "--path"],
+            &["open", "--json"],
+            &["open", "agents", "--json"],
+            &["open", "--json", "agents"],
+            &["snap", "--json"],
+            &["close", "--json"],
+            &["close", "agents", "--json"],
+            &["close", "--all", "--json"],
+            &["next", "--json"],
+            &["demo", "--json"],
+            &["reload", "--json"],
+            &["stop", "--json"],
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("daifuku").chain(args.iter().copied()))
+                .unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert_eq!(json_flag(&cli.command), Some(true), "{args:?}");
+        }
+        let cli = Cli::try_parse_from(["daifuku", "status"]).unwrap();
+        assert_eq!(json_flag(&cli.command), Some(false));
+        let cli = Cli::try_parse_from(["daifuku", "config", "--path", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Config {
+                path: true,
+                format: Format { json: true }
+            }
+        ));
+    }
+
+    #[test]
+    fn json_is_refused_where_it_does_not_belong_with_a_usage_error() {
+        for args in [
+            &["--json", "status"][..],
+            &["install", "--json"],
+            &["uninstall", "--json"],
+            &["hook", "--json"],
+        ] {
+            let e = Cli::try_parse_from(std::iter::once("daifuku").chain(args.iter().copied()))
+                .err()
+                .unwrap_or_else(|| panic!("{args:?} parsed"));
+            assert_eq!(
+                e.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{args:?}"
+            );
+            assert_eq!(usage_message(&e), "unexpected argument '--json' found");
+        }
+        let e = Cli::try_parse_from(["daifuku", "open", "a", "b", "--json"])
+            .err()
+            .unwrap();
+        assert!(!usage_message(&e).starts_with("error: "));
+        assert!(!usage_message(&e).is_empty());
+    }
+
+    #[test]
+    fn help_with_json_is_still_help() {
+        let e = Cli::try_parse_from(["daifuku", "status", "--json", "--help"])
+            .err()
+            .unwrap();
+        assert_eq!(e.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn a_daemon_that_could_not_be_asked_has_a_code_for_each_reason() {
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "not running");
+        assert_eq!(control_code(&missing, false), ErrorCode::DaemonNotRunning);
+        assert_eq!(control_code(&missing, true), ErrorCode::DaemonNotRunning);
+        let denied = std::io::Error::from_raw_os_error(5);
+        assert_eq!(control_code(&denied, false), ErrorCode::NotElevated);
+        assert_eq!(control_code(&denied, true), ErrorCode::Ipc);
+    }
+
     #[test]
     fn open_takes_an_optional_fleet() {
         let cli = Cli::parse_from(["daifuku", "open", "mochi"]);
