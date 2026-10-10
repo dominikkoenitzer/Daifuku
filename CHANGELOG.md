@@ -45,6 +45,8 @@
   `message`, and a non-zero exit code. `docs/json-output.md` lists each shape
   and code. `daifuku status --json` keeps its shape; its errors take the new
   one.
+- A daemon command from a terminal that is not elevated names the command
+  to run in an administrator terminal, `--json` and fleet name included.
 
 ## 0.1.2, 2026-10-02
 
