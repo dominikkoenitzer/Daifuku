@@ -1,39 +1,37 @@
 # Daifuku
 
-Fleets of AI agent terminals for Windows. One key opens them in a grid, and
-each window's border shows what its agent is doing.
+Daifuku opens a fleet of AI agent terminals on Windows in a grid with one
+key, and colours each window's border by what its agent is doing.
 
 ![Six agents in a grid, their borders changing colour as they work, wait, fail and finish](docs/demo.gif)
 
-## Install
+## Download
 
 1. Download [daifuku-windows-x64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip).
-   Most PCs need this one; if Settings > System > About says "ARM-based
-   processor" under System type, take [daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip).
-2. Right-click the zip, choose Extract All, and open the new folder.
+2. Right-click it, choose Extract All, and open the new folder.
 3. Double-click `daifuku.exe`, press Enter, and say yes when Windows asks for
-   permission.
+   permission. A second window shows what install did; press Enter to close
+   it.
 
-Daifuku is not signed, so SmartScreen may stop it the first time: choose
-"More info", then "Run anyway". A second window shows what install did; press
-Enter to close it.
+Windows may say "Windows protected your PC": click More info, then Run anyway.
 
 You need Windows 10 or 11 with Windows Terminal, signed in with an account
 that is an administrator itself; Windows 11's Administrator protection is not
-supported.
+supported. A PC with an ARM processor takes the ARM64 zip under Other ways
+to install.
 
-## Use
+## What it does
 
-- **Ctrl+Alt+Enter** opens six terminals running Claude Code, in a grid on the
-  monitor you choose.
-- Each border shows its agent: **blue** working, **yellow** waiting for you at
-  a permission prompt or a question, **green** done (its turn is over, or it
-  has just started), **red** its turn ended on an error, such as a rate limit.
-- **Ctrl+Alt+N** visits the waiting agents first, longest waiting first, then
-  the failed ones. Press it again for the next one.
-- **Ctrl+Alt+Backspace** puts every terminal back in its cell.
-- **Ctrl+Alt+F4** closes every fleet at once, without asking: an agent still
-  working ends with its terminal.
+| Key | |
+|---|---|
+| Ctrl+Alt+Enter | opens six terminals running Claude Code, in a grid on the monitor you choose |
+| Ctrl+Alt+N | visits the waiting agents first, longest waiting first, then the failed ones; press it again for the next one |
+| Ctrl+Alt+Backspace | puts every terminal back in its cell |
+| Ctrl+Alt+F4 | closes every fleet at once, without asking: an agent still working ends with its terminal |
+
+Each border shows its agent: blue working, yellow waiting for you at a
+permission prompt or a question, green done (its turn is over, or it has just
+started), red its turn ended on an error, such as a rate limit.
 
 It works with Claude Code and Codex, in Windows Terminal. Fleets open as
 administrator by default, which also keeps them out of a tiling window
@@ -41,48 +39,10 @@ manager's reach, so the two run side by side. The agent in such a terminal,
 and every command it runs, runs as administrator; `"admin": false` on a fleet
 opens its terminals as you instead.
 
-After install, `daifuku` works by name in every new terminal:
-
-```powershell
-daifuku doctor
-```
-
-checks the whole setup and says how to fix anything that is wrong. To see it
-work without a real agent, `daifuku demo` from an administrator terminal opens
-six scripted ones. The daemon logs to `C:\ProgramData\Daifuku\logs`, a file a
-day.
-
-## What install changes
-
-From an administrator terminal, `.\daifuku.exe install` in the extracted
-folder does the same as the double click. `.\daifuku.exe install --dry-run`
-lists every file, folder, `PATH` entry, task and hook it would create or
-change, and changes nothing; it runs from any terminal.
-
-Install copies Daifuku to `C:\Program Files\Daifuku`, adds that folder to the
-machine `PATH`, starts it at every logon, and adds its hooks to
-`%USERPROFILE%\.claude\settings.json` (and to Codex's
-`%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
-exactly as they are. Claude Code sessions that are already open normally pick
-the hooks up by themselves; restart one that still shows no border. Codex runs
-new hooks only after you trust them in its `/hooks` menu. A settings file
-behind a link that leads out of your profile is left alone, and the installer
-says so; make it a real file in your profile and install again. Install adds
-hooks to these two files only. If `CLAUDE_CONFIG_DIR` or `CODEX_HOME` moves an
-agent's settings elsewhere, copy Daifuku's hooks into the file there
-yourself, and remove them there when you uninstall; install names that file,
-and doctor names it when the hooks there are missing.
-
-To update, download the new zip, extract it and double-click `daifuku.exe`
-again; your config and hooks are kept. A `ProgramData\Daifuku` folder that is
-not locked to administrators the way install leaves it, such as one another
-program made or one whose owner or access list was changed so that someone
-else may write it, is deleted with any config in it and made anew.
-
-`daifuku uninstall` from an administrator terminal takes all of it out
-again, the `PATH` entry too, and keeps your config unless you add `--purge`.
-`daifuku uninstall --dry-run`, with `--purge` or without, lists what it would
-remove.
+After install, `daifuku` works by name in every new terminal, and
+`daifuku doctor` checks the whole setup and says how to fix anything that is
+wrong. To see it work without a real agent, `daifuku demo` from an
+administrator terminal opens six scripted ones.
 
 ## Configure
 
@@ -92,6 +52,7 @@ editor for `.json` files, or Notepad when there is none. Only administrators
 may write that folder, so from an ordinary terminal Windows asks for
 permission first. The daemon picks up every saved change within two seconds;
 `daifuku reload` from an administrator terminal applies it at once.
+
 Do not take ownership of the folder or give your account write access to it:
 the next install would delete it, config and all. An editor that reads the
 linked schema completes and checks the keys, and `daifuku config validate`
@@ -169,25 +130,6 @@ the border stays yellow until the approved tool has run. A Claude Code turn
 you interrupt, with Esc or by saying no at a permission prompt, turns green
 once Claude Code reports its prompt idle, about a minute later.
 
-## Security
-
-The daemon runs as administrator, so nothing an ordinary program can change
-decides what it starts:
-
-- the binaries live in `Program Files`;
-- the config lives in a folder only administrators can write, owned by the
-  Administrators group;
-- commands arrive on a pipe only elevated processes can open;
-- Windows Terminal is found through its package and PowerShell through the
-  system folders, never through `PATH`.
-
-Hooks use a separate pipe, open to the signed-in user, that can do nothing but
-set the state shown for a window: its border, the chime, and its place in the
-next key's queue.
-
-The full threat model is in [docs/security.md](docs/security.md); report
-vulnerabilities as described in [SECURITY.md](SECURITY.md).
-
 ## Commands
 
 | | |
@@ -218,10 +160,70 @@ names the command to run. `doctor`, `config validate`, `schema`,
 `config --path` and the dry runs work from any terminal. The hotkeys work
 from anywhere.
 
-Every command here takes `--json`, `install` and `uninstall` only with
-`--dry-run`: it prints one JSON document on standard output, errors
-included, for a script or an assistant to read.
-[JSON output](docs/json-output.md) lists each shape and the error codes.
+## Use it from a script or an AI assistant
+
+Every command in the table takes `--json`, `install` and `uninstall` only
+with `--dry-run`: it prints one JSON document on standard output, errors
+included, for a script or an assistant to read. These work from any
+terminal:
+
+```powershell
+daifuku doctor --json
+daifuku config validate --json
+daifuku install --dry-run --json
+```
+
+[docs/json-output.md](docs/json-output.md) lists each shape and the error
+codes.
+
+## Other ways to install
+
+On a PC with an ARM processor (Settings > System > About says "ARM-based
+processor" under System type), download
+[daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip)
+and install it the same way.
+
+From an administrator terminal, `.\daifuku.exe install` in the extracted
+folder does the same as the double click. `--no-hooks` leaves Claude Code's
+and Codex's settings alone, and `--no-start` stops a running daemon and
+leaves it to start at the next sign-in. `.\daifuku.exe install --dry-run`
+lists every file, folder, `PATH` entry, task and hook it would create or
+change, and changes nothing; it runs from any terminal.
+
+To install a build of your own, see [Build from source](#build-from-source).
+
+## Your data, updates and removal
+
+Install copies Daifuku to `C:\Program Files\Daifuku`, adds that folder to the
+machine `PATH`, starts it at every logon, and adds its hooks to
+`%USERPROFILE%\.claude\settings.json` (and to Codex's
+`%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
+exactly as they are. Claude Code sessions that are already open normally pick
+the hooks up by themselves; restart one that still shows no border. Codex runs
+new hooks only after you trust them in its `/hooks` menu.
+
+A settings file behind a link that leads out of your profile is left alone,
+and the installer says so; make it a real file in your profile and install
+again. Install adds hooks to these two files only. If `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME` moves an agent's settings elsewhere, copy Daifuku's hooks into
+the file there yourself, and remove them there when you uninstall; install
+names that file, and doctor names it when the hooks there are missing.
+
+The config, the saved state and the logs live in `C:\ProgramData\Daifuku`;
+the daemon logs to its `logs` folder, a file a day.
+
+To update, download the new zip, extract it and double-click `daifuku.exe`
+again; your config and hooks are kept. A `ProgramData\Daifuku` folder that is
+not locked to administrators the way install leaves it, such as one another
+program made or one whose owner or access list was changed so that someone
+else may write it, is deleted with any config in it and made anew.
+
+`daifuku uninstall` from an administrator terminal takes out the program, the
+`PATH` entry, the logon task and the hooks, and keeps your config, logs and
+saved state; `daifuku uninstall --purge` removes those too.
+`daifuku uninstall --dry-run`, with `--purge` or without, lists what it would
+remove. The folder you extracted the zip into
+can be deleted at any time.
 
 ## Build from source
 
@@ -243,13 +245,38 @@ cargo build --release --locked
 ```
 
 The first `cargo` command in the folder fetches the stable toolchain that
-`rust-toolchain.toml` names. To install what you built, double-click
-`target\release\daifuku.exe`, or run `.\target\release\daifuku.exe install`
-from an administrator terminal. `cargo test` runs the suite.
+`rust-toolchain.toml` names; `Cargo.toml` needs Rust 1.96 or newer. To
+install what you built, double-click `target\release\daifuku.exe`, or run
+`.\target\release\daifuku.exe install` from an administrator terminal.
+`cargo test` runs the suite.
 
 Both exes are self-contained: the C runtime is linked in, so they run on any
 Windows PC without installing a runtime.
 
+## Security
+
+The daemon runs as administrator, so nothing an ordinary program can change
+decides what it starts:
+
+- the binaries live in `Program Files`;
+- the config lives in a folder only administrators can write, owned by the
+  Administrators group;
+- commands arrive on a pipe only elevated processes can open;
+- Windows Terminal is found through its package and PowerShell through the
+  system folders, never through `PATH`.
+
+Hooks use a separate pipe, open to the signed-in user, that can do nothing but
+set the state shown for a window: its border, the chime, and its place in the
+next key's queue.
+
+The full threat model is in [docs/security.md](docs/security.md); report
+vulnerabilities as described in [SECURITY.md](SECURITY.md).
+
+## Docs
+
+[Configuration](docs/configuration.md), [JSON output](docs/json-output.md),
+[threat model](docs/security.md) and [changelog](CHANGELOG.md).
+
 ## Licence
 
-GPL-3.0-only.
+[GPL-3.0-only](LICENSE).
