@@ -5,6 +5,8 @@ colour = "colour"
 colours = "colours"
 centre = "centre"
 licence = "licence"
+# Misspelt on purpose: a test checks that a wrong monitor name fails.
+portait = "portait"
 
 [default.extend-identifiers]
 # SDDL: BA is the Administrators group, as in "(A;;GA;;;BA)".
