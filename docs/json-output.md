@@ -20,7 +20,7 @@ for a person and may change. Read the fields you need and ignore the rest.
 
 | Command | Prints |
 |---|---|
-| `daifuku status --json` | the status, below |
+| `daifuku status --json` | the status, below; from a terminal that is not elevated, the local status |
 | `daifuku doctor --json` | the doctor's report, below |
 | `daifuku config --path --json` | `{"path": "C:\\ProgramData\\Daifuku\\daifuku.json"}` |
 | `daifuku schema --json` | the config's JSON schema, the same as without `--json` |
@@ -44,8 +44,10 @@ daemon's control pipe can open administrator terminals, so only elevated
 processes may use it, `status` included
 ([security](security.md#talking-to-the-daemon)). From any other terminal
 they fail with `not_elevated`, and the message ends with the command to run
-in an administrator terminal. `daifuku doctor --json` works from any
-terminal and says whether the daemon runs.
+in an administrator terminal. `status` is the exception: it does not open
+the pipe there and prints the local status instead, with exit code 0.
+`daifuku doctor --json` works from any terminal and says whether the daemon
+runs.
 
 ### `status`
 
@@ -80,6 +82,50 @@ terminal and says whether the daemon runs.
 
 Every field is there even when the daemon is an older version that leaves
 one out: `elevated` is then `false` and `hotkeys` empty.
+
+### `status` from a terminal that is not elevated
+
+```json
+{
+  "result": "local_status",
+  "version": "0.1.2",
+  "installed": true,
+  "installed_version": "0.1.2",
+  "daemon_running": true,
+  "logon_task": true,
+  "config": "C:\\ProgramData\\Daifuku\\daifuku.json",
+  "config_exists": true,
+  "config_valid": true,
+  "config_error": null,
+  "live_state": "needs_administrator_terminal",
+  "message": "fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status --json"
+}
+```
+
+What can be told without the daemon, read from files, the registry, the
+process list and Task Scheduler. Nothing in it opens the daemon's pipes.
+Fleets, agents and hotkeys come only from the daemon, so they are not in it;
+`live_state` says so. Tell the two shapes apart by `result`.
+
+| Field | Type | |
+|---|---|---|
+| `result` | string | Always `"local_status"`. |
+| `version` | string | This `daifuku`'s version. |
+| `installed` | boolean | Whether `daifuku.exe` and `daifukud.exe` are in `C:\Program Files\Daifuku`. |
+| `installed_version` | string or null | The installed version: this `daifuku`'s when it is the installed copy, else the one in the Settings > Apps entry. `null` when not installed or not known, as after an install older than the entry. |
+| `daemon_running` | boolean | Whether a `daifukud.exe` process runs in this session, from the process list. |
+| `logon_task` | boolean | Whether this user's logon task is registered, or the one task earlier installs shared runs for this user. |
+| `config` | string or null | The config file, which need not exist; `null` when there is no ProgramData folder. |
+| `config_exists` | boolean | Whether the config file exists. Without one the defaults apply. |
+| `config_valid` | boolean | Whether the daemon would load it, read the way `config validate` reads it; `true` when there is no file. |
+| `config_error` | string or null | What is wrong with the config, on one line; `null` when it is valid. |
+| `live_state` | string | Always `"needs_administrator_terminal"`: fleets, agents and hotkeys need an administrator terminal. |
+| `message` | string | The same for a person, ending in the command to run in an administrator terminal. |
+
+The exit code is 0 whatever the fields say. Without `--json` it prints the
+same on one line, such as `daifuku 0.1.2 installed, daemon running, logon
+task registered, config valid (C:\ProgramData\Daifuku\daifuku.json);
+fleets, agents and hotkeys need an administrator terminal: ...`.
 
 ### `config validate`
 
@@ -197,8 +243,8 @@ with a non-zero exit code:
 | Code | Exit code | When |
 |---|---|---|
 | `usage` | 2 | The command line did not parse and had `--json` in it, such as `--json` before the command's name or on `install` without `--dry-run`. `--help` and `--version` print their text as always. |
-| `daemon_not_running` | 1 | No daemon answers in this session. |
-| `not_elevated` | 1 | The terminal is not elevated, and only an elevated process may talk to the daemon. The message ends with `run: ` and the command to run in an administrator terminal, such as `daifuku status --json`. |
+| `daemon_not_running` | 1 | No daemon answers in this session. `status` says so only from an administrator terminal; from any other it prints the local status. |
+| `not_elevated` | 1 | The terminal is not elevated, and only an elevated process may talk to the daemon. The message ends with `run: ` and the command to run in an administrator terminal, such as `daifuku open --json`. Not from `status`, which prints the local status instead. |
 | `ipc` | 1 | The pipe to the daemon failed, or the daemon's answer was missing or did not read. |
 | `daemon` | 1 | The daemon answered that the request did not work, such as a fleet name the config does not have. |
 | `config` | 1 | There is no config file to open or check, it could not be read, there is no ProgramData folder, no editor started, or Windows was not given permission to start one. |
