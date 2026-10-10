@@ -31,6 +31,7 @@
 mod demo;
 #[cfg(windows)]
 mod install;
+mod local;
 mod output;
 mod validate;
 
@@ -55,7 +56,7 @@ struct Format {
     name = "daifuku",
     version,
     about = "Fleets of agent terminals, in a grid, coloured by what each agent is doing.",
-    after_help = "The commands that talk to the daemon, open to stop, need an administrator terminal."
+    after_help = "The commands that talk to the daemon, open to stop, need an administrator terminal. From any other, status says only what it can tell without the daemon."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -103,7 +104,9 @@ enum Command {
         /// Which of the fleet's terminals this is, from 1.
         number: Option<usize>,
     },
-    /// Show fleets, agents, hotkeys and the config in use.
+    /// Show fleets, agents, hotkeys and the config in use. From a terminal
+    /// that is not elevated: whether Daifuku is installed and running, and
+    /// the config.
     Status {
         #[command(flatten)]
         format: Format,
@@ -307,7 +310,7 @@ fn main() -> ExitCode {
             demo_agent(number);
             ExitCode::SUCCESS
         }
-        Command::Status { format } => control(&Request::Status, format.json),
+        Command::Status { format } => status_cmd(format.json),
         Command::Reload { format } => control(&Request::Reload, format.json),
         Command::Stop { format } => control(&Request::Stop, format.json),
     }
@@ -877,6 +880,25 @@ fn control(request: &Request, json: bool) -> ExitCode {
         Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
         Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
     }
+}
+
+/// `daifuku status`. The daemon answers only an elevated process, so from
+/// any other terminal it does not ask it: it reports what it can tell
+/// without the pipe and exits 0.
+#[cfg(windows)]
+fn status_cmd(json: bool) -> ExitCode {
+    if daifuku_win::process::current_is_elevated() {
+        return control(&Request::Status, json);
+    }
+    let status = local::gather(&install::Here, &command_line(&Request::Status, json));
+    let (text, code) = local::report(&status, json);
+    println!("{text}");
+    ExitCode::from(code)
+}
+
+#[cfg(not(windows))]
+fn status_cmd(json: bool) -> ExitCode {
+    control(&Request::Status, json)
 }
 
 /// What to say when the daemon could not be asked. Only an elevated process
