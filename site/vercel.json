@@ -1,0 +1,7 @@
+{
+  "redirects": [
+    { "source": "/download/windows", "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku.exe", "permanent": false },
+    { "source": "/download/windows-arm64", "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-arm64.exe", "permanent": false },
+    { "source": "/schema.json", "destination": "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json", "permanent": false }
+  ]
+}
