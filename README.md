@@ -152,7 +152,9 @@ once Claude Code reports its prompt idle, about a minute later.
 The commands that talk to the daemon, `open` to `stop`, need an
 administrator terminal, as the daemon runs elevated and only answers
 elevated processes. From an ordinary terminal they stop with an error that
-names the command to run. `doctor`, `config validate`, `schema`,
+names the command to run, except `status`, which says what it can tell
+without the daemon: installed or not, the daemon process, the logon task and
+the config. `doctor`, `config validate`, `schema`,
 `config --path` and the dry runs work from any terminal. The hotkeys work
 from anywhere.
 
@@ -164,6 +166,7 @@ included, for a script or an assistant to read. These work from any
 terminal:
 
 ```powershell
+daifuku status --json
 daifuku doctor --json
 daifuku config validate --json
 daifuku install --dry-run --json
