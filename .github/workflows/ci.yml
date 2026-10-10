@@ -430,7 +430,9 @@ jobs:
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
-          $stage = 'dist/Daifuku-dry-run'
+          # The fixed name the release gives the x64 zip.
+          $name = 'daifuku-windows-x64'
+          $stage = "dist/$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item target/release/daifuku.exe, target/release/daifukud.exe, LICENSE $stage
           foreach ($exe in 'daifuku.exe', 'daifukud.exe') {
@@ -446,7 +448,15 @@ jobs:
               Write-Output "$exe -> $out"
           }
           & "$stage/daifuku.exe" schema | Out-File -Encoding utf8 "$stage/daifuku.schema.json"
-          Compress-Archive -Path "$stage/*" -DestinationPath dist/Daifuku-dry-run.zip -Force
-          $size = (Get-Item dist/Daifuku-dry-run.zip).Length
+          $zip = "dist/$name.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          $size = (Get-Item $zip).Length
           Write-Output "zip is $size bytes"
           if ($size -gt 20MB) { throw 'the release zip grew past 20 MB' }
+          # The checksum as the release writes it: LF, and the zip's own name,
+          # so `sha256sum -c` passes on the downloaded pair.
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+          [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE/$zip.sha256", "$hash  $name.zip`n", [System.Text.UTF8Encoding]::new($false))
+          $line = [System.IO.File]::ReadAllText("$env:GITHUB_WORKSPACE/$zip.sha256")
+          if ($line -cnotmatch "^[0-9a-f]{64}  $([regex]::Escape("$name.zip"))`n$") { throw "$zip.sha256 reads '$line'" }
+          Write-Output "$zip.sha256 -> $($line.TrimEnd())"
