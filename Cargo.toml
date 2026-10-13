@@ -30,7 +30,7 @@ tracing-appender = "0.2"
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 windows = "0.62"
-windows-core = "0.62"
+windows-core = "0.100"
 
 [profile.release]
 lto = "thin"
