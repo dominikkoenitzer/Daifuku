@@ -7,7 +7,7 @@ key, and colours each window's border by what its agent is doing.
 
 ## Download
 
-Download [daifuku.exe](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku.exe), then double-click it.
+[Download Daifuku](https://get-daifuku.vercel.app), then double-click it.
 
 Windows may say "Windows protected your PC": click More info, then Run anyway.
 
@@ -179,7 +179,7 @@ codes.
 
 On a PC with an ARM processor (Settings > System > About says "ARM-based
 processor" under System type), download
-[daifuku-arm64.exe](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-arm64.exe)
+[daifuku-arm64.exe](https://get-daifuku.vercel.app)
 and double-click it the same way.
 
 The zips hold the same program as two files, `daifuku.exe` and
