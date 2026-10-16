@@ -16,6 +16,16 @@
       "permanent": false
     },
     {
+      "source": "/download/zip",
+      "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip",
+      "permanent": false
+    },
+    {
+      "source": "/download/zip-arm64",
+      "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip",
+      "permanent": false
+    },
+    {
       "source": "/schema.json",
       "destination": "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json",
       "permanent": false

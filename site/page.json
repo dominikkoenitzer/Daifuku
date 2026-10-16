@@ -28,7 +28,7 @@
   "hero": {
     "lede": "Daifuku opens a grid of AI agent terminals with one key and colours each window's border by what its agent is doing.",
     "notes": [
-      "For Windows 10 and 11 with Windows Terminal, on an account that is an administrator. On an ARM PC, take the <a href=\"/download/windows-arm64\">ARM64 version</a>.",
+      "For Windows 10 and 11 with Windows Terminal, on an account that is an administrator. On an ARM PC, take the <a href=\"/download/windows-arm64\">ARM64 version</a>. Both also come as a zip: <a href=\"/download/zip\">x64</a>, <a href=\"/download/zip-arm64\">ARM64</a>.",
       "If Windows says it protected your PC, click More info, then Run anyway."
     ],
     "away": "Daifuku runs on Windows. Open this page on your PC to download it.",

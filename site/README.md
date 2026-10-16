@@ -21,6 +21,8 @@ It names no author and does not link to this repository.
   - `/download/windows`
   - `/download/windows-arm64`
   - `/download/windows-arm`
+  - `/download/zip`
+  - `/download/zip-arm64`
   - `/schema.json`
 - `llms.txt` describes the app for AI assistants.
 - `skill/daifuku/` is the assistant skill, and `skill/daifuku.zip` is that folder zipped. Rebuild the zip
