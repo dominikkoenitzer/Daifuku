@@ -29,6 +29,26 @@
       "source": "/schema.json",
       "destination": "https://raw.githubusercontent.com/dominikkoenitzer/Daifuku/main/schema.json",
       "permanent": false
+    },
+    {
+      "source": "/download/windows.sha256",
+      "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku.exe.sha256",
+      "permanent": false
+    },
+    {
+      "source": "/download/windows-arm64.sha256",
+      "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-arm64.exe.sha256",
+      "permanent": false
+    },
+    {
+      "source": "/download/zip.sha256",
+      "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip.sha256",
+      "permanent": false
+    },
+    {
+      "source": "/download/zip-arm64.sha256",
+      "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip.sha256",
+      "permanent": false
     }
   ]
 }
