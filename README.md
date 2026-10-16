@@ -183,10 +183,8 @@ processor" under System type), download
 and double-click it the same way.
 
 The zips hold the same program as two files, `daifuku.exe` and
-`daifukud.exe`:
-[daifuku-windows-x64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-x64.zip)
-and
-[daifuku-windows-arm64.zip](https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip).
+`daifukud.exe`, for x64 and ARM64, both on the
+[download page](https://get-daifuku.vercel.app).
 Right-click one, choose Extract All, and double-click `daifuku.exe` in the
 new folder.
 
