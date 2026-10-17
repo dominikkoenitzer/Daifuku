@@ -759,6 +759,16 @@ fn stop(cleanup: &mut Cleanup) {
     });
 }
 
+/// A check known to fail, run and reported without failing the test, so
+/// the suite shows the day it starts to pass.
+fn expect_failure(what: &str, passed: bool) {
+    if passed {
+        println!("e2e: expected failure now passes: {what}");
+    } else {
+        println!("e2e: expected failure: {what}");
+    }
+}
+
 /// The script a peer's terminal runs. It writes what it was started with to
 /// `ran-<its arguments>.txt` beside it: its folder, its arguments, how many
 /// `CLAUDE` variables it sees and its process id. Then it reports the hook
@@ -1069,6 +1079,96 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
     steps += 1;
 
     let _ = window::close(again);
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
+
+#[test]
+fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
+    use daifuku_core::config::Area;
+    use daifuku_core::grid::{Gaps, Grid, Shape};
+
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    daifuku_win::dpi::per_monitor_v2();
+    let dir = scratch().join("layout");
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("daifuku.json");
+    let fleets = serde_json::json!({
+        "fleets": [
+            { "name": "lead", "count": 1, "monitor": "primary", "area": "left",
+              "command": null, "no_profile": true, "hotkey": null, "with": ["crew"] },
+            { "name": "crew", "count": 3, "monitor": "primary", "area": "right",
+              "shape": { "columns": 1, "rows": 3 }, "command": null, "no_profile": true,
+              "hotkey": null }
+        ],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, fleets.to_string()).unwrap();
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, None, &[]);
+
+    let opened = run(&["open", "lead"]);
+    assert!(
+        opened.contains("opened crew (3 terminals") && opened.contains("opened lead (1 terminal"),
+        "{opened}"
+    );
+    let s = wait_for("both fleets in the status", Duration::from_secs(10), || {
+        status().filter(|s| s.fleets.len() == 2)
+    });
+    let windows = |name: &str| {
+        s.fleets
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.windows.clone())
+            .unwrap()
+    };
+    let (lead, crew) = (windows("lead"), windows("crew"));
+    assert_eq!((lead.len(), crew.len()), (1, 3));
+    steps += 1;
+
+    let monitors = daifuku_win::monitor::monitors();
+    let work = monitors.iter().find(|m| m.primary).unwrap().work;
+    let gaps = Gaps::default();
+    let left = Grid::plan(1, Area::Left.within(work), gaps, None);
+    let right = Grid::plan(
+        3,
+        Area::Right.within(work),
+        gaps,
+        Some(Shape {
+            columns: 1,
+            rows: 3,
+        }),
+    );
+    assert_eq!(window::frame(lead[0]), Some(left[0]), "the lead");
+    for (i, &w) in crew.iter().enumerate() {
+        assert_eq!(window::frame(w), Some(right[i]), "crew terminal {}", i + 1);
+    }
+    // Three rows the width of the half, not two over one.
+    assert!(
+        right
+            .iter()
+            .all(|c| c.left == right[0].left && c.right == right[0].right)
+    );
+    steps += 1;
+
+    // The lead opened last, so it should be in front.
+    expect_failure(
+        "the lead has the focus after one key opened both fleets",
+        window::foreground() == lead[0],
+    );
+
+    let closed = run(&["close", "--all"]);
+    assert!(closed.contains("closed 4 terminals"), "{closed}");
+    steps += 1;
+
     stop(&mut cleanup);
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
