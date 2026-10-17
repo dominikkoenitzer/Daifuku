@@ -34,13 +34,15 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku demo --json` | `{"ok": true}` |
 | `daifuku spawn --json` | the terminal it opened, below |
 | `daifuku restore [--dry-run] [--forget] --json` | every peer it looked at, below |
+| `daifuku label <window> [label] --json` | `{"ok": true}` |
+| `daifuku wait <window or label> [--until state] [--timeout seconds] --json` | the terminal once it got there, below |
 | `daifuku reload --json` | `{"ok": true}` |
 | `daifuku stop --json` | `{"ok": true}` |
 | `daifuku install --dry-run --json` | the plan, below |
 | `daifuku uninstall --dry-run --json` | the plan, below |
 
 A command that worked exits with 0. The commands that talk to the daemon
-(`status`, `open`, `snap`, `next`, `close`, `demo`, `spawn`, `restore`, `reload` and `stop`) need
+(`status`, `open`, `snap`, `next`, `close`, `demo`, `spawn`, `restore`, `label`, `wait`, `reload` and `stop`) need
 an administrator terminal, with `--json` too. That is on purpose: the
 daemon's control pipe can open administrator terminals, so only elevated
 processes may use it, `status` included
@@ -81,10 +83,14 @@ runs.
 | `agents[].title` | string | Its title now. |
 | `agents[].state` | string | `"waiting"`, `"failed"`, `"working"` or `"done"`. |
 | `agents[].for_seconds` | integer | How long it has been in that state. |
+| `agents[].label` | string | What to call it: the label `spawn` or `label` gave it, else its fleet's name and its number, such as `"agents 2"`. Left out when it has neither. |
+| `agents[].fleet` | string | The fleet it is in; left out when it is in none. |
+| `agents[].session_id` | string | The session whose state it shows, as the agent names it. |
 | `peers` | array of objects | Every terminal `daifuku spawn` opened that is still open. |
 | `peers[].window` | integer | Its window handle. |
 | `peers[].label` | string | Its label; left out when it has none. |
 | `peers[].directory` | string | The folder it was opened in. |
+| `peers[].session_id` | string | The last session its agent reported, which `restore` resumes; left out until it reports. |
 
 Every field is there even when the daemon is an older version that leaves
 one out: `elevated` is then `false`, and `hotkeys` and `peers` are empty.
@@ -97,6 +103,19 @@ one out: `elevated` is then `false`, and `hotkeys` and `peers` are empty.
 
 `window` is the new terminal's window handle, as `status` lists it. `label`
 is left out when none was given.
+
+### `wait`
+
+```json
+{ "result": "waited", "window": 1050190, "state": "done", "label": "site", "session_id": "0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80", "seconds": 312 }
+```
+
+`wait` takes a window handle, in decimal or as `0x` and hex, or a label in
+any case, and asks the daemon once a second. `--until` is `stopped` by
+default, which is anything but working; `done`, `waiting` and `failed` wait
+for that state alone. `state` is the state reached, or `"closed"` when the
+terminal closed first. Past `--timeout`, an hour by default, it fails with
+`timeout`; a name no terminal has fails at once with `daemon`.
 
 ### `restore`
 
@@ -283,6 +302,7 @@ with a non-zero exit code:
 | `not_elevated` | 1 | The terminal is not elevated, and only an elevated process may talk to the daemon. The message ends with `run: ` and the command to run in an administrator terminal, such as `daifuku open --json`. Not from `status`, which prints the local status instead. |
 | `ipc` | 1 | The pipe to the daemon failed, or the daemon's answer was missing or did not read. |
 | `daemon` | 1 | The daemon answered that the request did not work, such as a fleet name the config does not have. |
+| `timeout` | 1 | `wait` gave up: the terminal did not get to the state within `--timeout` seconds. |
 | `config` | 1 | There is no config file to open or check, it could not be read, there is no ProgramData folder, no editor started, or Windows was not given permission to start one. |
 | `invalid_config` | 1 | `config validate` found a file the daemon would not load: not JSON, an unknown key, a value of the wrong type, or a rule such as a hotkey that does not parse or two fleets with one name. |
 | `unsupported` | 1 | A build for a system other than Windows, except `config validate` with a file named. |
