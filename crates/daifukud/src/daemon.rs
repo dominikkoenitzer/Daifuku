@@ -119,7 +119,10 @@ struct Daemon {
 ///
 /// Logging is set up by the caller, so an error this returns still reaches
 /// the log before the writer stops.
-pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
+///
+/// `state_dir` keeps the saved state and the peers in that folder, for a
+/// daemon on a config of its own, as the end-to-end tests run theirs.
+pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyhow::Result<()> {
     dpi::per_monitor_v2();
     let elevated = process::current_is_elevated();
     tracing::info!(
@@ -140,9 +143,9 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         .or_else(paths::config_file)
         .context("no ProgramData folder")?;
     let mut d = Daemon::new(config_path, elevated, events::Hooks::install());
-    if keeps_state {
-        d.state_file = paths::data_dir().map(|p| p.join("state.json"));
-        d.peers_file = paths::data_dir().map(|p| p.join("peers.json"));
+    if let Some(dir) = state_dir.or_else(|| paths::data_dir().filter(|_| keeps_state)) {
+        d.state_file = Some(dir.join("state.json"));
+        d.peers_file = Some(dir.join("peers.json"));
     }
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
