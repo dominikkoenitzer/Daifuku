@@ -1466,6 +1466,25 @@ mod tests {
     }
 
     #[test]
+    fn a_priority_is_one_of_three_words() {
+        for p in [Priority::Idle, Priority::BelowNormal, Priority::Normal] {
+            assert_eq!(p.name().parse::<Priority>(), Ok(p));
+            let text = format!(r#"{{"fleets":[{{"name":"a","priority":"{}"}}]}}"#, p.name());
+            assert_eq!(
+                Config::from_json(&text).unwrap().fleets[0].priority,
+                Some(p)
+            );
+        }
+        assert_eq!("IDLE".parse::<Priority>(), Ok(Priority::Idle));
+        assert!("low".parse::<Priority>().is_err());
+        assert!(matches!(
+            Config::from_json(r#"{"fleets":[{"name":"a","priority":"low"}]}"#),
+            Err(ConfigError::Parse(_))
+        ));
+        assert_eq!(Fleet::default().priority, None);
+    }
+
+    #[test]
     fn every_state_has_its_own_width() {
         let b = Border::default();
         let widths: Vec<_> = AgentState::ALL.iter().map(|&s| b.width_for(s)).collect();
