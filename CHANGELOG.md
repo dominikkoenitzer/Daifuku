@@ -7,6 +7,9 @@
   `{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }` for any rectangle in
   fractions of the monitor. The default, `"full"`, is the whole monitor as
   before. Snapping, following a monitor change and the demo keep to it.
+- A fleet can open others with it: `"with": ["crew"]` opens or brings back
+  the fleet `crew` whenever this one opens, first, so the one asked for ends
+  up in front.
 
 ## 0.1.3, 2026-10-10
 
