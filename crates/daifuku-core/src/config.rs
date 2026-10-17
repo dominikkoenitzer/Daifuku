@@ -286,6 +286,11 @@ pub struct Fleet {
     /// The key that opens this fleet, or brings it back if it is open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotkey: Option<HotkeyText>,
+    /// Other fleets, by name, that open or come back whenever this one does,
+    /// before it, so this one ends up in front. Their own `with` is not
+    /// followed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub with: Vec<String>,
 }
 
 impl Default for Fleet {
@@ -302,6 +307,7 @@ impl Default for Fleet {
             admin: true,
             no_profile: false,
             hotkey: Some(HotkeyText::new("ctrl + alt + return")),
+            with: Vec::new(),
         }
     }
 }
@@ -744,6 +750,17 @@ pub enum ConfigError {
     /// One combination bound twice.
     #[error("`{0}` is bound twice")]
     DuplicateHotkey(String),
+    /// A fleet to open with another that is not in the file, or is that
+    /// fleet itself.
+    #[error("fleet `{name}` opens `{other}` with it, which is {reason}")]
+    With {
+        /// The fleet.
+        name: String,
+        /// The one it names.
+        other: String,
+        /// `itself`, or `not a fleet in the file`.
+        reason: &'static str,
+    },
     /// Gaps or border sizes that make no sense.
     #[error("{0}")]
     Size(String),
@@ -790,7 +807,8 @@ impl Config {
 
     /// Checks everything a type cannot: unique names, counts in range, every
     /// monitor a keyword or a device name, every area on its monitor, every
-    /// hotkey parses and none is bound twice.
+    /// fleet opened with another one in the file, every hotkey parses and
+    /// none is bound twice.
     ///
     /// # Errors
     ///
@@ -839,6 +857,22 @@ impl Config {
             if let Some(reason) = fleet.area.part().problem() {
                 return Err(ConfigError::Area {
                     name: fleet.name.clone(),
+                    reason,
+                });
+            }
+        }
+        for fleet in &self.fleets {
+            for other in &fleet.with {
+                let reason = if other.eq_ignore_ascii_case(&fleet.name) {
+                    "itself"
+                } else if self.fleet(other).is_none() {
+                    "not a fleet in the file"
+                } else {
+                    continue;
+                };
+                return Err(ConfigError::With {
+                    name: fleet.name.clone(),
+                    other: other.clone(),
                     reason,
                 });
             }
