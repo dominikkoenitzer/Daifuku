@@ -10,6 +10,7 @@
 //! daifuku spawn          open one agent terminal on its own, in a folder
 //! daifuku restore        open the peers from before Windows restarted again
 //! daifuku label          give an agent's terminal a label
+//! daifuku wait           wait until an agent is done, or waiting for you
 //! daifuku status         what the daemon knows
 //! daifuku reload         re-read the config
 //! daifuku stop           stop the daemon
@@ -37,6 +38,7 @@ mod install;
 mod local;
 mod output;
 mod validate;
+mod wait;
 
 use std::process::ExitCode;
 
@@ -140,8 +142,8 @@ enum Command {
         #[command(flatten)]
         format: Format,
     },
-    /// Give an agent's terminal a label, which `status` shows. Without a
-    /// label, take it away.
+    /// Give an agent's terminal a label, which `status` shows and `wait`
+    /// takes. Without a label, take it away.
     Label {
         /// The terminal's window handle, as `status` lists it, in decimal or
         /// as 0x and hex.
@@ -149,6 +151,20 @@ enum Command {
         window: u64,
         /// The label.
         label: Option<String>,
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Wait until an agent's terminal reaches a state: by default until its
+    /// agent stops working, done, waiting for you or failed.
+    Wait {
+        /// The terminal: its window handle or its label.
+        target: String,
+        /// The state to wait for.
+        #[arg(long, value_enum, default_value = "stopped")]
+        until: wait::Until,
+        /// Give up after this many seconds.
+        #[arg(long, default_value_t = 3600)]
+        timeout: u64,
         #[command(flatten)]
         format: Format,
     },
@@ -391,6 +407,12 @@ fn main() -> ExitCode {
             label,
             format,
         } => control(&Request::Label { window, label }, format.json),
+        Command::Wait {
+            target,
+            until,
+            timeout,
+            format,
+        } => wait_cmd(&target, until, timeout, format.json),
         Command::Reload { format } => control(&Request::Reload, format.json),
         Command::Stop { format } => control(&Request::Stop, format.json),
     }
@@ -1136,11 +1158,109 @@ fn control_code(e: &std::io::Error, elevated: bool) -> ErrorCode {
 
 /// A window handle as `daifuku label` takes it.
 fn parse_window(text: &str) -> Result<u64, String> {
-    let number = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => text.parse().ok(),
+    wait::window_number(text).ok_or_else(|| format!("`{text}` is not a window handle"))
+}
+
+/// Sends `request` to the daemon and reads its answer, or says why it could
+/// not, as [`control`] does.
+#[cfg(windows)]
+fn ask(
+    request: &Request,
+    json: bool,
+) -> Result<daifuku_core::protocol::Response, (ErrorCode, String)> {
+    use daifuku_core::protocol::{Response, from_line, to_line};
+    use daifuku_win::pipe::{Pipe, send};
+
+    let line = to_line(request).map_err(|_| {
+        (
+            ErrorCode::Internal,
+            "could not write the request".to_owned(),
+        )
+    })?;
+    let reply = match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
+        Ok(Some(reply)) => reply,
+        Ok(None) => return Err((ErrorCode::Ipc, "the daemon did not answer".to_owned())),
+        Err(e) => {
+            let elevated = daifuku_win::process::current_is_elevated();
+            return Err((
+                control_code(&e, elevated),
+                control_error(&e, elevated, &command_line(request, json)),
+            ));
+        }
     };
-    number.ok_or_else(|| format!("`{text}` is not a window handle"))
+    from_line::<Response>(&reply).map_err(|e| (ErrorCode::Ipc, format!("unreadable reply: {e}")))
+}
+
+/// `daifuku wait`: asks for the status once a second until `target` reaches
+/// `until`, its terminal closes, or `timeout` seconds pass.
+#[cfg(windows)]
+fn wait_cmd(target: &str, until: wait::Until, timeout: u64, json: bool) -> ExitCode {
+    use daifuku_core::protocol::Response;
+    use wait::Step;
+
+    let fail = |code: ErrorCode, message: &str| {
+        if json {
+            fail_json(code, message)
+        } else {
+            eprintln!("daifuku: {message}");
+            ExitCode::FAILURE
+        }
+    };
+    let start = std::time::Instant::now();
+    let mut seen = None;
+    loop {
+        let status = match ask(&Request::Status, json) {
+            Ok(Response::Status(s)) => s,
+            Ok(Response::Error { message }) => return fail(ErrorCode::Daemon, &message),
+            Ok(_) => return fail(ErrorCode::Ipc, "the daemon did not answer with its status"),
+            Err((code, message)) => return fail(code, &message),
+        };
+        let done = |window, state: &'static str, label, session_id| {
+            let waited = wait::Waited {
+                result: "waited",
+                window,
+                state,
+                label,
+                session_id,
+                seconds: start.elapsed().as_secs(),
+            };
+            if json {
+                println!("{}", output::ascii_json(&output::to_json(&waited)));
+            } else {
+                let name = waited
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("{window:#010x}"));
+                println!("{name} is {state}");
+            }
+            ExitCode::SUCCESS
+        };
+        match wait::step(&status, target, until, seen) {
+            Step::Reached(window, state, label, session_id) => {
+                return done(window, state.name(), label, session_id);
+            }
+            Step::Closed(window) => return done(window, "closed", None, None),
+            Step::Waiting(window) => seen = window.or(seen),
+            Step::Unknown => {
+                return fail(
+                    ErrorCode::Daemon,
+                    &format!("no agent terminal is called `{target}`"),
+                );
+            }
+        }
+        if start.elapsed().as_secs() >= timeout {
+            return fail(
+                ErrorCode::Timeout,
+                &format!("`{target}` did not get there in {timeout} seconds"),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+#[cfg(not(windows))]
+fn wait_cmd(_: &str, _: wait::Until, _: u64, json: bool) -> ExitCode {
+    control(&Request::Status, json)
 }
 
 #[cfg(not(windows))]
@@ -1567,6 +1687,7 @@ mod tests {
             | Command::Spawn { format, .. }
             | Command::Restore { format, .. }
             | Command::Label { format, .. }
+            | Command::Wait { format, .. }
             | Command::Status { format }
             | Command::Reload { format }
             | Command::Stop { format }
@@ -1651,6 +1772,16 @@ mod tests {
             &["spawn", "--json"],
             &["restore", "--json"],
             &["label", "0x10", "site", "--json"],
+            &["wait", "site", "--json"],
+            &[
+                "wait",
+                "--until",
+                "done",
+                "--timeout",
+                "60",
+                "site",
+                "--json",
+            ],
             &["restore", "--dry-run", "--json"],
             &["spawn", "--dir", "x", "--label", "a b", "--json"],
             &["reload", "--json"],

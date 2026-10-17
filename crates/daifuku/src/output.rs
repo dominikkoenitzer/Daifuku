@@ -21,6 +21,8 @@ pub enum ErrorCode {
     Ipc,
     /// The daemon answered that the request did not work.
     Daemon,
+    /// `daifuku wait` gave up before the state was reached.
+    Timeout,
     /// The config file could not be found or opened.
     Config,
     /// The config file is not one the daemon would load.
@@ -278,6 +280,7 @@ mod tests {
             (ErrorCode::NotElevated, "not_elevated"),
             (ErrorCode::Ipc, "ipc"),
             (ErrorCode::Daemon, "daemon"),
+            (ErrorCode::Timeout, "timeout"),
             (ErrorCode::Config, "config"),
             (ErrorCode::InvalidConfig, "invalid_config"),
             (ErrorCode::Unsupported, "unsupported"),
