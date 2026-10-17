@@ -1611,6 +1611,57 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_is_called_by_its_label_else_by_its_fleet_and_number() {
+        let mut d = daemon();
+        let mut record = OpenFleet::new("crew");
+        record.slots = vec![Some(1), None, Some(3)];
+        d.fleets.push(record);
+        d.peers.push(Peer {
+            window: 7,
+            spawn: Spawn {
+                label: Some("site".into()),
+                ..Spawn::default()
+            },
+        });
+        assert_eq!(d.label_of(1).as_deref(), Some("crew 1"));
+        assert_eq!(d.label_of(3).as_deref(), Some("crew 3"));
+        assert_eq!(d.label_of(7).as_deref(), Some("site"));
+        assert_eq!(d.label_of(9), None);
+        d.labels.insert(3, "lead".into());
+        assert_eq!(d.label_of(3).as_deref(), Some("lead"));
+    }
+
+    #[test]
+    fn a_label_with_a_line_break_or_for_no_window_is_refused() {
+        let mut d = daemon();
+        assert!(matches!(
+            d.label(1, Some("a\nb")),
+            Response::Error { message } if message.contains("label")
+        ));
+        assert!(matches!(
+            d.label(0, Some("site")),
+            Response::Error { message } if message.contains("no window")
+        ));
+    }
+
+    #[test]
+    fn the_session_shown_is_the_one_in_the_window_s_state() {
+        use daifuku_core::state::HookEvent;
+        let mut agents = Agents::new();
+        let event = |session: &str, name: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: name.into(),
+            ..HookEvent::default()
+        };
+        agents.apply(5, &event("a", "UserPromptSubmit"));
+        agents.apply(5, &event("b", "Stop"));
+        let state = agents.window_state(5).unwrap();
+        let shown = shown_session(&agents, 5, state).unwrap();
+        assert_eq!(agents.session_state(&shown), Some(state));
+        assert_eq!(shown_session(&agents, 6, state), None);
+    }
+
+    #[test]
     fn kept_peers_come_back_open_dormant_or_not_at_all() {
         let k = |resume: Option<&str>, window, boot| Kept {
             spawn: Spawn {
