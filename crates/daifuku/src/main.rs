@@ -8,6 +8,7 @@
 //! daifuku next           focus the agent that has waited longest
 //! daifuku demo           open six scripted demo agents
 //! daifuku spawn          open one agent terminal on its own, in a folder
+//! daifuku restore        open the peers from before Windows restarted again
 //! daifuku status         what the daemon knows
 //! daifuku reload         re-read the config
 //! daifuku stop           stop the daemon
@@ -123,6 +124,18 @@ enum Command {
         /// Terminal opens it.
         #[arg(long)]
         area: Option<String>,
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Open the peers `daifuku spawn` opened that were still open when
+    /// Windows last stopped, each resuming its last session in its folder.
+    Restore {
+        /// Only list them.
+        #[arg(long)]
+        dry_run: bool,
+        /// Forget them instead of opening them.
+        #[arg(long)]
+        forget: bool,
         #[command(flatten)]
         format: Format,
     },
@@ -355,6 +368,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Status { format } => status_cmd(format.json),
+        Command::Restore {
+            dry_run,
+            forget,
+            format,
+        } => control(&Request::Restore { dry_run, forget }, format.json),
         Command::Reload { format } => control(&Request::Reload, format.json),
         Command::Stop { format } => control(&Request::Stop, format.json),
     }
@@ -935,6 +953,17 @@ fn control(request: &Request, json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Ok(restored @ Response::Restored { .. }) if json => {
+            print!(
+                "{}",
+                output::ascii_json(&to_line(&restored).unwrap_or_default())
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(Response::Restored { peers }) => {
+            print_restored(&peers, request);
+            ExitCode::SUCCESS
+        }
         Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
         Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
     }
@@ -991,6 +1020,12 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Next => "next".to_owned(),
         Request::Demo => "demo".to_owned(),
         Request::Spawn(_) => "spawn".to_owned(),
+        Request::Restore { dry_run, forget } => match (dry_run, forget) {
+            (true, true) => "restore --forget --dry-run".to_owned(),
+            (true, false) => "restore --dry-run".to_owned(),
+            (false, true) => "restore --forget".to_owned(),
+            (false, false) => "restore".to_owned(),
+        },
         Request::Status => "status".to_owned(),
         Request::Reload => "reload".to_owned(),
         Request::Stop => "stop".to_owned(),
@@ -1141,6 +1176,28 @@ fn print_status(s: &daifuku_core::protocol::Status) {
             p.directory,
             p.window
         );
+    }
+}
+
+/// What `daifuku restore` did, one line a peer.
+fn print_restored(peers: &[daifuku_core::protocol::RestoredPeer], request: &Request) {
+    let (dry_run, forget) = match request {
+        Request::Restore { dry_run, forget } => (*dry_run, *forget),
+        _ => (false, false),
+    };
+    if peers.is_empty() {
+        println!("no peers to open again");
+    }
+    for p in peers {
+        let name = p.label.as_deref().unwrap_or(&p.directory);
+        let what = match (&p.window, &p.error) {
+            (Some(w), _) => format!("opened {name} ({w:#010x})"),
+            (None, Some(e)) => format!("did not open {name}: {e}"),
+            (None, None) if dry_run && forget => format!("would forget {name}"),
+            (None, None) if forget => format!("forgot {name}"),
+            (None, None) => format!("would open {name}"),
+        };
+        println!("{what}, session {} in {}", p.session_id, p.directory);
     }
 }
 
@@ -1474,6 +1531,7 @@ mod tests {
             | Command::Next { format }
             | Command::Demo { format }
             | Command::Spawn { format, .. }
+            | Command::Restore { format, .. }
             | Command::Status { format }
             | Command::Reload { format }
             | Command::Stop { format }
@@ -1556,6 +1614,8 @@ mod tests {
             &["next", "--json"],
             &["demo", "--json"],
             &["spawn", "--json"],
+            &["restore", "--json"],
+            &["restore", "--dry-run", "--json"],
             &["spawn", "--dir", "x", "--label", "a b", "--json"],
             &["reload", "--json"],
             &["stop", "--json"],
