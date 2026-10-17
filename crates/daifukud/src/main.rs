@@ -8,7 +8,7 @@
 //! a lock.
 //!
 //! ```text
-//! daifukud [--config <file>]
+//! daifukud [--config <file>] [--state <folder>]
 //! daifukud --version
 //! ```
 
@@ -39,12 +39,13 @@ fn main() {
     }
     #[cfg(windows)]
     {
-        let config = config_arg(std::env::args().skip(1));
+        let config = value_of("--config", std::env::args().skip(1)).map(Into::into);
+        let state = value_of("--state", std::env::args().skip(1)).map(Into::into);
         // The log outlives `run`, so a failure to start is written down
         // before the writer stops.
         let elevated = daifuku_win::process::current_is_elevated();
         let log = logging::init(daifuku_win::paths::log_dir(elevated).as_deref());
-        if let Err(error) = daemon::run(config) {
+        if let Err(error) = daemon::run(config, state) {
             tracing::error!(error = %format!("{error:#}"), "daifukud stopped");
             drop(log);
             std::process::exit(1);
@@ -57,15 +58,16 @@ fn main() {
     }
 }
 
-/// The value of `--config`, if given.
+/// The value of `flag`, as `--config a.json` or `--config=a.json`, if given.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn config_arg(mut args: impl Iterator<Item = String>) -> Option<std::path::PathBuf> {
+fn value_of(flag: &str, mut args: impl Iterator<Item = String>) -> Option<String> {
+    let joined = format!("{flag}=");
     while let Some(a) = args.next() {
-        if a == "--config" {
-            return args.next().map(Into::into);
+        if a == flag {
+            return args.next();
         }
-        if let Some(v) = a.strip_prefix("--config=") {
-            return Some(v.into());
+        if let Some(v) = a.strip_prefix(&joined) {
+            return Some(v.to_owned());
         }
     }
     None
@@ -85,14 +87,18 @@ mod tests {
     #[test]
     fn reads_the_config_flag_both_ways() {
         assert_eq!(
-            config_arg(args(&["--config", "a.json"])),
-            Some("a.json".into())
+            value_of("--config", args(&["--config", "a.json"])).as_deref(),
+            Some("a.json")
         );
         assert_eq!(
-            config_arg(args(&["--config=b.json"])),
-            Some("b.json".into())
+            value_of("--config", args(&["--config=b.json"])).as_deref(),
+            Some("b.json")
         );
-        assert_eq!(config_arg(args(&[])), None);
-        assert_eq!(config_arg(args(&["--config"])), None);
+        assert_eq!(value_of("--config", args(&[])), None);
+        assert_eq!(value_of("--config", args(&["--config"])), None);
+        assert_eq!(
+            value_of("--state", args(&["--config", "a.json", "--state", "s"])).as_deref(),
+            Some("s")
+        );
     }
 }
