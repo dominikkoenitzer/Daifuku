@@ -51,6 +51,7 @@
           "name": "agents",
           "count": 6,
           "monitor": "portrait",
+          "area": "full",
           "command": "claude",
           "admin": true,
           "no_profile": false,
@@ -71,7 +72,7 @@
       "type": "object",
       "properties": {
         "outer": {
-          "description": "Margin between the outermost terminals and the edge of the work area.",
+          "description": "Margin between the outermost terminals and the edge of the area the\nfleet fills.",
           "type": "integer",
           "format": "int32",
           "default": 24
@@ -274,6 +275,11 @@
           "$ref": "#/$defs/MonitorPick",
           "default": "portrait"
         },
+        "area": {
+          "description": "The part of the monitor the fleet fills, all of it by default.",
+          "$ref": "#/$defs/Area",
+          "default": "full"
+        },
         "shape": {
           "description": "Force a grid shape instead of the automatic one.",
           "anyOf": [
@@ -351,6 +357,60 @@
         {
           "type": "string",
           "pattern": "^([pP][oO][rR][tT][rR][aA][iI][tT]|[lL][aA][nN][dD][sS][cC][aA][pP][eE]|[pP][rR][iI][mM][aA][rR][yY]|[sS][eE][cC][oO][nN][dD][aA][rR][yY]|[cC][uU][rR][sS][oO][rR]|[mM][oO][uU][sS][eE])$"
+        }
+      ]
+    },
+    "Area": {
+      "description": "full, left, right, top, bottom, or a rectangle as fractions of the monitor's work area",
+      "anyOf": [
+        {
+          "enum": [
+            "full",
+            "left",
+            "right",
+            "top",
+            "bottom"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^([fF][uU][lL][lL]|[lL][eE][fF][tT]|[rR][iI][gG][hH][tT]|[tT][oO][pP]|[bB][oO][tT][tT][oO][mM])$"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "x": {
+              "description": "The left edge, 0 to 1.",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "y": {
+              "description": "The top edge, 0 to 1.",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "width": {
+              "description": "The width, more than 0 and at most 1.",
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "height": {
+              "description": "The height, more than 0 and at most 1.",
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "additionalProperties": false
         }
       ]
     },

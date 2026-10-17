@@ -1,7 +1,8 @@
 //! The grid a fleet is laid out in.
 //!
-//! Given how many terminals there are and the work area of the monitor they go
-//! on, [`Grid::plan`] picks a shape and returns one rectangle per terminal.
+//! Given how many terminals there are and the area they go in, the monitor's
+//! work area or the part of it the fleet fills, [`Grid::plan`] picks a shape
+//! and returns one rectangle per terminal.
 //! Every rectangle is the visible frame the window should end up with, which
 //! is not the rectangle Win32 wants: the daemon adds the invisible resize
 //! borders itself.
@@ -36,7 +37,8 @@ const EMPTY_CELL_COST: f64 = 0.25;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct Gaps {
-    /// Margin between the outermost terminals and the edge of the work area.
+    /// Margin between the outermost terminals and the edge of the area the
+    /// fleet fills.
     pub outer: i32,
     /// Space between two neighbouring terminals.
     pub inner: i32,
