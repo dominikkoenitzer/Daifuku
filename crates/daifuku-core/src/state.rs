@@ -373,6 +373,12 @@ impl<W: Ord + Copy> Agents<W> {
         self.sessions.len() != before
     }
 
+    /// Forgets one session, as when its agent's process ended in a terminal
+    /// that stays open. Says whether it was known.
+    pub fn forget_session(&mut self, session_id: &str) -> bool {
+        self.sessions.remove(session_id).is_some()
+    }
+
     /// The state a window shows: the most urgent of its sessions, or `None`
     /// when no agent has ever reported from it.
     #[must_use]
