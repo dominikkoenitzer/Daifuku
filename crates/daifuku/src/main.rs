@@ -11,6 +11,8 @@
 //! daifuku restore        open the peers from before Windows restarted again
 //! daifuku label          give an agent's terminal a label
 //! daifuku wait           wait until an agent is done, or waiting for you
+//! daifuku group -- <cmd> run a program in a group at one priority
+//! daifuku heavy -- <cmd> run a build one at a time with the others, at idle
 //! daifuku status         what the daemon knows
 //! daifuku reload         re-read the config
 //! daifuku stop           stop the daemon
@@ -127,6 +129,10 @@ enum Command {
         /// Terminal opens it.
         #[arg(long)]
         area: Option<String>,
+        /// Run it in a group at this priority, idle, below-normal or normal,
+        /// instead of its fleet's.
+        #[arg(long, value_parser = parse_priority)]
+        priority: Option<daifuku_core::config::Priority>,
         #[command(flatten)]
         format: Format,
     },
@@ -167,6 +173,27 @@ enum Command {
         timeout: u64,
         #[command(flatten)]
         format: Format,
+    },
+    /// Run a program in a group of its own: everything it starts runs at the
+    /// group's priority, which none of it can raise, and ends when the
+    /// program does or its terminal closes.
+    Group {
+        /// idle, below-normal or normal.
+        #[arg(long, default_value = "normal", value_parser = parse_priority)]
+        priority: daifuku_core::config::Priority,
+        /// The program and its arguments, after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
+    /// Run a build or a test run in a group, one at a time with every other
+    /// heavy job in this session, at idle priority unless told otherwise.
+    Heavy {
+        /// idle, below-normal or normal.
+        #[arg(long, default_value = "idle", value_parser = parse_priority)]
+        priority: daifuku_core::config::Priority,
+        /// The program and its arguments, after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<std::ffi::OsString>,
     },
     /// One scripted demo agent. `daifuku demo` starts these.
     #[command(hide = true)]
@@ -383,9 +410,13 @@ fn main() -> ExitCode {
             fleet,
             monitor,
             area,
+            priority,
             format,
         } => match spawn_request(dir, label, resume, fleet, monitor.as_deref(), area.as_deref()) {
-            Ok(spawn) => control(&Request::Spawn(spawn), format.json),
+            Ok(spawn) => control(
+                &Request::Spawn(daifuku_core::peer::Spawn { priority, ..spawn }),
+                format.json,
+            ),
             Err(message) if format.json => fail_json(ErrorCode::Usage, &message),
             Err(message) => {
                 eprintln!("daifuku: {message}");
@@ -413,6 +444,8 @@ fn main() -> ExitCode {
             timeout,
             format,
         } => wait_cmd(&target, until, timeout, format.json),
+        Command::Group { priority, command } => group_cmd(priority, false, &command),
+        Command::Heavy { priority, command } => group_cmd(priority, true, &command),
         Command::Reload { format } => control(&Request::Reload, format.json),
         Command::Stop { format } => control(&Request::Stop, format.json),
     }
@@ -1162,6 +1195,66 @@ fn control_code(e: &std::io::Error, elevated: bool) -> ErrorCode {
     }
 }
 
+/// A priority as `group` and `heavy` take it.
+fn parse_priority(text: &str) -> Result<daifuku_core::config::Priority, String> {
+    text.parse()
+}
+
+/// `daifuku group` and `daifuku heavy`: puts this process in a new job at
+/// `priority`, waits its turn first with `queue`, runs `command` there and
+/// exits with its exit code. Exiting closes the job, which ends whatever the
+/// command left running.
+#[cfg(windows)]
+fn group_cmd(
+    priority: daifuku_core::config::Priority,
+    queue: bool,
+    command: &[std::ffi::OsString],
+) -> ExitCode {
+    use daifuku_win::job;
+
+    let Some((program, args)) = command.split_first() else {
+        eprintln!("daifuku: no program to run");
+        return ExitCode::from(2);
+    };
+    let group = job::Job::new(priority).and_then(|j| j.add_this_process().map(|()| j));
+    let Ok(_group) = group.inspect_err(|e| eprintln!("daifuku: could not make the group: {e}"))
+    else {
+        return ExitCode::FAILURE;
+    };
+    job::outlive_ctrl_c();
+    let _turn = if queue {
+        match job::wait_turn(|| eprintln!("daifuku: waiting for the heavy job before this one")) {
+            Ok(turn) => Some(turn),
+            Err(e) => {
+                eprintln!("daifuku: could not take a turn at the heavy jobs: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+    let code = match std::process::Command::new(program).args(args).status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!(
+                "daifuku: could not start {}: {e}",
+                program.to_string_lossy()
+            );
+            std::process::exit(1);
+        }
+    };
+    // Once in the group, every way out is an exit, never a return: the
+    // group closing as it is dropped would end this process before it set
+    // its exit code, as 0.
+    std::process::exit(code)
+}
+
+#[cfg(not(windows))]
+fn group_cmd(_: daifuku_core::config::Priority, _: bool, _: &[std::ffi::OsString]) -> ExitCode {
+    eprintln!("daifuku runs on Windows only");
+    ExitCode::FAILURE
+}
+
 /// A window handle as `daifuku label` takes it.
 fn parse_window(text: &str) -> Result<u64, String> {
     wait::window_number(text).ok_or_else(|| format!("`{text}` is not a window handle"))
@@ -1709,7 +1802,10 @@ mod tests {
             }
             | Command::Doctor { format } => Some(format.json),
             Command::Install { json, .. } | Command::Uninstall { json, .. } => Some(*json),
-            Command::DemoAgent { .. } | Command::Hook => None,
+            Command::DemoAgent { .. }
+            | Command::Hook
+            | Command::Group { .. }
+            | Command::Heavy { .. } => None,
         }
     }
 
