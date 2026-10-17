@@ -334,6 +334,13 @@
             }
           ],
           "default": "ctrl + alt + return"
+        },
+        "with": {
+          "description": "Other fleets, by name, that open or come back whenever this one does,\nbefore it, so this one ends up in front. Their own `with` is not\nfollowed.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
