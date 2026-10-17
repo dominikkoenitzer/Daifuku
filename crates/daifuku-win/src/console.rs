@@ -183,3 +183,37 @@ fn via_owning_process(chain: &[Proc]) -> Option<(u64, u32)> {
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECOND: u64 = 10_000_000;
+
+    #[test]
+    fn the_agent_is_the_nearest_process_that_ran_before_the_hook() {
+        let hook = Some(100 * SECOND);
+        // A shell started for this hook, the agent, the terminal's shell.
+        let chain = [
+            (10, Some(100 * SECOND - 1_000)),
+            (20, Some(40 * SECOND)),
+            (30, Some(5 * SECOND)),
+        ];
+        assert_eq!(agent_of(&chain, hook), Some(20));
+        // Without the agent, the terminal's shell.
+        assert_eq!(agent_of(&chain[..1], hook), Some(10));
+        assert_eq!(agent_of(&[chain[0], chain[2]], hook), Some(30));
+        // Just under a second is too young.
+        assert_eq!(agent_of(&[(40, Some(99 * SECOND + 1))], hook), Some(40));
+        assert_eq!(
+            agent_of(
+                &[(40, Some(99 * SECOND + 1)), (50, Some(99 * SECOND))],
+                hook
+            ),
+            Some(50)
+        );
+        // Nothing on the console but the hook itself.
+        assert_eq!(agent_of(&[], hook), None);
+        // Without start times, the farthest.
+        assert_eq!(agent_of(&[(1, None), (2, None)], None), Some(2));
+    }
+}
