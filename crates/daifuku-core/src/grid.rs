@@ -281,6 +281,91 @@ mod tests {
         assert_eq!(Grid::shape_for(3, PORTRAIT, Gaps::default()), shape(1, 3));
     }
 
+    /// A 4K landscape monitor's work area with a 48 pixel taskbar.
+    const LANDSCAPE_4K: Rect = Rect::new(0, 0, 3840, 2112);
+
+    #[test]
+    fn small_fleets_on_half_a_landscape_monitor_stack_or_square_up() {
+        let right = LANDSCAPE_4K.part(0.5, 0.0, 0.5, 1.0);
+        let gaps = Gaps::default();
+        assert_eq!(Grid::shape_for(2, right, gaps), shape(1, 2));
+        // Three stacked would be 1872 by 675 each, nearly three times as wide
+        // as tall; two over one keeps the top two near a terminal's shape.
+        assert_eq!(Grid::shape_for(3, right, gaps), shape(2, 2));
+        assert_eq!(Grid::shape_for(4, right, gaps), shape(2, 2));
+        let bottom = LANDSCAPE_4K.part(0.0, 0.5, 1.0, 0.5);
+        assert_eq!(Grid::shape_for(2, bottom, gaps), shape(2, 1));
+        assert_eq!(Grid::shape_for(3, bottom, gaps), shape(3, 1));
+    }
+
+    #[test]
+    fn a_fleet_on_a_half_keeps_the_outer_margin_on_every_side() {
+        let gaps = Gaps::default();
+        let full = Grid::plan(3, LANDSCAPE_4K, gaps, Some(shape(1, 3)));
+        let right = Grid::plan(
+            3,
+            LANDSCAPE_4K.part(0.5, 0.0, 0.5, 1.0),
+            gaps,
+            Some(shape(1, 3)),
+        );
+        assert_eq!(
+            right,
+            vec![
+                Rect::new(1944, 24, 3816, 698),
+                Rect::new(1944, 718, 3816, 1393),
+                Rect::new(1944, 1413, 3816, 2088),
+            ]
+        );
+        // On the screen's own edges the cells line up with a fleet that fills
+        // the whole monitor; towards the middle the margin is the same.
+        for (half, whole) in right.iter().zip(&full) {
+            assert_eq!(
+                (half.top, half.right, half.bottom),
+                (whole.top, whole.right, whole.bottom)
+            );
+            assert_eq!(half.left, 1920 + gaps.outer);
+        }
+    }
+
+    #[test]
+    fn three_on_a_half_put_two_over_one_that_spans_the_half() {
+        let cells = Grid::plan(
+            3,
+            LANDSCAPE_4K.part(0.5, 0.0, 0.5, 1.0),
+            Gaps::default(),
+            None,
+        );
+        assert_eq!(
+            cells,
+            vec![
+                Rect::new(1944, 24, 2870, 1046),
+                Rect::new(2890, 24, 3816, 1046),
+                Rect::new(1944, 1066, 3816, 2088),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_half_of_a_monitor_left_of_and_above_the_primary_tiles_exactly() {
+        let gaps = Gaps::default();
+        let work = Rect::new(-1081, -233, 0, 1640);
+        for area in [
+            work.part(0.0, 0.0, 1.0, 0.5),
+            work.part(0.0, 0.5, 1.0, 0.5),
+            work.part(0.5, 0.0, 0.5, 1.0),
+        ] {
+            for count in 1..=6 {
+                let cells = Grid::plan(count, area, gaps, None);
+                let body = area.shrink(gaps.outer);
+                assert_eq!(cells.iter().map(|c| c.left).min(), Some(body.left));
+                assert_eq!(cells.iter().map(|c| c.top).min(), Some(body.top));
+                assert_eq!(cells.iter().map(|c| c.right).max(), Some(body.right));
+                assert_eq!(cells.iter().map(|c| c.bottom).max(), Some(body.bottom));
+                assert!(cells.iter().all(|c| !c.is_empty()), "{count} in {area:?}");
+            }
+        }
+    }
+
     #[test]
     fn one_terminal_fills_the_area_inside_the_margin() {
         let cells = Grid::plan(1, LANDSCAPE, Gaps::default(), None);
