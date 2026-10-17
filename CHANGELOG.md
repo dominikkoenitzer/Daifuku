@@ -20,6 +20,14 @@
   After Windows restarts, `daifuku restore` opens them again, each resuming
   its session in its own folder; `--dry-run` lists them and `--forget` drops
   them.
+- `daifuku status --json` gives each agent a `label`, its `fleet` and the
+  `session_id` its state comes from, and each peer its last `session_id`.
+  A fleet's terminals are called by the fleet's name and their number,
+  `agents 2`, until `daifuku label <window> <label>` names them.
+- `daifuku wait <window or label>` waits until the agent stops working, or
+  with `--until done`, `waiting` or `failed` until it reaches that state,
+  and says which state it reached; `--timeout` gives up after so many
+  seconds with the new error code `timeout`.
 - Terminals start in the environment Windows builds for the user, with
   `PATH` as last saved, and without any `CLAUDE` variable, so an agent that
   starts another does not hand it its own session.
