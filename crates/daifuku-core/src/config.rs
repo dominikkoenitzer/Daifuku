@@ -1129,6 +1129,228 @@ mod tests {
         }
     }
 
+    fn area_of(area: &str) -> Result<Area, ConfigError> {
+        let json = format!(r#"{{"fleets":[{{"name":"a","area":{area}}}]}}"#);
+        Config::from_json(&json).map(|c| c.fleets[0].area)
+    }
+
+    fn part(x: f64, y: f64, width: f64, height: f64) -> Area {
+        Area::Part(Part {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    #[test]
+    fn a_fleet_fills_its_whole_monitor_unless_told_otherwise() {
+        let c = Config::from_json(r#"{"fleets":[{"name":"a"}]}"#).unwrap();
+        assert_eq!(c.fleets[0].area, Area::Full);
+        assert_eq!(Fleet::default().area, Area::Full);
+    }
+
+    #[test]
+    fn every_area_name_parses_in_any_case() {
+        for (text, area) in [
+            ("full", Area::Full),
+            ("left", Area::Left),
+            ("Right", Area::Right),
+            ("TOP", Area::Top),
+            ("bottom", Area::Bottom),
+        ] {
+            assert_eq!(area_of(&format!(r#""{text}""#)), Ok(area), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_area_of_fractions_parses_whole_numbers_too() {
+        assert_eq!(
+            area_of(r#"{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }"#),
+            Ok(part(0.5, 0.0, 0.5, 1.0))
+        );
+    }
+
+    #[test]
+    fn areas_round_trip_as_written() {
+        for (area, text) in [
+            (Area::Full, r#""full""#),
+            (Area::Left, r#""left""#),
+            (Area::Right, r#""right""#),
+            (Area::Top, r#""top""#),
+            (Area::Bottom, r#""bottom""#),
+            (
+                part(0.25, 0.0, 0.5, 1.0),
+                r#"{"x":0.25,"y":0.0,"width":0.5,"height":1.0}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&area).unwrap(), text);
+            assert_eq!(area_of(text), Ok(area), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_halves_are_the_fractions_they_name() {
+        assert_eq!(
+            Area::Full.part(),
+            Part {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0
+            }
+        );
+        assert_eq!(
+            Area::Left.part(),
+            Part {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0
+            }
+        );
+        assert_eq!(
+            Area::Right.part(),
+            Part {
+                x: 0.5,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0
+            }
+        );
+        assert_eq!(
+            Area::Top.part(),
+            Part {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 0.5
+            }
+        );
+        assert_eq!(
+            Area::Bottom.part(),
+            Part {
+                x: 0.0,
+                y: 0.5,
+                width: 1.0,
+                height: 0.5
+            }
+        );
+    }
+
+    #[test]
+    fn a_misspelt_area_name_is_an_error_that_names_it() {
+        for text in ["middle", "half", "sideways", "", "left half"] {
+            let e = area_of(&format!(r#""{text}""#)).unwrap_err();
+            let ConfigError::Parse(message) = &e else {
+                panic!("{text}: {e}");
+            };
+            assert!(
+                message.contains(&format!("`{text}` is not an area")),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_area_of_the_wrong_shape_is_an_error() {
+        for text in [
+            r#"{ "x": 0.5, "y": 0, "width": 0.5 }"#,
+            r#"{ "x": 0.5, "y": 0, "width": 0.5, "height": 1, "z": 0 }"#,
+            r#"{ "x": "half", "y": 0, "width": 0.5, "height": 1 }"#,
+            "0.5",
+            "true",
+            "[0.5, 0, 0.5, 1]",
+            "null",
+        ] {
+            assert!(
+                matches!(area_of(text), Err(ConfigError::Parse(_))),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_area_off_its_monitor_is_an_error_that_names_the_fleet() {
+        for (text, says) in [
+            (
+                r#"{ "x": -0.1, "y": 0, "width": 0.5, "height": 1 }"#,
+                "0 to 1",
+            ),
+            (
+                r#"{ "x": 0, "y": 1.5, "width": 0.5, "height": 0.5 }"#,
+                "0 to 1",
+            ),
+            (r#"{ "x": 0, "y": 0, "width": 2, "height": 1 }"#, "0 to 1"),
+            (r#"{ "x": 0, "y": 0, "width": 1, "height": -1 }"#, "0 to 1"),
+            (
+                r#"{ "x": 0, "y": 0, "width": 0, "height": 1 }"#,
+                "more than 0",
+            ),
+            (
+                r#"{ "x": 0, "y": 0, "width": 1, "height": 0 }"#,
+                "more than 0",
+            ),
+            (
+                r#"{ "x": 0.6, "y": 0, "width": 0.5, "height": 1 }"#,
+                "right edge",
+            ),
+            (
+                r#"{ "x": 0, "y": 0.5, "width": 1, "height": 0.75 }"#,
+                "bottom edge",
+            ),
+        ] {
+            let e = area_of(text).unwrap_err();
+            assert!(
+                matches!(&e, ConfigError::Area { name, reason } if name == "a" && reason.contains(says)),
+                "{text}: {e}"
+            );
+            assert!(e.to_string().starts_with("fleet `a`: area "), "{e}");
+        }
+    }
+
+    #[test]
+    fn an_area_may_end_on_the_far_edges() {
+        for text in [
+            r#"{ "x": 0, "y": 0, "width": 1, "height": 1 }"#,
+            r#"{ "x": 0.7, "y": 0.3, "width": 0.3, "height": 0.7 }"#,
+            r#"{ "x": 0.6667, "y": 0, "width": 0.3333, "height": 1 }"#,
+            r#"{ "x": 0.1, "y": 0.2, "width": 0.9, "height": 0.8 }"#,
+            r#"{ "x": 0.999, "y": 0.999, "width": 0.001, "height": 0.001 }"#,
+        ] {
+            assert!(area_of(text).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_schema_takes_every_area_name_the_loader_takes() {
+        let schema: serde_json::Value = serde_json::from_str(&Config::schema()).unwrap();
+        let area = &schema["$defs"]["Area"]["anyOf"];
+        assert_eq!(area[0]["enum"], serde_json::json!(AREA_WORDS));
+        let pattern = area[1]["pattern"].as_str().unwrap();
+        for text in ["full", "Left", "RIGHT", "Top", "bottom"] {
+            assert!(
+                area_of(&format!(r#""{text}""#)).is_ok(),
+                "the loader takes {text}"
+            );
+            assert!(matches_any_case(pattern, text), "the schema takes {text}");
+        }
+        for text in ["middle", "fulls", "half", "lefts"] {
+            assert!(!matches_any_case(pattern, text), "{text}");
+            assert!(text.parse::<Area>().is_err(), "{text}");
+        }
+        let object = &area[2];
+        assert_eq!(
+            object["required"],
+            serde_json::json!(["x", "y", "width", "height"])
+        );
+        assert_eq!(object["additionalProperties"], false);
+        assert_eq!(
+            schema["$defs"]["Fleet"]["properties"]["area"]["default"],
+            "full"
+        );
+    }
+
     #[test]
     fn every_state_has_its_own_width() {
         let b = Border::default();
