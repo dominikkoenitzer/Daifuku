@@ -131,7 +131,7 @@ impl Drop for Cleanup {
         // own daemon gets these commands: any other keeps its fleets and
         // runs on.
         if ours(&self.1).is_some() {
-            for fleet in ["e2e", "demo"] {
+            for fleet in ["e2e", "demo", "lead", "crew"] {
                 let _ = Command::new(cli()).args(["close", fleet]).output();
             }
             let _ = Command::new(cli()).arg("stop").output();
@@ -720,4 +720,271 @@ fn only_the_demos_waiting_agents_count() {
         ..Status::default()
     };
     assert_eq!(demo_waiting(s), vec![1, 3]);
+}
+
+/// Starts a daemon on `config` with `vars` in its environment, keeping its
+/// state in `state` when given, and waits until it is the one that answers.
+fn start_with(config: &Path, state: Option<&Path>, vars: &[(&str, &str)]) -> (Cleanup, Status) {
+    assert!(
+        status().is_none(),
+        "a daifukud already runs in this session; stop it first with `daifuku stop`"
+    );
+    let mut command = Command::new(daemon_exe());
+    command.arg("--config").arg(config);
+    if let Some(dir) = state {
+        command.arg("--state").arg(dir);
+    }
+    command.envs(vars.iter().copied());
+    let mut cleanup = Cleanup(vec![command.spawn().unwrap()], config.display().to_string());
+    let first = wait_for(
+        "this test's daemon to answer",
+        Duration::from_secs(15),
+        || {
+            assert!(
+                cleanup.0.last_mut().unwrap().try_wait().unwrap().is_none(),
+                "this test's daifukud exited; another one holds the pipes"
+            );
+            ours(&cleanup.1)
+        },
+    );
+    (cleanup, first)
+}
+
+/// Stops the test's daemon and waits for it to exit.
+fn stop(cleanup: &mut Cleanup) {
+    let _ = run(&["stop"]);
+    let mut daemon = cleanup.0.pop().unwrap();
+    wait_for("the daemon to exit", Duration::from_secs(10), || {
+        daemon.try_wait().ok().flatten()
+    });
+}
+
+/// The script a peer's terminal runs. It writes what it was started with to
+/// `ran-<its arguments>.txt` beside it: its folder, its arguments, how many
+/// `CLAUDE` variables it sees and its process id. Then it reports the hook
+/// event in `peer-event.json`, from inside its terminal as an agent would.
+fn peer_script(dir: &Path) -> PathBuf {
+    let script = dir.join("peer.ps1");
+    let text = format!(
+        r#"$out = Join-Path '{dir}' ('ran-' + ($args -join '-') + '.txt')
+$claude = @(Get-ChildItem env: | Where-Object Name -like 'CLAUDE*').Count
+Set-Content -LiteralPath $out -Value ("$PWD|" + ($args -join ' ') + "|$claude|$PID")
+$event = Join-Path '{dir}' 'peer-event.json'
+if (Test-Path $event) {{ Get-Content -Raw $event | & '{cli}' hook }}
+"#,
+        dir = dir.display(),
+        cli = cli().display()
+    );
+    std::fs::write(&script, text).unwrap();
+    script
+}
+
+/// What a peer's script wrote: folder, arguments, `CLAUDE` variables seen
+/// and process id.
+fn ran(dir: &Path, args: &str) -> (String, String, String, u32) {
+    let file = dir.join(format!("ran-{args}.txt"));
+    let text = wait_for(
+        &format!("{} to be written", file.display()),
+        Duration::from_secs(30),
+        || {
+            std::fs::read_to_string(&file)
+                .ok()
+                .filter(|t| t.ends_with('\n'))
+        },
+    );
+    let parts: Vec<&str> = text.trim_end().split('|').collect();
+    assert_eq!(parts.len(), 4, "{text}");
+    (
+        parts[0].to_owned(),
+        parts[1].to_owned(),
+        parts[2].to_owned(),
+        parts[3].parse().unwrap(),
+    )
+}
+
+/// A border shown around `w`'s frame, if there is one.
+fn border_around(w: u64) -> Option<u64> {
+    let frame = window::frame(w)?;
+    window::top_level().into_iter().find(|&b| {
+        window::class(b) == "DaifukuBorder"
+            && window::is_shown(b)
+            && window::outer(b).is_some_and(|r| {
+                (r.left - frame.left).abs() <= 12
+                    && (r.top - frame.top).abs() <= 12
+                    && (r.right - frame.right).abs() <= 12
+                    && (r.bottom - frame.bottom).abs() <= 12
+            })
+    })
+}
+
+/// A config with one fleet whose terminals run the peer script.
+fn peer_config(dir: &Path) -> PathBuf {
+    let config = dir.join("daifuku.json");
+    let command = format!("& '{}'", peer_script(dir).display());
+    let json = serde_json::json!({
+        "fleets": [{
+            "name": "e2e", "count": 1, "command": command,
+            "admin": true, "no_profile": true, "hotkey": null
+        }],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, json.to_string()).unwrap();
+    config
+}
+
+/// `daifuku spawn` with `args`, and the window it opened.
+fn spawn(args: &[&str]) -> u64 {
+    let mut all = vec!["spawn"];
+    all.extend_from_slice(args);
+    all.push("--json");
+    let reply = run(&all);
+    match from_line::<Response>(&reply) {
+        Ok(Response::Spawned { window, .. }) => window,
+        other => panic!("spawn answered {other:?}: {reply}"),
+    }
+}
+
+/// Whether two folders are the same, whichever form of their path each one
+/// is written in: a runner's temp folder has a short 8.3 name.
+fn same_dir(a: impl AsRef<Path>, b: impl AsRef<Path>) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The JSON `daifuku` printed.
+fn json(text: &str) -> serde_json::Value {
+    serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("{e}: {text}"))
+}
+
+#[test]
+fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
+    use daifuku_core::config::Area;
+    use daifuku_core::grid::{Gaps, Grid};
+
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    daifuku_win::dpi::per_monitor_v2();
+    let dir = scratch().join("spawn");
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let config = peer_config(&dir);
+    std::fs::write(
+        dir.join("peer-event.json"),
+        r#"{"session_id":"e2e-spawn-1","hook_event_name":"PermissionRequest"}"#,
+    )
+    .unwrap();
+    let mut steps = 0;
+    // The daemon carries an agent's variables, as one started from inside an
+    // agent would: none of them may reach the terminal.
+    let (mut cleanup, _) = start_with(
+        &config,
+        None,
+        &[("CLAUDECODE", "1"), ("CLAUDE_CODE_ENTRYPOINT", "e2e")],
+    );
+
+    let w = spawn(&[
+        "--dir",
+        &work.display().to_string(),
+        "--label",
+        "e2e peer",
+        "--monitor",
+        "primary",
+        "--area",
+        "right",
+    ]);
+    let (folder, args, claude, _) = ran(&dir, "");
+    assert!(
+        same_dir(&folder, &work),
+        "the peer started in {folder}, not in its folder"
+    );
+    assert_eq!(args, "", "a peer without --resume got arguments");
+    steps += 1;
+    assert_eq!(claude, "0", "the terminal saw CLAUDE variables");
+    steps += 1;
+
+    // In the right half of the primary monitor, as a fleet of one.
+    let monitors = daifuku_win::monitor::monitors();
+    let primary = monitors.iter().find(|m| m.primary).unwrap();
+    let cell = Grid::plan(1, Area::Right.within(primary.work), Gaps::default(), None)[0];
+    assert_eq!(
+        window::frame(w),
+        Some(cell),
+        "the peer is not in the right half"
+    );
+    steps += 1;
+
+    // Its agent reported from inside it: waiting, labelled, with its session.
+    let agent = wait_for("the peer's agent to wait", Duration::from_secs(20), || {
+        status()?
+            .agents
+            .into_iter()
+            .find(|a| a.window == w && a.state.name() == "waiting")
+    });
+    assert_eq!(agent.label.as_deref(), Some("e2e peer"));
+    assert_eq!(agent.session_id.as_deref(), Some("e2e-spawn-1"));
+    let peer = status()
+        .unwrap()
+        .peers
+        .into_iter()
+        .find(|p| p.window == w)
+        .expect("the peer in the status");
+    assert!(same_dir(&peer.directory, &work), "{}", peer.directory);
+    assert_eq!(peer.session_id.as_deref(), Some("e2e-spawn-1"));
+    steps += 1;
+
+    // `wait` sees the state, by label in any case.
+    let waited = json(&run(&[
+        "wait",
+        "E2E PEER",
+        "--until",
+        "waiting",
+        "--timeout",
+        "20",
+        "--json",
+    ]));
+    assert_eq!(waited["state"], "waiting", "{waited}");
+    assert_eq!(waited["window"], w, "{waited}");
+    steps += 1;
+
+    // `label` renames it.
+    let labelled = run(&["label", &w.to_string(), "renamed"]);
+    assert!(labelled.trim().is_empty(), "{labelled}");
+    let agent = status()
+        .unwrap()
+        .agents
+        .into_iter()
+        .find(|a| a.window == w)
+        .unwrap();
+    assert_eq!(agent.label.as_deref(), Some("renamed"));
+    steps += 1;
+
+    // A border around it, gone with the window.
+    let border = wait_for("a border around the peer", Duration::from_secs(5), || {
+        border_around(w)
+    });
+    assert!(window::close(w));
+    wait_for("the peer to close", Duration::from_secs(15), || {
+        (!window::exists(w)).then_some(())
+    });
+    wait_for("the border to go", Duration::from_secs(5), || {
+        (!window::is_shown(border)).then_some(())
+    });
+    wait_for(
+        "the peer to leave the status",
+        Duration::from_secs(5),
+        || status().filter(|s| s.peers.is_empty() && s.agents.iter().all(|a| a.window != w)),
+    );
+    steps += 1;
+
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
 }
