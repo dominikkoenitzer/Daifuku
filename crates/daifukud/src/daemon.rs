@@ -155,16 +155,10 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
         .context("no ProgramData folder")?;
     let mut d = Daemon::new(config_path, elevated, events::Hooks::install());
     if let Some(dir) = state_dir.or_else(|| paths::data_dir().filter(|_| keeps_state)) {
-        // One pair of files per user: each user's daemon keeps its own, in
-        // the one folder they share.
-        let sid = daifuku_win::setup::user_sid();
-        let name = |what: &str| match &sid {
-            Some(sid) => format!("{what}-{sid}.json"),
-            None => format!("{what}.json"),
-        };
-        d.state_file = Some(dir.join(name("state")));
-        d.peers_file = Some(dir.join(name("peers")));
-        d.legacy_state_file = sid.is_some().then(|| dir.join("state.json"));
+        let files = SavedFiles::in_dir(&dir, daifuku_win::setup::user_sid().as_deref());
+        d.state_file = Some(files.state);
+        d.peers_file = Some(files.peers);
+        d.legacy_state_file = files.legacy_state;
     }
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
@@ -978,10 +972,7 @@ impl Daemon {
         let Some(own) = &self.state_file else {
             return;
         };
-        let file = match &self.legacy_state_file {
-            Some(legacy) if !own.exists() => legacy,
-            _ => own,
-        };
+        let file = state_to_read(own, self.legacy_state_file.as_deref());
         let text = match std::fs::read_to_string(file) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
@@ -1656,6 +1647,46 @@ fn sort_kept(
     (open, dormant, from)
 }
 
+/// Where one user's daemon keeps what it saves.
+#[derive(Debug, PartialEq, Eq)]
+struct SavedFiles {
+    /// The fleets and agent states, for a restart in this start of Windows.
+    state: PathBuf,
+    /// The peers, for `daifuku restore`.
+    peers: PathBuf,
+    /// The state file versions up to 0.1.3 shared between users.
+    legacy_state: Option<PathBuf>,
+}
+
+impl SavedFiles {
+    /// The files in `dir` for the user `sid`: one pair per user, as every
+    /// user's daemon writes into the same folder. Without a SID, the shared
+    /// names, as there is nothing to tell users apart by.
+    fn in_dir(dir: &std::path::Path, sid: Option<&str>) -> Self {
+        let name = |what: &str| match sid {
+            Some(sid) => format!("{what}-{sid}.json"),
+            None => format!("{what}.json"),
+        };
+        Self {
+            state: dir.join(name("state")),
+            peers: dir.join(name("peers")),
+            legacy_state: sid.map(|_| dir.join("state.json")),
+        }
+    }
+}
+
+/// The state file to read: the user's own, or the one earlier versions
+/// shared while the user's own does not exist yet.
+fn state_to_read<'a>(
+    own: &'a std::path::Path,
+    legacy: Option<&'a std::path::Path>,
+) -> &'a std::path::Path {
+    match legacy {
+        Some(legacy) if !own.exists() => legacy,
+        _ => own,
+    }
+}
+
 /// Writes `text` next to `path` and renames it over `path`, so a daemon that
 /// stops half way leaves the last whole save, never one cut short.
 fn replace_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
@@ -2009,6 +2040,52 @@ mod tests {
         });
         d.note_peer_session(7, "planted", None);
         assert_eq!(d.peers[0].spawn.resume, None);
+    }
+
+    #[test]
+    fn each_user_saves_to_files_of_their_own() {
+        let dir = std::path::Path::new(r"C:\ProgramData\Daifuku");
+        let a = SavedFiles::in_dir(dir, Some("S-1-5-21-1-2-3-1001"));
+        let b = SavedFiles::in_dir(dir, Some("S-1-5-21-1-2-3-1002"));
+        assert_eq!(a.state, dir.join("state-S-1-5-21-1-2-3-1001.json"));
+        assert_eq!(a.peers, dir.join("peers-S-1-5-21-1-2-3-1001.json"));
+        assert_ne!(a.state, b.state);
+        assert_ne!(a.peers, b.peers);
+        assert_eq!(a.legacy_state, Some(dir.join("state.json")));
+        let shared = SavedFiles::in_dir(dir, None);
+        assert_eq!(shared.state, dir.join("state.json"));
+        assert_eq!(shared.legacy_state, None);
+    }
+
+    #[test]
+    fn the_shared_state_file_is_read_only_until_the_user_has_one() {
+        let dir = std::env::temp_dir().join(format!("daifuku-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let own = dir.join("state-S-1.json");
+        let legacy = dir.join("state.json");
+        std::fs::write(&legacy, "{}").unwrap();
+        assert_eq!(state_to_read(&own, Some(&legacy)), legacy.as_path());
+        std::fs::write(&own, "{}").unwrap();
+        assert_eq!(state_to_read(&own, Some(&legacy)), own.as_path());
+        assert_eq!(state_to_read(&own, None), own.as_path());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+        let dir = std::env::temp_dir().join(format!("daifuku-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("peers.json");
+        std::fs::write(&file, "an older save that was longer than the new one").unwrap();
+        replace_file(&file, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("peers.json")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
