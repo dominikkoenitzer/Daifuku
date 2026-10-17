@@ -28,6 +28,10 @@
   with `--until done`, `waiting` or `failed` until it reaches that state,
   and says which state it reached; `--timeout` gives up after so many
   seconds with the new error code `timeout`.
+- A border goes when its agent's process ends, even when the terminal stays
+  open, as a Windows Terminal tab does when its shell is killed. The hook
+  names the agent's process, and the daemon forgets the sessions it reported
+  once it ends.
 - Terminals start in the environment Windows builds for the user, with
   `PATH` as last saved, and without any `CLAUDE` variable, so an agent that
   starts another does not hand it its own session.
