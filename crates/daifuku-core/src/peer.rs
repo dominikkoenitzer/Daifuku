@@ -110,6 +110,60 @@ pub fn without_agent_variables(
         .collect()
 }
 
+/// How far the start of Windows may drift between a saved peer and its use,
+/// in seconds, as for the daemon's saved state.
+const BOOT_DRIFT_SECONDS: u64 = 10;
+
+/// One peer as the daemon keeps it in `peers.json`, so it can be opened
+/// again after Windows restarts: what it was opened with, with `resume` set
+/// to the session it ran last, and the window and the start of Windows it
+/// was open in, so a daemon that restarts while it is still open finds it
+/// again instead of opening it twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kept {
+    /// What it was opened with, `resume` the last session seen in it.
+    pub spawn: Spawn,
+    /// Its window, as long as it is open.
+    pub window: u64,
+    /// When Windows started, in seconds since 1970 by the wall clock, for
+    /// the start of Windows the window belongs to.
+    pub boot: u64,
+}
+
+impl Kept {
+    /// Whether its window can still be the one it was open in: the same
+    /// start of Windows, by the clock `boot` the caller works out now.
+    #[must_use]
+    pub const fn same_boot(&self, boot: u64) -> bool {
+        self.boot.abs_diff(boot) <= BOOT_DRIFT_SECONDS
+    }
+
+    /// Whether it can be opened again: only with a session to resume, as a
+    /// new session in its folder is not the one that was there.
+    #[must_use]
+    pub fn resumable(&self) -> bool {
+        self.spawn.resume.as_deref().is_some_and(session_id_ok)
+    }
+}
+
+/// The peers kept in `peers.json`, read leniently: a file that does not
+/// read is no peers, and an entry whose session id is not one keeps no
+/// session.
+#[must_use]
+pub fn read_kept(text: &str) -> Vec<Kept> {
+    let mut kept: Vec<Kept> = serde_json::from_str(text).unwrap_or_default();
+    for k in &mut kept {
+        if k.spawn
+            .resume
+            .as_deref()
+            .is_some_and(|id| !session_id_ok(id))
+        {
+            k.spawn.resume = None;
+        }
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
