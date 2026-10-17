@@ -1494,6 +1494,47 @@ mod tests {
     }
 
     #[test]
+    fn spawn_sends_an_absolute_folder_and_checks_what_it_can() {
+        use daifuku_core::config::{Area, MonitorPick};
+        let here = std::env::current_dir().unwrap();
+        let s = spawn_request(None, None, None, None, None, None).unwrap();
+        assert_eq!(s.directory, here);
+        assert!(!s.placed());
+        let s = spawn_request(
+            Some("sub".into()),
+            Some("Site QA".into()),
+            Some("abc-1".into()),
+            Some("crew".into()),
+            Some("Landscape"),
+            Some("RIGHT"),
+        )
+        .unwrap();
+        assert_eq!(s.directory, here.join("sub"));
+        assert_eq!(s.monitor, Some(MonitorPick::Landscape));
+        assert_eq!(s.area, Some(Area::Right));
+        assert_eq!(
+            (s.label.as_deref(), s.resume.as_deref(), s.fleet.as_deref()),
+            (Some("Site QA"), Some("abc-1"), Some("crew"))
+        );
+        let s = spawn_request(None, None, None, None, Some(r"\\.\DISPLAY2"), None).unwrap();
+        assert_eq!(s.monitor, Some(MonitorPick::Device(r"\\.\DISPLAY2".into())));
+        for (monitor, area, resume, says) in [
+            (Some("sideways"), None, None, "monitor `sideways`"),
+            (None, Some("middle"), None, "`middle` is not an area"),
+            (None, None, Some("a;b"), "`a;b` is not a session id"),
+        ] {
+            let e =
+                spawn_request(None, None, resume.map(Into::into), None, monitor, area).unwrap_err();
+            assert!(e.starts_with(says), "{e}");
+        }
+        let cli = Cli::try_parse_from(["daifuku", "spawn", "--area", "left", "--dir", r"C:\x"]);
+        assert!(matches!(
+            cli.unwrap().command,
+            Command::Spawn { area: Some(a), dir: Some(_), .. } if a == "left"
+        ));
+    }
+
+    #[test]
     fn every_command_that_reports_or_acts_takes_json_after_its_name() {
         for args in [
             &["status", "--json"][..],
