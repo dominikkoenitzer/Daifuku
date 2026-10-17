@@ -118,6 +118,9 @@ struct Daemon {
     /// Where the state is kept across a restart, `None` when it is not: see
     /// [`daifuku_core::saved`].
     state_file: Option<PathBuf>,
+    /// The state file versions up to 0.1.3 shared between users, read when
+    /// this user's own does not exist yet.
+    legacy_state_file: Option<PathBuf>,
     /// What the last save held, apart from when it was made, and the
     /// interrupt time it was made at.
     last_saved: (String, u64),
@@ -152,8 +155,16 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
         .context("no ProgramData folder")?;
     let mut d = Daemon::new(config_path, elevated, events::Hooks::install());
     if let Some(dir) = state_dir.or_else(|| paths::data_dir().filter(|_| keeps_state)) {
-        d.state_file = Some(dir.join("state.json"));
-        d.peers_file = Some(dir.join("peers.json"));
+        // One pair of files per user: each user's daemon keeps its own, in
+        // the one folder they share.
+        let sid = daifuku_win::setup::user_sid();
+        let name = |what: &str| match &sid {
+            Some(sid) => format!("{what}-{sid}.json"),
+            None => format!("{what}.json"),
+        };
+        d.state_file = Some(dir.join(name("state")));
+        d.peers_file = Some(dir.join(name("peers")));
+        d.legacy_state_file = sid.is_some().then(|| dir.join("state.json"));
     }
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
@@ -250,6 +261,7 @@ impl Daemon {
             shown_since: std::collections::HashMap::new(),
             last_next: None,
             state_file: None,
+            legacy_state_file: None,
             last_saved: (String::new(), 0),
         }
     }
@@ -958,8 +970,12 @@ impl Daemon {
     /// again: an agent's must still be a window a hook could name, a fleet's
     /// still a terminal.
     fn restore(&mut self) {
-        let Some(file) = &self.state_file else {
+        let Some(own) = &self.state_file else {
             return;
+        };
+        let file = match &self.legacy_state_file {
+            Some(legacy) if !own.exists() => legacy,
+            _ => own,
         };
         let text = match std::fs::read_to_string(file) {
             Ok(t) => t,
