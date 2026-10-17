@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0, 2026-10-17
 
 - A fleet can fill part of its monitor with the new `area` key: `"left"`,
   `"right"`, `"top"` or `"bottom"` for a half, or
@@ -53,6 +53,8 @@
 - Terminals start in the environment Windows builds for the user, with
   `PATH` as last saved, and without any `CLAUDE` variable, so an agent that
   starts another does not hand it its own session.
+- A config that uses `area`, `with` or `priority` does not load in 0.1.3 or
+  earlier, which keeps its last good config or the defaults instead.
 
 ## 0.1.3, 2026-10-10
 
