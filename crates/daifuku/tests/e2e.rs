@@ -771,14 +771,16 @@ fn expect_failure(what: &str, passed: bool) {
 
 /// The script a peer's terminal runs. It writes what it was started with to
 /// `ran-<its arguments>.txt` beside it: its folder, its arguments, how many
-/// `CLAUDE` variables it sees and its process id. Then it reports the hook
+/// `CLAUDE` variables it sees, its process id and its priority class. Then
+/// it reports the hook
 /// event in `peer-event.json`, from inside its terminal as an agent would.
 fn peer_script(dir: &Path) -> PathBuf {
     let script = dir.join("peer.ps1");
     let text = format!(
         r#"$out = Join-Path '{dir}' ('ran-' + ($args -join '-') + '.txt')
 $claude = @(Get-ChildItem env: | Where-Object Name -like 'CLAUDE*').Count
-Set-Content -LiteralPath $out -Value ("$PWD|" + ($args -join ' ') + "|$claude|$PID")
+$class = (Get-Process -Id $PID).PriorityClass
+Set-Content -LiteralPath $out -Value ("$PWD|" + ($args -join ' ') + "|$claude|$PID|$class")
 $event = Join-Path '{dir}' 'peer-event.json'
 if (Test-Path $event) {{ Get-Content -Raw $event | & '{cli}' hook }}
 "#,
@@ -792,6 +794,12 @@ if (Test-Path $event) {{ Get-Content -Raw $event | & '{cli}' hook }}
 /// What a peer's script wrote: folder, arguments, `CLAUDE` variables seen
 /// and process id.
 fn ran(dir: &Path, args: &str) -> (String, String, String, u32) {
+    let (folder, args, claude, pid, _) = ran_at(dir, args);
+    (folder, args, claude, pid)
+}
+
+/// What a peer's script wrote, with the priority class it ran at.
+fn ran_at(dir: &Path, args: &str) -> (String, String, String, u32, String) {
     let file = dir.join(format!("ran-{args}.txt"));
     let text = wait_for(
         &format!("{} to be written", file.display()),
@@ -803,12 +811,13 @@ fn ran(dir: &Path, args: &str) -> (String, String, String, u32) {
         },
     );
     let parts: Vec<&str> = text.trim_end().split('|').collect();
-    assert_eq!(parts.len(), 4, "{text}");
+    assert_eq!(parts.len(), 5, "{text}");
     (
         parts[0].to_owned(),
         parts[1].to_owned(),
         parts[2].to_owned(),
         parts[3].parse().unwrap(),
+        parts[4].to_owned(),
     )
 }
 
@@ -1014,6 +1023,36 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         Duration::from_secs(5),
         || status().filter(|s| s.peers.is_empty() && s.agents.iter().all(|a| a.window != w)),
     );
+    steps += 1;
+
+    // A peer at a priority runs in a group: its shell runs at it, and the
+    // shell's process tree ends with the terminal.
+    let low = dir.join("low");
+    std::fs::create_dir_all(&low).unwrap();
+    std::fs::remove_file(dir.join("ran-.txt")).unwrap();
+    let grouped = spawn(&[
+        "--dir",
+        &low.display().to_string(),
+        "--label",
+        "low",
+        "--priority",
+        "below-normal",
+    ]);
+    let (_, _, _, shell, class) = ran_at(&dir, "");
+    assert_eq!(class, "BelowNormal", "the grouped peer's shell");
+    assert!(window::close(grouped));
+    let start = Instant::now();
+    let alive = || {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {shell}"), "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).contains(&shell.to_string())
+    };
+    while alive() && start.elapsed() < Duration::from_secs(15) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(!alive(), "the grouped peer's shell outlived its terminal");
     steps += 1;
 
     stop(&mut cleanup);
