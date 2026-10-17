@@ -123,3 +123,34 @@ pub fn block(vars: &[(OsString, OsString)]) -> Vec<u16> {
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_block_reads_back_as_the_variables_it_was_made_of() {
+        let vars = vec![
+            (OsString::from("PATH"), OsString::from(r"C:\Windows;C:\bin")),
+            (OsString::from("=C:"), OsString::from(r"C:\src")),
+            (OsString::from("EMPTY"), OsString::new()),
+            (OsString::from("A"), OsString::from("x=y")),
+        ];
+        let b = block(&vars);
+        assert_eq!(&b[b.len() - 2..], &[0, 0]);
+        // SAFETY: a block just made, ended by an empty string.
+        assert_eq!(unsafe { parse_block(b.as_ptr()) }, vars);
+        assert_eq!(block(&[]), vec![0, 0]);
+    }
+
+    #[test]
+    fn the_fresh_environment_has_the_user_s_folders_and_no_agent_variables() {
+        let vars = for_terminal();
+        let has = |name: &str| vars.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
+        assert!(has("PATH") && has("SystemRoot"), "{vars:?}");
+        assert!(
+            vars.iter()
+                .all(|(n, _)| !daifuku_core::peer::is_agent_variable(n)),
+            "{vars:?}"
+        );
+    }
+}
