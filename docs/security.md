@@ -20,8 +20,8 @@ input to ordinary windows. It cannot write where only administrators can.
 |---|---|---|
 | `daifuku.exe`, `daifukud.exe` | `C:\Program Files\Daifuku` | Program Files is writable by administrators only. The logon task starts the daemon from there. |
 | The config, which names the command every fleet terminal runs | `C:\ProgramData\Daifuku\daifuku.json` | Administrators and SYSTEM may write the folder, users may only read it. Any user may create folders in ProgramData, so the installer keeps an existing `Daifuku` folder, and the config in it, only when it is a real folder (not a link) that Administrators or SYSTEM own and no one else may change, as the installer leaves it. A folder whose owner or access list was changed since, so that someone else may change it, counts as one another program made. Anything else there is deleted without following links, and a new folder is created with its access list already in place. ProgramData itself is found on the drive Windows runs from, not through the environment, which the user can change. |
-| The saved state: open fleets and what each agent is doing | `C:\ProgramData\Daifuku\state.json` | In the same locked folder as the config, written by the daemon alone. It is taken back only within the same start of Windows and for five minutes after it was written, and every window in it is checked again: a fleet's must still be a Windows Terminal window, an agent's a window a hook could name. |
-| The peers `daifuku spawn` opened: folder, label, fleet, place and the last session id | `C:\ProgramData\Daifuku\peers.json` | In the same locked folder, written by the daemon alone. `daifuku restore` puts these into command lines the elevated daemon starts, so a session id from a hook is kept only when it is letters, digits, `-` and `_`, and is checked again before it goes into a command line. |
+| The saved state: open fleets and what each agent is doing | `C:\ProgramData\Daifuku\state-<SID>.json`, one per user (`state.json` up to 0.1.3, read once when the user's own is missing) | In the same locked folder as the config, written by the daemon alone. It is taken back only within the same start of Windows and for five minutes after it was written, and every window in it is checked again: a fleet's must still be a Windows Terminal window, an agent's a window a hook could name. |
+| The peers `daifuku spawn` opened: folder, label, fleet, place and the last session id | `C:\ProgramData\Daifuku\peers-<SID>.json`, one per user | In the same locked folder, written by the daemon alone. `daifuku restore` puts these into command lines the elevated daemon starts, so a session id is kept only when it is letters, digits, `-` and `_`, only from a hook that ran inside that peer's terminal (below), and is checked again before it goes into a command line. Only the peers open when Windows last stopped are restored, and never a session that runs already. |
 | The entry in Settings > Apps > Installed apps | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku` | Writable by administrators only. Its Uninstall runs `daifuku.exe` in Program Files, which asks for administrator rights through the normal Windows prompt. |
 | The logon task, one per user | `\Daifuku\Daemon-<user SID>` in Task Scheduler | Creating or changing a task that runs with highest privileges needs administrator rights. Its definition passes through the locked data folder on the way in, never through the user's temp folder. |
 | Windows Terminal | its package folder under `WindowsApps` | Found through the package API, never through `PATH`, which contains folders the user can write. Only a package the system installed from a signed source counts: one registered from loose files in developer mode can live in any folder. |
@@ -66,9 +66,17 @@ border, play the chime when sound is on, list it in `daifuku status`, and put
 it in the next key's queue, so that key brings it to the front. The daemon
 never starts anything because of a hook, ignores session and subagent ids
 longer than 128 bytes, lets one session have at most 32 threads waiting, and
-stops tracking new sessions past 512. A message may also name the agent's
-process. The daemon opens it only to wait for its end, which takes the
-session's border down; a forged one can do no more than end a border early.
+stops tracking new sessions past 512.
+
+A message may also name the agent's process. The daemon believes it only
+when the pipe says the hook ran under that process: the hook waits, within
+its short wait, until its line is read, and the daemon notes the client's
+process and its ancestors as it connects. The daemon opens that process only
+to wait for its end, which takes the session's border down. A peer takes a
+new session id only from such a process whose console leads to the peer's
+own window. A process of the user outside the peer is not under the peer's
+agent, and one that is not elevated cannot reach an administrator peer's
+console, so neither can choose the session `daifuku restore` resumes.
 
 Both pipes are created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, allow exactly
 as many instances as the daemon creates, and keep them for the daemon's whole
