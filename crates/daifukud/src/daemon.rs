@@ -459,15 +459,14 @@ impl Daemon {
 
     fn demo_fleet(&self) -> Option<daifuku_core::config::Fleet> {
         let exe = demo_exe()?;
+        // The demo goes where the first fleet goes: its monitor, and the part
+        // of it that fleet fills.
+        let first = self.config.fleets.first();
         Some(daifuku_core::config::Fleet {
             name: DEMO.to_owned(),
             count: 6,
-            monitor: self
-                .config
-                .fleets
-                .first()
-                .map(|f| f.monitor.clone())
-                .unwrap_or_default(),
+            monitor: first.map(|f| f.monitor.clone()).unwrap_or_default(),
+            area: first.map(|f| f.area).unwrap_or_default(),
             // The drive root: nothing personal in the path if a prompt shows.
             directory: Some(std::path::PathBuf::from(r"C:\")),
             command: Some(demo_command(&exe)),
