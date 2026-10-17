@@ -149,13 +149,26 @@ impl Kept {
     }
 }
 
-/// The peers kept in `peers.json`, read leniently: a file that does not
-/// read is no peers, and an entry whose session id is not one keeps no
-/// session.
+/// What the peers file holds: the start of Windows it was written in, the
+/// one its dormant peers are from, and the peers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptFile {
+    /// When Windows started, for the start of Windows the file was written
+    /// in.
+    pub boot: u64,
+    /// The start of Windows the dormant peers in it were open in.
+    #[serde(default)]
+    pub dormant_boot: u64,
+    /// Every peer, open and dormant.
+    pub peers: Vec<Kept>,
+}
+
+/// The peers file, read leniently: a file that does not read holds no
+/// peers, and an entry whose session id is not one keeps no session.
 #[must_use]
-pub fn read_kept(text: &str) -> Vec<Kept> {
-    let mut kept: Vec<Kept> = serde_json::from_str(text).unwrap_or_default();
-    for k in &mut kept {
+pub fn read_kept(text: &str) -> KeptFile {
+    let mut file: KeptFile = serde_json::from_str(text).unwrap_or_default();
+    for k in &mut file.peers {
         if k.spawn
             .resume
             .as_deref()
@@ -164,7 +177,7 @@ pub fn read_kept(text: &str) -> Vec<Kept> {
             k.spawn.resume = None;
         }
     }
-    kept
+    file
 }
 
 #[cfg(test)]
@@ -238,14 +251,19 @@ mod tests {
 
     #[test]
     fn the_kept_file_reads_leniently_and_drops_ids_that_are_not_ids() {
-        let text =
-            serde_json::to_string(&[kept(Some("abc-1"), 7, 1_000), kept(Some("a;rm"), 8, 1_000)])
-                .unwrap();
-        let read = read_kept(&text);
-        assert_eq!(read[0], kept(Some("abc-1"), 7, 1_000));
-        assert_eq!(read[1].spawn.resume, None);
-        assert!(read_kept("not json").is_empty());
-        assert!(read_kept("").is_empty());
+        let file = KeptFile {
+            boot: 1_000,
+            dormant_boot: 500,
+            peers: vec![kept(Some("abc-1"), 7, 1_000), kept(Some("a;rm"), 8, 1_000)],
+        };
+        let read = read_kept(&serde_json::to_string(&file).unwrap());
+        assert_eq!((read.boot, read.dormant_boot), (1_000, 500));
+        assert_eq!(read.peers[0], kept(Some("abc-1"), 7, 1_000));
+        assert_eq!(read.peers[1].spawn.resume, None);
+        assert!(read_kept("not json").peers.is_empty());
+        assert!(read_kept("").peers.is_empty());
+        // The list alone, as no released version wrote, is no peers.
+        assert!(read_kept("[]").peers.is_empty());
     }
 
     #[test]
