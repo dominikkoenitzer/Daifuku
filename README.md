@@ -184,6 +184,19 @@ daifuku install --dry-run --json
 [docs/json-output.md](docs/json-output.md) lists each shape and the error
 codes.
 
+An agent that hands out work opens the others one at a time, each in its
+own folder, and waits for each turn to end. From an administrator terminal:
+
+```powershell
+daifuku spawn --dir C:\src\site --label site --area right --json
+daifuku wait site --json
+daifuku status --json
+```
+
+`wait` returns when the agent's next turn ends, with the state it ended in.
+After Windows restarts, `daifuku restore` opens the spawned terminals that
+were open again, each resuming its session in its own folder.
+
 ## Other ways to install
 
 On a PC with an ARM processor (Settings > System > About says "ARM-based
