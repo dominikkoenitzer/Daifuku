@@ -140,3 +140,14 @@ impl Drop for Turn {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_job_takes_every_priority() {
+        for p in [Priority::Idle, Priority::BelowNormal, Priority::Normal] {
+            assert!(Job::new(p).is_ok(), "{p:?}");
+        }
+    }
+}
