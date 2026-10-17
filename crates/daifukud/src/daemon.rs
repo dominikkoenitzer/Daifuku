@@ -66,6 +66,9 @@ struct Daemon {
     fleets: Vec<OpenFleet>,
     /// Every peer `daifuku spawn` opened that is still open.
     peers: Vec<Peer>,
+    /// Labels `daifuku label` gave terminals that are not peers, whose
+    /// labels live in their [`Spawn`].
+    labels: std::collections::HashMap<u64, String>,
     /// Peers that were open when Windows last stopped, for `daifuku restore`
     /// to open again.
     dormant: Vec<Spawn>,
@@ -215,6 +218,7 @@ impl Daemon {
             agents: Agents::new(),
             fleets: Vec::new(),
             peers: Vec::new(),
+            labels: std::collections::HashMap::new(),
             dormant: Vec::new(),
             peers_file: None,
             borders: None,
@@ -343,6 +347,7 @@ impl Daemon {
             Request::Next => self.next(),
             Request::Demo => self.demo(),
             Request::Spawn(spawn) => self.spawn(spawn),
+            Request::Label { window, label } => self.label(*window, label.as_deref()),
             Request::Restore { dry_run, forget } => self.restore_peers(*dry_run, *forget),
             Request::Status => Response::Status(self.status()),
             Request::Reload => {
@@ -658,6 +663,13 @@ impl Daemon {
                 state,
                 for_seconds: window_since(&self.agents, &self.shown_since, w)
                     .map_or(0, |t| t.elapsed().as_secs()),
+                label: self.label_of(w),
+                fleet: self
+                    .fleets
+                    .iter()
+                    .find(|f| f.slots.contains(&Some(w)))
+                    .map(|f| f.name.clone()),
+                session_id: shown_session(&self.agents, w, state),
             })
             .collect();
         let fleets = self
@@ -692,6 +704,7 @@ impl Daemon {
                 window: p.window,
                 label: p.spawn.label.clone(),
                 directory: p.spawn.directory.display().to_string(),
+                session_id: p.spawn.resume.clone(),
             })
             .collect();
         Status {
@@ -723,6 +736,7 @@ impl Daemon {
                         f.forget(w);
                     }
                     self.peers.retain(|p| p.window != w);
+                    self.labels.remove(&w);
                     self.drop_closed_fleets();
                     refresh |= forgot;
                 }
@@ -1000,6 +1014,49 @@ impl Daemon {
         if self.peers.len() != before {
             self.save_peers();
         }
+    }
+
+    /// What to call terminal `w`: the label `daifuku label` or `spawn` gave
+    /// it, else its fleet's name and its number in the fleet.
+    fn label_of(&self, w: u64) -> Option<String> {
+        if let Some(label) = self.labels.get(&w) {
+            return Some(label.clone());
+        }
+        if let Some(p) = self.peers.iter().find(|p| p.window == w) {
+            return p.spawn.label.clone();
+        }
+        self.fleets.iter().find_map(|f| {
+            f.slots
+                .iter()
+                .position(|s| *s == Some(w))
+                .map(|i| format!("{} {}", f.name, i + 1))
+        })
+    }
+
+    /// Gives terminal `w` a label, or takes it away with `None`. A peer's
+    /// label is kept with it across a restart.
+    fn label(&mut self, w: u64, label: Option<&str>) -> Response {
+        if let Some(text) = label
+            && let Some(problem) = (Spawn {
+                label: Some(text.to_owned()),
+                ..Spawn::default()
+            })
+            .problem()
+        {
+            return Response::error(problem);
+        }
+        if !window::exists(w) {
+            return Response::error(format!("there is no window {w:#010x}"));
+        }
+        if let Some(p) = self.peers.iter_mut().find(|p| p.window == w) {
+            p.spawn.label = label.map(str::to_owned);
+            self.save_peers();
+        } else if let Some(text) = label {
+            self.labels.insert(w, text.to_owned());
+        } else {
+            self.labels.remove(&w);
+        }
+        Response::ok()
     }
 
     /// Notes `session` as the one peer window `w` runs now, so the peer
@@ -1359,6 +1416,15 @@ fn wall_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// The session whose state window `w` shows as `state`: of the sessions in
+/// it, the first in that state.
+fn shown_session(agents: &Agents<u64>, w: u64, state: AgentState) -> Option<String> {
+    agents
+        .sessions()
+        .find(|&(_, window, s)| window == w && s == state)
+        .map(|(id, _, _)| id.to_owned())
 }
 
 /// Sorts the peers read from the file into the ones still open, by their

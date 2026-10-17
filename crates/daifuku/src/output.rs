@@ -401,6 +401,9 @@ mod tests {
                 title: "claude".into(),
                 state: AgentState::Waiting,
                 for_seconds: 73,
+                label: None,
+                fleet: None,
+                session_id: None,
             }],
             peers: Vec::new(),
         };

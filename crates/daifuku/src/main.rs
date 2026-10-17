@@ -9,6 +9,7 @@
 //! daifuku demo           open six scripted demo agents
 //! daifuku spawn          open one agent terminal on its own, in a folder
 //! daifuku restore        open the peers from before Windows restarted again
+//! daifuku label          give an agent's terminal a label
 //! daifuku status         what the daemon knows
 //! daifuku reload         re-read the config
 //! daifuku stop           stop the daemon
@@ -136,6 +137,18 @@ enum Command {
         /// Forget them instead of opening them.
         #[arg(long)]
         forget: bool,
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Give an agent's terminal a label, which `status` shows. Without a
+    /// label, take it away.
+    Label {
+        /// The terminal's window handle, as `status` lists it, in decimal or
+        /// as 0x and hex.
+        #[arg(value_parser = parse_window)]
+        window: u64,
+        /// The label.
+        label: Option<String>,
         #[command(flatten)]
         format: Format,
     },
@@ -373,6 +386,11 @@ fn main() -> ExitCode {
             forget,
             format,
         } => control(&Request::Restore { dry_run, forget }, format.json),
+        Command::Label {
+            window,
+            label,
+            format,
+        } => control(&Request::Label { window, label }, format.json),
         Command::Reload { format } => control(&Request::Reload, format.json),
         Command::Stop { format } => control(&Request::Stop, format.json),
     }
@@ -1020,6 +1038,10 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Next => "next".to_owned(),
         Request::Demo => "demo".to_owned(),
         Request::Spawn(_) => "spawn".to_owned(),
+        Request::Label { window, label } => match label {
+            Some(l) => format!("label {window} {}", shell_word(l)),
+            None => format!("label {window}"),
+        },
         Request::Restore { dry_run, forget } => match (dry_run, forget) {
             (true, true) => "restore --forget --dry-run".to_owned(),
             (true, false) => "restore --dry-run".to_owned(),
@@ -1110,6 +1132,15 @@ fn control_code(e: &std::io::Error, elevated: bool) -> ErrorCode {
     } else {
         ErrorCode::Ipc
     }
+}
+
+/// A window handle as `daifuku label` takes it.
+fn parse_window(text: &str) -> Result<u64, String> {
+    let number = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    };
+    number.ok_or_else(|| format!("`{text}` is not a window handle"))
 }
 
 #[cfg(not(windows))]
@@ -1245,6 +1276,9 @@ mod tests {
             title: String::new(),
             state,
             for_seconds,
+            label: None,
+            fleet: None,
+            session_id: None,
         };
         let agents = [
             agent(1, AgentState::Done, 90),
@@ -1532,6 +1566,7 @@ mod tests {
             | Command::Demo { format }
             | Command::Spawn { format, .. }
             | Command::Restore { format, .. }
+            | Command::Label { format, .. }
             | Command::Status { format }
             | Command::Reload { format }
             | Command::Stop { format }
@@ -1615,6 +1650,7 @@ mod tests {
             &["demo", "--json"],
             &["spawn", "--json"],
             &["restore", "--json"],
+            &["label", "0x10", "site", "--json"],
             &["restore", "--dry-run", "--json"],
             &["spawn", "--dir", "x", "--label", "a b", "--json"],
             &["reload", "--json"],

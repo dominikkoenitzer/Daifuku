@@ -52,6 +52,14 @@ pub enum Request {
     Demo,
     /// Open one agent terminal on its own, in the folder it works in.
     Spawn(Spawn),
+    /// Give an agent's terminal a label, or take it away.
+    Label {
+        /// The terminal's window.
+        window: u64,
+        /// The label; `None` takes it away.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
     /// Open again the peers that were open when Windows last stopped, each
     /// resuming its last session in its own folder.
     Restore {
@@ -177,6 +185,10 @@ pub struct PeerStatus {
     pub label: Option<String>,
     /// The folder it was opened in.
     pub directory: String,
+    /// The last session its agent reported, which `daifuku restore`
+    /// resumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// One open fleet.
@@ -202,6 +214,16 @@ pub struct AgentWindow {
     /// How long it has shown that, in seconds.
     #[serde(default)]
     pub for_seconds: u64,
+    /// What to call it: the label it was given, else its fleet's name and
+    /// its number in the fleet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The fleet it is in, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet: Option<String>,
+    /// The session whose state it shows, as the agent names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Encodes one message as a line.
@@ -269,6 +291,14 @@ mod tests {
                 dry_run: true,
                 forget: false,
             },
+            Request::Label {
+                window: 5,
+                label: Some("site".into()),
+            },
+            Request::Label {
+                window: 5,
+                label: None,
+            },
             Request::Status,
             Request::Reload,
             Request::Stop,
@@ -295,11 +325,15 @@ mod tests {
                 title: "claude".into(),
                 state: AgentState::Waiting,
                 for_seconds: 73,
+                label: Some("agents 1".into()),
+                fleet: Some("agents".into()),
+                session_id: Some("abc".into()),
             }],
             peers: vec![PeerStatus {
                 window: 3,
                 label: Some("site".into()),
                 directory: r"C:\src\site".into(),
+                session_id: None,
             }],
         };
         for r in [
