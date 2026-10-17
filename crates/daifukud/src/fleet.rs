@@ -193,6 +193,7 @@ pub fn open(
                     .map(|c| c.replace("{n}", &n.to_string())),
                 title: Some(format!("{} {}", fleet.name, n)),
                 clean: fleet.no_profile,
+                group: group_for(fleet.priority)?,
             };
             match start_one(&wt, &launch, fleet.admin, elevated, record)? {
                 Some(w) => {
@@ -278,6 +279,7 @@ pub fn spawn(
         command,
         title: spawn.label.clone(),
         clean: base.no_profile,
+        group: group_for(spawn.priority.or(base.priority))?,
     };
     let wt = terminal::find().context("Windows Terminal is not installed")?;
     let mut known = OpenFleet::new("");
@@ -293,6 +295,25 @@ pub fn spawn(
     }
     window::focus(w);
     Ok(w)
+}
+
+/// The `daifuku.exe` a terminal at `priority` runs its shell in, next to
+/// this daemon, so an installed daemon only ever starts an installed binary.
+/// `None` for no priority.
+fn group_for(
+    priority: Option<daifuku_core::config::Priority>,
+) -> anyhow::Result<Option<(PathBuf, daifuku_core::config::Priority)>> {
+    let Some(priority) = priority else {
+        return Ok(None);
+    };
+    let exe = std::env::current_exe()
+        .ok()
+        .map(|d| d.with_file_name("daifuku.exe"))
+        .filter(|e| e.is_file())
+        .ok_or_else(|| {
+            anyhow!("a terminal with a priority runs in daifuku.exe, and there is none next to the daemon")
+        })?;
+    Ok(Some((exe, priority)))
 }
 
 /// A fleet of one with the monitor and area a peer asked for, the base
