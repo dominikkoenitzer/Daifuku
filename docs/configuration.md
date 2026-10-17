@@ -61,7 +61,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `admin` | `true` | Open the terminals as administrator. With `false`, Windows starts them as you through its Secondary Logon service (seclogon), which must not be disabled, and takes at most 1024 characters for their whole command line. The encoded `command` uses almost three of those for each of its own, so keep it under about 250 characters. |
 | `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
-| `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet ends up in front. Their own `with` is not followed (after 0.1.3). |
+| `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet opens last and asks for the focus. Their own `with` is not followed (after 0.1.3). |
 | `priority` | none | `"idle"`, `"below-normal"` or `"normal"`: each terminal runs in a group of its own at that priority. Everything started in it runs at it and cannot raise it, and all of it ends when the terminal closes, shells and watchers an agent left behind included. Left out, the terminals run as any other program (after 0.1.3). |
 
 Opening a fleet that is already open brings it back: terminals that were
@@ -126,7 +126,7 @@ it to stacked on the right, all four on one key:
 
 On their own, three terminals on a half come out two over one, so `shape`
 stacks them in three rows the width of the half. Ctrl+Alt+Return opens the
-crew and then the lead, which ends up in front; Ctrl+Alt+W opens or brings
+crew and then the lead, which asks for the focus; Ctrl+Alt+W opens or brings
 back the crew alone.
 
 The outer gap goes around the area as it goes around the monitor, so on the
