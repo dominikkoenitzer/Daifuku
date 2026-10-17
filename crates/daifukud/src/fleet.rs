@@ -777,6 +777,36 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_is_placed_only_when_it_asks_for_a_monitor_or_an_area() {
+        use daifuku_core::config::Area;
+        let base = Fleet {
+            area: Area::Left,
+            count: 4,
+            shape: Some(daifuku_core::grid::Shape {
+                columns: 2,
+                rows: 2,
+            }),
+            ..fleet_on(MonitorPick::Landscape)
+        };
+        let at = |monitor, area| Spawn {
+            monitor,
+            area,
+            ..Spawn::default()
+        };
+        assert!(placement(&base, &at(None, None)).is_none());
+        let one = placement(&base, &at(None, Some(Area::Right))).unwrap();
+        assert_eq!(
+            (one.count, one.monitor, one.area, one.shape),
+            (1, MonitorPick::Landscape, Area::Right, None)
+        );
+        let whole = placement(&base, &at(Some(MonitorPick::Primary), None)).unwrap();
+        assert_eq!(
+            (whole.monitor, whole.area),
+            (MonitorPick::Primary, Area::Full)
+        );
+    }
+
+    #[test]
     fn settling_fits_the_slots_to_the_count() {
         let fleet = fleet_on(MonitorPick::Portrait);
         let mut r = record("", vec![Some(1), None, Some(3)]);
