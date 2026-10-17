@@ -161,12 +161,13 @@ enum Command {
         format: Format,
     },
     /// Wait until an agent's terminal reaches a state: by default until its
-    /// agent stops working, done, waiting for you or failed.
+    /// agent's next turn ends, done, waiting for you or failed, or the agent
+    /// exits.
     Wait {
         /// The terminal: its window handle or its label.
         target: String,
         /// The state to wait for.
-        #[arg(long, value_enum, default_value = "stopped")]
+        #[arg(long, value_enum, default_value = "turn")]
         until: wait::Until,
         /// Give up after this many seconds.
         #[arg(long, default_value_t = 3600)]
@@ -1306,7 +1307,7 @@ fn wait_cmd(target: &str, until: wait::Until, timeout: u64, json: bool) -> ExitC
         }
     };
     let start = std::time::Instant::now();
-    let mut seen = None;
+    let mut seen = wait::Seen::default();
     loop {
         let status = match ask(&Request::Status, json) {
             Ok(Response::Status(s)) => s,
@@ -1334,12 +1335,13 @@ fn wait_cmd(target: &str, until: wait::Until, timeout: u64, json: bool) -> ExitC
             }
             ExitCode::SUCCESS
         };
-        match wait::step(&status, target, until, seen) {
+        match wait::step(&status, target, until, &mut seen) {
             Step::Reached(window, state, label, session_id) => {
                 return done(window, state.name(), label, session_id);
             }
             Step::Closed(window) => return done(window, "closed", None, None),
-            Step::Waiting(window) => seen = window.or(seen),
+            Step::Exited(window) => return done(window, "exited", None, None),
+            Step::Waiting => {}
             Step::Unknown => {
                 return fail(
                     ErrorCode::Daemon,
@@ -1353,7 +1355,8 @@ fn wait_cmd(target: &str, until: wait::Until, timeout: u64, json: bool) -> ExitC
                 &format!("`{target}` did not get there in {timeout} seconds"),
             );
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // Twice a second, so a short turn is seen working.
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }
 
