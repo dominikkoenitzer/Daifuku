@@ -33,13 +33,14 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku close --all --json` | `{"ok": true}` |
 | `daifuku demo --json` | `{"ok": true}` |
 | `daifuku spawn --json` | the terminal it opened, below |
+| `daifuku restore [--dry-run] [--forget] --json` | every peer it looked at, below |
 | `daifuku reload --json` | `{"ok": true}` |
 | `daifuku stop --json` | `{"ok": true}` |
 | `daifuku install --dry-run --json` | the plan, below |
 | `daifuku uninstall --dry-run --json` | the plan, below |
 
 A command that worked exits with 0. The commands that talk to the daemon
-(`status`, `open`, `snap`, `next`, `close`, `demo`, `spawn`, `reload` and `stop`) need
+(`status`, `open`, `snap`, `next`, `close`, `demo`, `spawn`, `restore`, `reload` and `stop`) need
 an administrator terminal, with `--json` too. That is on purpose: the
 daemon's control pipe can open administrator terminals, so only elevated
 processes may use it, `status` included
@@ -96,6 +97,27 @@ one out: `elevated` is then `false`, and `hotkeys` and `peers` are empty.
 
 `window` is the new terminal's window handle, as `status` lists it. `label`
 is left out when none was given.
+
+### `restore`
+
+```json
+{
+  "result": "restored",
+  "peers": [
+    { "label": "site", "directory": "C:\\src\\site", "session_id": "0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80", "window": 1050190 },
+    { "directory": "C:\\src\\gone", "session_id": "5d1e7a20-8c3b-4f6d-b1a9-0c2e4f6a8b13", "error": "there is no folder C:\\src\\gone" }
+  ]
+}
+```
+
+| Field | Type | |
+|---|---|---|
+| `peers` | array of objects | Every peer from before Windows restarted that has a session to resume. Empty when there is none. |
+| `peers[].label` | string | Its label; left out when it has none. |
+| `peers[].directory` | string | The folder it works in. |
+| `peers[].session_id` | string | The session it resumes, the last one seen in its terminal. |
+| `peers[].window` | integer | The terminal it opened in. Left out with `--dry-run` and `--forget`, and when it did not open. |
+| `peers[].error` | string | Why it did not open; it stays for the next `restore`. |
 
 ### `status` from a terminal that is not elevated
 
