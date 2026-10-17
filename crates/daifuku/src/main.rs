@@ -820,7 +820,7 @@ fn hook() {
     let message = HookMessage {
         window,
         event,
-        pid: Some(agent),
+        pid: agent,
     };
     let Ok(line) = to_line(&message) else {
         return;
