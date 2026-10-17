@@ -988,3 +988,88 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
 }
+
+#[test]
+fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    let dir = scratch().join("restore");
+    let work = dir.join("work");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let config = peer_config(&dir);
+    std::fs::write(
+        dir.join("peer-event.json"),
+        r#"{"session_id":"e2e-restore-1","hook_event_name":"Stop"}"#,
+    )
+    .unwrap();
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
+
+    let w = spawn(&["--dir", &work.display().to_string(), "--label", "keep"]);
+    wait_for("the peer's session", Duration::from_secs(30), || {
+        status()?
+            .peers
+            .into_iter()
+            .find(|p| p.window == w && p.session_id.as_deref() == Some("e2e-restore-1"))
+    });
+    let kept = std::fs::read_to_string(state.join("peers.json")).unwrap();
+    assert!(kept.contains("e2e-restore-1"), "{kept}");
+    steps += 1;
+
+    // A daemon that restarts while the peer is open, as after an install,
+    // finds it open again.
+    stop(&mut cleanup);
+    let (mut cleanup, back) = start_with(&config, Some(&state), &[]);
+    assert!(
+        back.peers
+            .iter()
+            .any(|p| p.window == w && p.label.as_deref() == Some("keep")),
+        "{:?}",
+        back.peers
+    );
+    steps += 1;
+
+    // As at a restart of Windows: the daemon stops, then its terminal goes.
+    stop(&mut cleanup);
+    assert!(window::close(w));
+    wait_for("the peer to close", Duration::from_secs(15), || {
+        (!window::exists(w)).then_some(())
+    });
+    let (mut cleanup, first) = start_with(&config, Some(&state), &[]);
+    assert!(first.peers.is_empty(), "{:?}", first.peers);
+    let listed = json(&run(&["restore", "--dry-run", "--json"]));
+    assert_eq!(
+        listed["peers"][0]["session_id"], "e2e-restore-1",
+        "{listed}"
+    );
+    assert!(listed["peers"][0]["window"].is_null(), "{listed}");
+    steps += 1;
+
+    let restored = json(&run(&["restore", "--json"]));
+    let again = restored["peers"][0]["window"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("restore opened nothing: {restored}"));
+    let (folder, args, _, _) = ran(&dir, "--resume-e2e-restore-1");
+    assert!(same_dir(&folder, &work), "{folder}");
+    assert_eq!(args, "--resume e2e-restore-1");
+    steps += 1;
+
+    // Nothing is left to open, and the reopened peer is open again.
+    let listed = json(&run(&["restore", "--dry-run", "--json"]));
+    assert_eq!(listed["peers"], serde_json::json!([]), "{listed}");
+    assert!(status().unwrap().peers.iter().any(|p| p.window == again));
+    steps += 1;
+
+    let _ = window::close(again);
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
