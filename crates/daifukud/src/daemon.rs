@@ -1545,6 +1545,68 @@ mod tests {
     }
 
     #[test]
+    fn kept_peers_come_back_open_dormant_or_not_at_all() {
+        let k = |resume: Option<&str>, window, boot| Kept {
+            spawn: Spawn {
+                directory: format!(r"C:\src\{window}").into(),
+                resume: resume.map(Into::into),
+                ..Spawn::default()
+            },
+            window,
+            boot,
+        };
+        let alive = |w| w == 1 || w == 2;
+        let (open, dormant) = sort_kept(
+            vec![
+                // Still open in this start of Windows, after an install.
+                k(Some("a"), 1, 1_000),
+                k(None, 2, 1_000),
+                // A window of the same number from before the restart.
+                k(Some("c"), 2, 500),
+                // Closed, or from before the restart, with or without a session.
+                k(Some("d"), 4, 1_000),
+                k(None, 5, 500),
+                // Dormant already.
+                k(Some("f"), 0, 0),
+            ],
+            1_000,
+            alive,
+        );
+        let windows: Vec<_> = open.iter().map(|(w, _)| *w).collect();
+        assert_eq!(windows, [1, 2]);
+        let sessions: Vec<_> = dormant
+            .iter()
+            .map(|s| s.resume.as_deref().unwrap())
+            .collect();
+        assert_eq!(sessions, ["c", "d", "f"]);
+    }
+
+    #[test]
+    fn a_dry_run_lists_the_dormant_peers_and_forget_drops_them() {
+        let mut d = daemon();
+        d.dormant = vec![Spawn {
+            directory: r"C:\src".into(),
+            resume: Some("abc".into()),
+            label: Some("site".into()),
+            ..Spawn::default()
+        }];
+        let Response::Restored { peers } = d.restore_peers(true, false) else {
+            panic!("not a restore answer");
+        };
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            (peers[0].session_id.as_str(), peers[0].window),
+            ("abc", None)
+        );
+        assert_eq!(d.dormant.len(), 1, "a dry run keeps them");
+        let Response::Restored { peers } = d.restore_peers(false, true) else {
+            panic!("not a restore answer");
+        };
+        assert_eq!(peers.len(), 1);
+        assert!(d.dormant.is_empty(), "forgotten");
+    }
+
+    #[test]
     fn a_fleet_opens_the_ones_it_names_first_and_ends_in_front() {
         let config = Config::from_json(
             r#"{"fleets":[
