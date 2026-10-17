@@ -1674,6 +1674,46 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_whose_process_ended_is_forgotten_and_the_others_stay() {
+        use daifuku_core::state::HookEvent;
+        let mut d = daemon();
+        let event = |session: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: "PermissionRequest".into(),
+            ..HookEvent::default()
+        };
+        // Two agents in one window, as two tabs: one process ends, one runs.
+        let mut ends = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit"])
+            .spawn()
+            .unwrap();
+        let mut runs = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        d.agents.apply(5, &event("gone"));
+        d.agents.apply(5, &event("here"));
+        d.watch_agent(ends.id(), "gone");
+        d.watch_agent(runs.id(), "here");
+        ends.wait().unwrap();
+        d.reap_agents();
+        assert_eq!(d.agents.session_state("gone"), None);
+        assert_eq!(d.agents.session_state("here"), Some(AgentState::Waiting));
+        assert_eq!(d.agents.window_state(5), Some(AgentState::Waiting));
+        assert_eq!(d.agent_processes.len(), 1);
+        let _ = runs.kill();
+        let _ = runs.wait();
+        d.reap_agents();
+        assert_eq!(
+            d.agents.window_state(5),
+            None,
+            "no agent left in the window"
+        );
+        assert!(d.agent_processes.is_empty());
+    }
+
+    #[test]
     fn a_terminal_is_called_by_its_label_else_by_its_fleet_and_number() {
         let mut d = daemon();
         let mut record = OpenFleet::new("crew");
