@@ -82,6 +82,7 @@ path to check another file first.
 | `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet; a second fleet needs its own, or `null` |
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
 | `with` | none | other fleets, by name, that open with this one |
+| `priority` | none | `idle`, `below-normal` or `normal`; the whole tree in each terminal runs at it and ends with it |
 
 Gaps are in `gaps`, the look of the borders in `border`, the global keys in
 `hotkeys`, and `"sound": true` plays Windows' Asterisk sound when an agent
@@ -143,6 +144,8 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku restore [--dry-run] [--forget]` | open the spawned terminals from before Windows restarted again |
 | `daifuku label <window> [label]` | give an agent's terminal a label |
 | `daifuku wait <window or label> [--until done]` | wait until an agent stops working, or reaches one state |
+| `daifuku group [--priority] -- <program>` | run a program and all it starts at one priority, ending together |
+| `daifuku heavy -- <program>` | run a build at idle priority, one at a time with the other heavy jobs |
 | `daifuku reload` | re-read the config |
 | `daifuku stop` | stop the daemon |
 | `daifuku config` | open the config file |
