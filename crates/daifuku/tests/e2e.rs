@@ -1246,22 +1246,17 @@ fn a_border_goes_when_its_agent_process_is_killed() {
         .args(["/F", "/T", "/PID", &console.id().to_string()])
         .output();
     let _ = console.wait();
-    let start = Instant::now();
-    while window::is_shown(border) && start.elapsed() < Duration::from_secs(15) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let gone = !window::is_shown(border);
-    if !gone {
-        expect_failure(
-            "the border goes when every process of a console window that stays open is killed",
-            gone,
-        );
-        let _ = window::close(agent.window);
-    }
+    wait_for(
+        "the border to go with the killed console",
+        Duration::from_secs(15),
+        || (!window::is_shown(border)).then_some(()),
+    );
+    let _ = window::close(agent.window);
     steps += 1;
 
-    // A Windows Terminal tab whose shell is killed: the tab stays, showing
-    // that the process ended, and nothing tells the daemon the agent is gone.
+    // A Windows Terminal tab whose shell is killed: the tab stays open,
+    // showing that the process ended, and the agent's process is all that
+    // says the agent is gone.
     if daifuku_win::terminal::find().is_some() {
         let w = spawn(&["--dir", &dir.display().to_string(), "--label", "killed"]);
         let (_, _, _, pid) = ran(&dir, "");
@@ -1276,25 +1271,19 @@ fn a_border_goes_when_its_agent_process_is_killed() {
         let _ = Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
-        let start = Instant::now();
-        while window::is_shown(border) && start.elapsed() < Duration::from_secs(15) {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        expect_failure(
-            "the border goes when the agent's shell in a Windows Terminal tab is killed",
-            !window::is_shown(border),
+        wait_for(
+            "the border to go with the killed shell",
+            Duration::from_secs(15),
+            || (!window::is_shown(border)).then_some(()),
         );
-        // Closing the window then takes the border down.
+        wait_for("the agent to be forgotten", Duration::from_secs(5), || {
+            status().filter(|s| s.agents.iter().all(|a| a.window != w))
+        });
+        steps += 1;
         let _ = window::close(w);
         wait_for("the tab to close", Duration::from_secs(15), || {
             (!window::exists(w)).then_some(())
         });
-        wait_for(
-            "the border to go with the window",
-            Duration::from_secs(5),
-            || (!window::is_shown(border)).then_some(()),
-        );
-        steps += 1;
     }
 
     stop(&mut cleanup);
