@@ -616,6 +616,57 @@ mod tests {
     }
 
     #[test]
+    fn a_fleet_s_cells_fill_only_its_area_of_the_monitor() {
+        use daifuku_core::config::Area;
+        use daifuku_core::grid::Grid;
+        let primary = MonitorInfo {
+            device: r"\\.\DISPLAY1".into(),
+            bounds: Rect::new(0, 0, 3840, 2160),
+            work: Rect::new(0, 0, 3840, 2112),
+            dpi: 144,
+            primary: true,
+        };
+        // Turned on its side, left of the primary monitor and higher up.
+        let side = MonitorInfo {
+            device: r"\\.\DISPLAY2".into(),
+            bounds: Rect::new(-1080, -600, 0, 1320),
+            work: Rect::new(-1080, -600, 0, 1272),
+            dpi: 96,
+            primary: false,
+        };
+        let monitors = [primary.clone(), side.clone()];
+        let config = Config::default();
+        for (pick, m) in [
+            (MonitorPick::Landscape, &primary),
+            (MonitorPick::Portrait, &side),
+        ] {
+            for area in [Area::Full, Area::Right, Area::Bottom] {
+                let fleet = Fleet {
+                    count: 3,
+                    monitor: pick.clone(),
+                    area,
+                    ..Fleet::default()
+                };
+                let (on, cells) = plan(&fleet, &config, None, &monitors, (0, 0)).unwrap();
+                assert_eq!(on.device, m.device);
+                let part = area.within(m.work);
+                assert_eq!(cells, Grid::plan(3, part, config.gaps, None), "{area:?}");
+                assert!(
+                    cells.iter().all(|c| part.contains(c.left, c.top)
+                        && c.right <= part.right
+                        && c.bottom <= part.bottom),
+                    "{area:?} on {}",
+                    m.device
+                );
+            }
+        }
+        // Full is the whole work area, as before areas existed.
+        let fleet = fleet_on(MonitorPick::Landscape);
+        let (_, cells) = plan(&fleet, &config, None, &monitors, (0, 0)).unwrap();
+        assert_eq!(cells, Grid::plan(6, primary.work, config.gaps, None));
+    }
+
+    #[test]
     fn settling_fits_the_slots_to_the_count() {
         let fleet = fleet_on(MonitorPick::Portrait);
         let mut r = record("", vec![Some(1), None, Some(3)]);
