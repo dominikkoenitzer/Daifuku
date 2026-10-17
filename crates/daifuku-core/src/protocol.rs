@@ -52,6 +52,16 @@ pub enum Request {
     Demo,
     /// Open one agent terminal on its own, in the folder it works in.
     Spawn(Spawn),
+    /// Open again the peers that were open when Windows last stopped, each
+    /// resuming its last session in its own folder.
+    Restore {
+        /// Only say which peers it would open.
+        #[serde(default)]
+        dry_run: bool,
+        /// Forget them instead.
+        #[serde(default)]
+        forget: bool,
+    },
     /// What the daemon knows.
     Status,
     /// Re-read the config file.
@@ -72,6 +82,11 @@ pub enum Response {
     },
     /// The answer to [`Request::Status`].
     Status(Status),
+    /// The answer to [`Request::Restore`]: every peer it looked at.
+    Restored {
+        /// Each peer and what became of it.
+        peers: Vec<RestoredPeer>,
+    },
     /// The answer to [`Request::Spawn`]: the terminal that opened.
     Spawned {
         /// Its window handle.
@@ -131,6 +146,25 @@ pub struct Status {
     /// Every terminal `daifuku spawn` opened that is still open.
     #[serde(default)]
     pub peers: Vec<PeerStatus>,
+}
+
+/// One peer `daifuku restore` looked at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoredPeer {
+    /// Its label, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Its folder.
+    pub directory: String,
+    /// The session it resumes.
+    pub session_id: String,
+    /// The terminal it opened in; left out on a dry run, after `forget` and
+    /// when it did not open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+    /// Why it did not open, when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One terminal `daifuku spawn` opened.
@@ -231,6 +265,10 @@ mod tests {
                 resume: Some("abc-1".into()),
                 ..Spawn::default()
             }),
+            Request::Restore {
+                dry_run: true,
+                forget: false,
+            },
             Request::Status,
             Request::Reload,
             Request::Stop,
@@ -276,6 +314,15 @@ mod tests {
             Response::Spawned {
                 window: 7,
                 label: None,
+            },
+            Response::Restored {
+                peers: vec![RestoredPeer {
+                    label: None,
+                    directory: r"C:\src".into(),
+                    session_id: "abc".into(),
+                    window: Some(4),
+                    error: None,
+                }],
             },
         ] {
             let line = to_line(&r).unwrap();

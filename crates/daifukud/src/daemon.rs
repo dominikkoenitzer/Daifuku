@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use daifuku_core::config::{Border, Config};
-use daifuku_core::peer::Spawn;
+use daifuku_core::peer::{self, Kept, Spawn};
 use daifuku_core::protocol::{
-    AgentWindow, FleetStatus, HookMessage, PeerStatus, Request, Response, Status,
+    AgentWindow, FleetStatus, HookMessage, PeerStatus, Request, Response, RestoredPeer, Status,
 };
 use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
@@ -66,6 +66,13 @@ struct Daemon {
     fleets: Vec<OpenFleet>,
     /// Every peer `daifuku spawn` opened that is still open.
     peers: Vec<Peer>,
+    /// Peers that were open when Windows last stopped, for `daifuku restore`
+    /// to open again.
+    dormant: Vec<Spawn>,
+    /// Where the peers are kept across a restart of Windows, `None` when
+    /// they are not: only the installed daemon keeps them, as with
+    /// [`Daemon::state_file`].
+    peers_file: Option<PathBuf>,
     borders: Option<BorderManager>,
     hotkeys: Hotkeys,
     elevated: bool,
@@ -132,6 +139,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     let mut d = Daemon::new(config_path, elevated, events::Hooks::install());
     if keeps_state {
         d.state_file = paths::data_dir().map(|p| p.join("state.json"));
+        d.peers_file = paths::data_dir().map(|p| p.join("peers.json"));
     }
     d.load_config();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
@@ -139,6 +147,7 @@ pub fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         .ok();
     d.hotkeys.register(&d.config);
     d.restore();
+    d.load_peers();
     d.refresh_borders();
     // SAFETY: a thread timer, killed before returning.
     let timer = unsafe { SetTimer(None, 0, SWEEP_MS, None) };
@@ -206,6 +215,8 @@ impl Daemon {
             agents: Agents::new(),
             fleets: Vec::new(),
             peers: Vec::new(),
+            dormant: Vec::new(),
+            peers_file: None,
             borders: None,
             hotkeys: Hotkeys::default(),
             elevated,
@@ -332,6 +343,7 @@ impl Daemon {
             Request::Next => self.next(),
             Request::Demo => self.demo(),
             Request::Spawn(spawn) => self.spawn(spawn),
+            Request::Restore { dry_run, forget } => self.restore_peers(*dry_run, *forget),
             Request::Status => Response::Status(self.status()),
             Request::Reload => {
                 self.load_config();
@@ -383,6 +395,7 @@ impl Daemon {
         // window that waits already changes nothing on screen, yet it is one
         // more agent that needs you.
         let session = &message.event.session_id;
+        self.note_peer_session(w, session);
         let before = self.agents.session_state(session);
         let changed = self.agents.apply(w, &message.event);
         let now = self.agents.session_state(session);
@@ -981,8 +994,125 @@ impl Daemon {
     /// opened again starts from its config, as a new one does.
     fn drop_closed_fleets(&mut self) {
         self.fleets.retain(|f| f.windows().next().is_some());
+        let before = self.peers.len();
         self.peers
             .retain(|p| window::exists(p.window) && window::class(p.window) == WINDOW_CLASS);
+        if self.peers.len() != before {
+            self.save_peers();
+        }
+    }
+
+    /// Notes `session` as the one peer window `w` runs now, so the peer
+    /// resumes it after a restart of Windows. Only a session id that can go
+    /// into a command line is kept: the hook pipe is open to every process
+    /// of the user.
+    fn note_peer_session(&mut self, w: u64, session: &str) {
+        if !peer::session_id_ok(session) {
+            return;
+        }
+        if let Some(p) = self.peers.iter_mut().find(|p| p.window == w)
+            && p.spawn.resume.as_deref() != Some(session)
+        {
+            p.spawn.resume = Some(session.to_owned());
+            self.save_peers();
+        }
+    }
+
+    /// Writes the peers, open and dormant, to [`Daemon::peers_file`]. Not
+    /// while the session ends: its terminals close then, and the file must
+    /// keep them for `daifuku restore`.
+    fn save_peers(&self) {
+        let Some(file) = &self.peers_file else {
+            return;
+        };
+        if process::session_ending() {
+            return;
+        }
+        let boot = saved::boot(wall_seconds(), clock::ticks());
+        let kept: Vec<Kept> = self
+            .peers
+            .iter()
+            .map(|p| Kept {
+                spawn: p.spawn.clone(),
+                window: p.window,
+                boot,
+            })
+            .chain(self.dormant.iter().map(|spawn| Kept {
+                spawn: spawn.clone(),
+                window: 0,
+                boot: 0,
+            }))
+            .collect();
+        let written = serde_json::to_string_pretty(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|text| replace_file(file, &text));
+        if let Err(e) = written {
+            tracing::warn!(path = %file.display(), error = %e, "could not save the peers");
+        }
+    }
+
+    /// Reads [`Daemon::peers_file`]: a peer whose terminal is still open,
+    /// as after an install, is open again; one from before Windows last
+    /// started is dormant, when it has a session to resume.
+    fn load_peers(&mut self) {
+        let Some(file) = &self.peers_file else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(file) else {
+            return;
+        };
+        let boot = saved::boot(wall_seconds(), clock::ticks());
+        let (open, dormant) = sort_kept(peer::read_kept(&text), boot, |w| {
+            window::exists(w) && window::class(w) == WINDOW_CLASS
+        });
+        self.peers = open
+            .into_iter()
+            .map(|(window, spawn)| Peer { window, spawn })
+            .collect();
+        self.dormant = dormant;
+        tracing::info!(
+            open = self.peers.len(),
+            dormant = self.dormant.len(),
+            "read the peers"
+        );
+    }
+
+    /// Opens the dormant peers again, each resuming its session in its own
+    /// folder; or with `dry_run` only lists them, and with `forget` drops
+    /// them.
+    fn restore_peers(&mut self, dry_run: bool, forget: bool) -> Response {
+        let listed = |s: &Spawn, window: Option<u64>, error: Option<String>| RestoredPeer {
+            label: s.label.clone(),
+            directory: s.directory.display().to_string(),
+            session_id: s.resume.clone().unwrap_or_default(),
+            window,
+            error,
+        };
+        if dry_run || forget {
+            let peers = self.dormant.iter().map(|s| listed(s, None, None)).collect();
+            if forget && !dry_run {
+                self.dormant.clear();
+                self.save_peers();
+            }
+            return Response::Restored { peers };
+        }
+        // Each stays dormant until it is open, so a daemon that stops part
+        // way loses none of the rest.
+        let mut peers = Vec::new();
+        for spawn in self.dormant.clone() {
+            match self.spawn(&spawn) {
+                Response::Spawned { window, .. } => {
+                    peers.push(listed(&spawn, Some(window), None));
+                    if let Some(i) = self.dormant.iter().position(|d| *d == spawn) {
+                        self.dormant.remove(i);
+                    }
+                }
+                Response::Error { message } => peers.push(listed(&spawn, None, Some(message))),
+                _ => {}
+            }
+        }
+        self.save_peers();
+        Response::Restored { peers }
     }
 
     /// Opens one peer as `spawn` asks, from the fleet it names or the first
@@ -1020,6 +1150,7 @@ impl Daemon {
                     window,
                     spawn: spawn.clone(),
                 });
+                self.save_peers();
                 self.refresh_borders();
                 Response::Spawned {
                     window,
@@ -1228,6 +1359,28 @@ fn wall_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// Sorts the peers read from the file into the ones still open, by their
+/// window, and the dormant ones. A peer is open when it was saved in this
+/// start of Windows, by the clock `boot` worked out now, and its window
+/// passes `alive`; else it is dormant when it has a session to resume, and
+/// dropped when it has none.
+fn sort_kept(
+    kept: Vec<Kept>,
+    boot: u64,
+    alive: impl Fn(u64) -> bool,
+) -> (Vec<(u64, Spawn)>, Vec<Spawn>) {
+    let mut open = Vec::new();
+    let mut dormant = Vec::new();
+    for k in kept {
+        if k.window != 0 && k.same_boot(boot) && alive(k.window) {
+            open.push((k.window, k.spawn));
+        } else if k.resumable() {
+            dormant.push(k.spawn);
+        }
+    }
+    (open, dormant)
 }
 
 /// Writes `text` next to `path` and renames it over `path`, so a daemon that
