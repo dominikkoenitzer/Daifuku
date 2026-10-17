@@ -16,9 +16,19 @@ use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
     PROCESS_QUERY_LIMITED_INFORMATION, SetThreadToken,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetShellWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_SHUTTINGDOWN,
+};
 
 use crate::wide::from_wide;
+
+/// Whether the session is signing out or Windows is shutting down, when
+/// windows close because everything stops, not because someone closed them.
+#[must_use]
+pub fn session_ending() -> bool {
+    // SAFETY: no pointers.
+    unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+}
 
 /// One process from a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
