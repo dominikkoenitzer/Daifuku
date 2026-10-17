@@ -66,7 +66,9 @@ border, play the chime when sound is on, list it in `daifuku status`, and put
 it in the next key's queue, so that key brings it to the front. The daemon
 never starts anything because of a hook, ignores session and subagent ids
 longer than 128 bytes, lets one session have at most 32 threads waiting, and
-stops tracking new sessions past 512.
+stops tracking new sessions past 512. A message may also name the agent's
+process. The daemon opens it only to wait for its end, which takes the
+session's border down; a forged one can do no more than end a border early.
 
 Both pipes are created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, allow exactly
 as many instances as the daemon creates, and keep them for the daemon's whole
