@@ -224,6 +224,25 @@ impl Instance {
     }
 }
 
+/// Waits until the other end has read everything written to `h`, or until
+/// `deadline`, whichever comes first. The wait itself has no limit, so it
+/// runs on a thread of its own that is left behind when time is up.
+fn wait_until_read(h: HANDLE, deadline: Instant) {
+    let raw_handle = h.0 as usize;
+    let (done, read) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // SAFETY: the handle stays open until the caller returns; once it
+        // is closed this returns with an error, which is ignored.
+        let _ = unsafe {
+            windows::Win32::Storage::FileSystem::FlushFileBuffers(HANDLE(
+                raw_handle as *mut core::ffi::c_void,
+            ))
+        };
+        let _ = done.send(());
+    });
+    let _ = read.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+}
+
 fn raw(handle: &OwnedHandle) -> HANDLE {
     HANDLE(handle.as_raw_handle())
 }
@@ -530,6 +549,10 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
     let event = event()?;
     write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
     if pipe == Pipe::Hook {
+        // Until the daemon has read the line, within the same short wait,
+        // so it finds this process and the agent it ran under still there
+        // and can tell who sent it.
+        wait_until_read(h, deadline);
         return Ok(None);
     }
     // The elevated daemon bounds how long it takes to answer.
