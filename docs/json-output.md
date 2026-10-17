@@ -111,10 +111,13 @@ is left out when none was given.
 ```
 
 `wait` takes a window handle, in decimal or as `0x` and hex, or a label in
-any case, and asks the daemon once a second. `--until` is `stopped` by
-default, which is anything but working; `done`, `waiting` and `failed` wait
-for that state alone. `state` is the state reached, or `"closed"` when the
-terminal closed first. Past `--timeout`, an hour by default, it fails with
+any case, and asks the daemon twice a second. `--until` is `turn` by
+default: the end of the agent's next turn, anything but working once it has
+been seen working, so a terminal that just opened and shows done before its
+first task does not count. `stopped` is anything but working now; `done`,
+`waiting` and `failed` wait for that state alone. `state` is the state
+reached, `"exited"` when the agent ended and its terminal stayed open, or
+`"closed"` when the terminal closed. Past `--timeout`, an hour by default, it fails with
 `timeout`; a name no terminal has fails at once with `daemon`.
 
 ### `restore`
