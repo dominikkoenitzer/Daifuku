@@ -406,7 +406,22 @@ impl Daemon {
                 None => "the config has no fleets".to_owned(),
             });
         };
-        self.open_fleet(&fleet)
+        let mut said = Vec::new();
+        let mut failed = Vec::new();
+        for other in &opening_order(&self.config, fleet) {
+            match self.open_fleet(other) {
+                Response::Error { message } => failed.push(message),
+                Response::Ok {
+                    message: Some(message),
+                } => said.push(message),
+                _ => {}
+            }
+        }
+        if failed.is_empty() {
+            Response::said(said.join("; "))
+        } else {
+            Response::error(failed.join("; "))
+        }
     }
 
     /// Opens a fleet, or brings back the one that is open. Its record goes
@@ -1061,6 +1076,23 @@ fn width_for(border: &Border, state: AgentState, high_contrast: bool) -> i32 {
         ..*border
     }
     .width_for(state)
+}
+
+/// The fleets opening `fleet` opens, in order: the ones its `with` names
+/// first, then `fleet` itself, so it ends up in front and its first terminal
+/// has the focus. The others' own `with` is not followed, and a name that is
+/// not in the config is skipped.
+fn opening_order(
+    config: &Config,
+    fleet: daifuku_core::config::Fleet,
+) -> Vec<daifuku_core::config::Fleet> {
+    let mut order: Vec<_> = fleet
+        .with
+        .iter()
+        .filter_map(|other| config.fleet(other).cloned())
+        .collect();
+    order.push(fleet);
+    order
 }
 
 /// The `daifuku.exe` in the folder this daemon runs from.
