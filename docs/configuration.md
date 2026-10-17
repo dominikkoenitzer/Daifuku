@@ -53,6 +53,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `name` | `"agents"` | What `daifuku open` takes. Unique, not case sensitive. |
 | `count` | `6` | 1 to 16 terminals. |
 | `monitor` | `"portrait"` | See below. |
+| `area` | `"full"` | The part of the monitor the fleet fills. See below (after 0.1.3). |
 | `shape` | automatic | `{ "columns": 3, "rows": 2 }` to force a grid. A shape too small for `count` grows rows. |
 | `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree (in releases after 0.1.1). A folder that does not exist falls back to your profile folder. An `"admin": false` fleet looks for the folder as you, so a drive you mapped or made with `subst` counts (after 0.1.1). |
 | `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it: PowerShell 7 when it is installed in Program Files, else Windows PowerShell. When no execution policy lets Windows PowerShell run scripts, it starts with `-ExecutionPolicy RemoteSigned` so a `claude` installed with npm runs; a policy you or your organisation set is kept. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
@@ -86,20 +87,41 @@ of the monitor they belong on now. After 0.1.1, only the fleets whose cells
 the change moved, or whose monitor's scale it changed, are put back, and a
 terminal you minimised or maximised stays that way.
 
+### `area`
+
+| Value | Fills |
+|---|---|
+| `"full"` | The whole monitor, apart from the taskbar. |
+| `"left"`, `"right"` | The left or the right half. |
+| `"top"`, `"bottom"` | The top or the bottom half. |
+| `{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }` | Any rectangle, in fractions of the monitor from its top left corner. All four keys are needed, each 0 to 1. `width` and `height` must be more than 0, and the rectangle must stay on the monitor. |
+
+Three terminals on the right half of a landscape monitor:
+
+```json
+{ "name": "side", "count": 3, "monitor": "landscape", "area": "right" }
+```
+
+The outer gap goes around the area as it goes around the monitor, so on the
+monitor's own edges the terminals line up with a fleet that fills all of it.
+Two fleets on the two halves have twice the outer gap between them.
+
 ### The grid
 
 Daifuku picks the shape whose cells come closest to a terminal's natural
 proportions, a little wider than tall, and avoids empty cells: six terminals
 on a portrait monitor are two by three, on a landscape one three by two, four
 are two by two. An incomplete last row shares the whole width, so there is
-never a hole in a corner. Cells are placed by the window's visible edge, so
-the gaps are exact.
+never a hole in a corner. On half of a landscape monitor two terminals are
+stacked and three are two over one; `"shape": { "columns": 1, "rows": 3 }`
+stacks three. Cells are placed by the window's visible edge, so the gaps are
+exact.
 
 ## `gaps`
 
 | Key | Default | |
 |---|---|---|
-| `outer` | `24` | Pixels between the outermost terminals and the edge of the screen, up to 1000. |
+| `outer` | `24` | Pixels between the outermost terminals and the edge of the screen, or of the fleet's `area`, up to 1000. |
 | `inner` | `20` | Pixels between two neighbouring terminals, up to 1000. |
 
 ## `border`
