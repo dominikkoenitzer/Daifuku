@@ -10,6 +10,14 @@
 - A fleet can open others with it: `"with": ["crew"]` opens or brings back
   the fleet `crew` whenever this one opens, first, so the one asked for ends
   up in front.
+- `daifuku spawn` opens one agent terminal on its own: `--dir` is the folder
+  it works in, this one when left out, `--label` its title, `--resume` a
+  session to resume, and `--fleet` the fleet whose command, profile and
+  administrator setting it takes, the first one by default. `--monitor` and
+  `--area` place it. `daifuku status` lists these terminals under `peers`.
+- Terminals start in the environment Windows builds for the user, with
+  `PATH` as last saved, and without any `CLAUDE` variable, so an agent that
+  starts another does not hand it its own session.
 
 ## 0.1.3, 2026-10-10
 
