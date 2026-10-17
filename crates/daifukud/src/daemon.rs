@@ -742,19 +742,7 @@ impl Daemon {
         let mut restack = false;
         for e in events {
             match e {
-                Event::Destroyed(w) => {
-                    let forgot = self.agents.forget_window(w);
-                    if forgot {
-                        self.note_states();
-                    }
-                    for f in &mut self.fleets {
-                        f.forget(w);
-                    }
-                    self.peers.retain(|p| p.window != w);
-                    self.labels.remove(&w);
-                    self.drop_closed_fleets();
-                    refresh |= forgot;
-                }
+                Event::Destroyed(w) => refresh |= self.window_destroyed(w),
                 Event::Moved(w) | Event::Visibility(w) => {
                     refresh |= self.agents.window_state(w).is_some();
                 }
@@ -1077,6 +1065,29 @@ impl Daemon {
         if self.peers.len() != before {
             self.save_peers();
         }
+        // A handle Windows hands to a new window must not bring a label.
+        self.labels.retain(|&w, _| window::exists(w));
+    }
+
+    /// Lets go of window `w`, which was destroyed: its agents, its cell in a
+    /// fleet, its peer, which leaves the peers file, and its label. Says
+    /// whether an agent was forgotten.
+    fn window_destroyed(&mut self, w: u64) -> bool {
+        let forgot = self.agents.forget_window(w);
+        if forgot {
+            self.note_states();
+        }
+        for f in &mut self.fleets {
+            f.forget(w);
+        }
+        let peers = self.peers.len();
+        self.peers.retain(|p| p.window != w);
+        if self.peers.len() != peers {
+            self.save_peers();
+        }
+        self.labels.remove(&w);
+        self.drop_closed_fleets();
+        forgot
     }
 
     /// What to call terminal `w`: the label `daifuku label` or `spawn` gave
@@ -1518,7 +1529,12 @@ fn replace_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".new");
     let new = path.with_file_name(name);
-    std::fs::write(&new, text)?;
+    // On the disk before the rename, so a power cut leaves the old file or
+    // the new one, never an empty one.
+    let mut f = std::fs::File::create(&new)?;
+    std::io::Write::write_all(&mut f, text.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
     std::fs::rename(&new, path)
 }
 
@@ -1799,6 +1815,34 @@ mod tests {
             .map(|s| s.resume.as_deref().unwrap())
             .collect();
         assert_eq!(sessions, ["c", "d", "f"]);
+    }
+
+    #[test]
+    fn a_peer_closed_while_the_daemon_runs_leaves_the_peers_file() {
+        let dir = std::env::temp_dir().join(format!("daifuku-peers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("peers.json");
+        let mut d = daemon();
+        d.peers_file = Some(file.clone());
+        // No window has this handle, so nothing about it is real but the
+        // record.
+        let w = 0x7fff_fff0;
+        d.peers.push(Peer {
+            window: w,
+            spawn: Spawn {
+                directory: r"C:\src".into(),
+                resume: Some("abc".into()),
+                ..Spawn::default()
+            },
+        });
+        d.save_peers();
+        assert_eq!(
+            peer::read_kept(&std::fs::read_to_string(&file).unwrap()).len(),
+            1
+        );
+        d.window_destroyed(w);
+        assert!(peer::read_kept(&std::fs::read_to_string(&file).unwrap()).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
