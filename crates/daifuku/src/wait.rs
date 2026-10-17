@@ -116,3 +116,101 @@ pub fn step(status: &Status, target: &str, until: Until, seen: Option<u64>) -> S
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daifuku_core::protocol::{AgentWindow, FleetStatus, PeerStatus};
+
+    fn agent(window: u64, state: AgentState, label: Option<&str>) -> AgentWindow {
+        AgentWindow {
+            window,
+            title: String::new(),
+            state,
+            for_seconds: 0,
+            label: label.map(Into::into),
+            fleet: None,
+            session_id: Some(format!("s{window}")),
+        }
+    }
+
+    fn status() -> Status {
+        Status {
+            agents: vec![
+                agent(10, AgentState::Working, Some("Site QA")),
+                agent(11, AgentState::Done, Some("agents 2")),
+                agent(12, AgentState::Waiting, None),
+            ],
+            peers: vec![PeerStatus {
+                window: 20,
+                label: Some("docs".into()),
+                directory: r"C:\src\docs".into(),
+                session_id: None,
+            }],
+            fleets: vec![FleetStatus {
+                name: "agents".into(),
+                monitor: String::new(),
+                windows: vec![11, 30],
+            }],
+            ..Status::default()
+        }
+    }
+
+    #[test]
+    fn a_window_is_typed_in_decimal_or_hex() {
+        assert_eq!(window_number("1050190"), Some(1_050_190));
+        assert_eq!(window_number("0x0010064e"), Some(0x0010_064e));
+        assert_eq!(window_number("0X1F"), Some(31));
+        assert_eq!(window_number("site"), None);
+        assert_eq!(window_number("0xzz"), None);
+    }
+
+    #[test]
+    fn stopped_is_anything_but_working() {
+        assert!(!Until::Stopped.reached(AgentState::Working));
+        for s in [AgentState::Done, AgentState::Waiting, AgentState::Failed] {
+            assert!(Until::Stopped.reached(s));
+        }
+        assert!(Until::Done.reached(AgentState::Done));
+        assert!(!Until::Done.reached(AgentState::Waiting));
+        assert!(Until::Failed.reached(AgentState::Failed));
+        assert!(Until::Waiting.reached(AgentState::Waiting));
+    }
+
+    #[test]
+    fn a_terminal_is_found_by_its_window_or_its_label_in_any_case() {
+        let s = status();
+        assert_eq!(
+            step(&s, "site qa", Until::Done, None),
+            Step::Waiting(Some(10))
+        );
+        assert_eq!(
+            step(&s, "AGENTS 2", Until::Done, None),
+            Step::Reached(
+                11,
+                AgentState::Done,
+                Some("agents 2".into()),
+                Some("s11".into())
+            )
+        );
+        assert_eq!(
+            step(&s, "12", Until::Stopped, None),
+            Step::Reached(12, AgentState::Waiting, None, Some("s12".into()))
+        );
+        assert_eq!(step(&s, "0xc", Until::Done, None), Step::Waiting(Some(12)));
+    }
+
+    #[test]
+    fn a_terminal_whose_agent_has_not_reported_yet_is_waited_for() {
+        let s = status();
+        assert_eq!(step(&s, "docs", Until::Done, None), Step::Waiting(Some(20)));
+        assert_eq!(step(&s, "30", Until::Done, None), Step::Waiting(Some(30)));
+    }
+
+    #[test]
+    fn a_terminal_that_was_there_and_went_is_closed_and_a_new_name_unknown() {
+        let s = status();
+        assert_eq!(step(&s, "Site QA", Until::Done, Some(99)), Step::Closed(99));
+        assert_eq!(step(&s, "nobody", Until::Done, None), Step::Unknown);
+        assert_eq!(step(&s, "77", Until::Done, None), Step::Unknown);
+    }
+}
