@@ -23,6 +23,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+use crate::geometry::Rect;
 use crate::grid::{Gaps, Shape};
 use crate::hotkey::Hotkey;
 use crate::state::AgentState;
@@ -262,6 +263,8 @@ pub struct Fleet {
     pub count: u32,
     /// Which monitor the fleet goes on.
     pub monitor: MonitorPick,
+    /// The part of the monitor the fleet fills, all of it by default.
+    pub area: Area,
     /// Force a grid shape instead of the automatic one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shape: Option<Shape>,
@@ -291,6 +294,7 @@ impl Default for Fleet {
             name: "agents".to_owned(),
             count: 6,
             monitor: MonitorPick::Portrait,
+            area: Area::Full,
             shape: None,
             directory: None,
             command: Some("claude".to_owned()),
@@ -403,6 +407,194 @@ fn any_case(words: &[&str]) -> String {
         })
         .collect();
     format!("^({})$", alternatives.join("|"))
+}
+
+/// The part of its monitor's work area a fleet fills: all of it, a half, or
+/// any rectangle given as fractions.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Area {
+    /// The whole work area.
+    #[default]
+    Full,
+    /// The left half.
+    Left,
+    /// The right half.
+    Right,
+    /// The top half.
+    Top,
+    /// The bottom half.
+    Bottom,
+    /// A rectangle of fractions of the work area.
+    Part(Part),
+}
+
+// JSON has no NaN, so every area a config file holds equals itself.
+impl Eq for Area {}
+
+/// A rectangle as fractions of a monitor's work area, from its top left
+/// corner: `x` and `width` of its width, `y` and `height` of its height.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Part {
+    /// The left edge, 0 to 1.
+    pub x: f64,
+    /// The top edge, 0 to 1.
+    pub y: f64,
+    /// The width, more than 0 and at most 1.
+    pub width: f64,
+    /// The height, more than 0 and at most 1.
+    pub height: f64,
+}
+
+impl Part {
+    /// How far past 1 an edge may add up to and still count as 1: fractions
+    /// that add up to 1 on paper can come out a hair over it in floating
+    /// point.
+    const SLACK: f64 = 1e-9;
+
+    /// What is wrong with it, if anything.
+    fn problem(&self) -> Option<String> {
+        let all = [self.x, self.y, self.width, self.height];
+        if all.iter().any(|v| !(0.0..=1.0).contains(v)) {
+            return Some(
+                "x, y, width and height must be 0 to 1, as fractions of the monitor".into(),
+            );
+        }
+        if self.width <= 0.0 || self.height <= 0.0 {
+            return Some("width and height must be more than 0".into());
+        }
+        if self.x + self.width > 1.0 + Self::SLACK {
+            return Some("x plus width is more than 1, past the right edge of the monitor".into());
+        }
+        if self.y + self.height > 1.0 + Self::SLACK {
+            return Some(
+                "y plus height is more than 1, past the bottom edge of the monitor".into(),
+            );
+        }
+        None
+    }
+}
+
+impl Area {
+    /// The area as fractions of the work area.
+    #[must_use]
+    pub const fn part(self) -> Part {
+        let (x, y, width, height) = match self {
+            Self::Full => (0.0, 0.0, 1.0, 1.0),
+            Self::Left => (0.0, 0.0, 0.5, 1.0),
+            Self::Right => (0.5, 0.0, 0.5, 1.0),
+            Self::Top => (0.0, 0.0, 1.0, 0.5),
+            Self::Bottom => (0.0, 0.5, 1.0, 0.5),
+            Self::Part(p) => return p,
+        };
+        Part {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// The rectangle the area covers of a monitor's work area `work`.
+    #[must_use]
+    pub fn within(self, work: Rect) -> Rect {
+        let p = self.part();
+        work.part(p.x, p.y, p.width, p.height)
+    }
+
+    /// The name it is written with, for the four halves and the whole.
+    const fn name(self) -> Option<&'static str> {
+        match self {
+            Self::Full => Some("full"),
+            Self::Left => Some("left"),
+            Self::Right => Some("right"),
+            Self::Top => Some("top"),
+            Self::Bottom => Some("bottom"),
+            Self::Part(_) => None,
+        }
+    }
+}
+
+/// Every name [`Area`] reads, in lower case.
+const AREA_WORDS: [&str; 5] = ["full", "left", "right", "top", "bottom"];
+
+impl FromStr for Area {
+    type Err = ConfigError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_ascii_lowercase().as_str() {
+            "full" => Self::Full,
+            "left" => Self::Left,
+            "right" => Self::Right,
+            "top" => Self::Top,
+            "bottom" => Self::Bottom,
+            _ => return Err(ConfigError::AreaName(s.to_owned())),
+        })
+    }
+}
+
+impl Serialize for Area {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.name() {
+            Some(name) => s.serialize_str(name),
+            None => self.part().serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Area {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Area;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(
+                    "full, left, right, top, bottom, or an object with x, y, width and height",
+                )
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Area, E> {
+                s.parse().map_err(E::custom)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Area, A::Error> {
+                Part::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(Area::Part)
+            }
+        }
+
+        d.deserialize_any(Visitor)
+    }
+}
+
+impl JsonSchema for Area {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Area".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let fraction = |description: &str| serde_json::json!({ "description": description, "type": "number", "minimum": 0, "maximum": 1 });
+        let size = |description: &str| serde_json::json!({ "description": description, "type": "number", "exclusiveMinimum": 0, "maximum": 1 });
+        schemars::json_schema!({
+            "description": "full, left, right, top, bottom, or a rectangle as fractions of the monitor's work area",
+            "anyOf": [
+                { "enum": AREA_WORDS },
+                { "type": "string", "pattern": any_case(&AREA_WORDS) },
+                {
+                    "type": "object",
+                    "properties": {
+                        "x": fraction("The left edge, 0 to 1."),
+                        "y": fraction("The top edge, 0 to 1."),
+                        "width": size("The width, more than 0 and at most 1."),
+                        "height": size("The height, more than 0 and at most 1.")
+                    },
+                    "required": ["x", "y", "width", "height"],
+                    "additionalProperties": false
+                }
+            ]
+        })
+    }
 }
 
 /// A hotkey as written in the file. Kept as text so the file round-trips as
@@ -528,6 +720,19 @@ pub enum ConfigError {
         /// As written.
         text: String,
     },
+    /// An area name that is not one of the halves or `full`.
+    #[error(
+        "`{0}` is not an area, write full, left, right, top, bottom or {{ \"x\", \"y\", \"width\", \"height\" }}"
+    )]
+    AreaName(String),
+    /// An area that does not fit on its monitor.
+    #[error("fleet `{name}`: area {reason}")]
+    Area {
+        /// The fleet.
+        name: String,
+        /// What is wrong with it.
+        reason: String,
+    },
     /// A hotkey that does not parse.
     #[error("hotkey `{text}`: {reason}")]
     Hotkey {
@@ -584,8 +789,8 @@ impl Config {
     }
 
     /// Checks everything a type cannot: unique names, counts in range, every
-    /// monitor a keyword or a device name, every hotkey parses and none is
-    /// bound twice.
+    /// monitor a keyword or a device name, every area on its monitor, every
+    /// hotkey parses and none is bound twice.
     ///
     /// # Errors
     ///
@@ -629,6 +834,12 @@ impl Config {
                 return Err(ConfigError::Monitor {
                     name: fleet.name.clone(),
                     text: text.clone(),
+                });
+            }
+            if let Some(reason) = fleet.area.part().problem() {
+                return Err(ConfigError::Area {
+                    name: fleet.name.clone(),
+                    reason,
                 });
             }
         }
