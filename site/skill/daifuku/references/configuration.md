@@ -53,6 +53,7 @@ To check a draft without the daemon, run `daifuku config validate <path>`; witho
 | `name` | string | `"agents"` | What `daifuku open <name>` takes. Unique, not case sensitive. |
 | `count` | integer | `6` | Terminals, 1 to 16. |
 | `monitor` | string | `"portrait"` | Which monitor, see below. |
+| `area` | string or object | `"full"` | The part of the monitor the fleet fills, see below. |
 | `shape` | object | automatic | Force a grid: `{ "columns": 3, "rows": 2 }`. A shape too small for `count` grows rows. |
 | `directory` | string | the user's profile folder | Where every terminal starts. `{n}` becomes the terminal's number, so `C:\src\site-{n}` gives each agent its own folder. A folder that does not exist falls back to the profile folder. |
 | `command` | string or `null` | `"claude"` | What each terminal runs, in a PowerShell that stays open after it (PowerShell 7 when installed in Program Files, else Windows PowerShell). `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
@@ -60,6 +61,8 @@ To check a draft without the daemon, run `daifuku config validate <path>`; witho
 | `admin` | bool | `true` | Open the terminals as administrator. The agent and every command it runs then run as administrator. With `false` they open as the user through the Secondary Logon service (seclogon), which must not be disabled; keep `command` under about 250 characters then. |
 | `no_profile` | bool | `false` | With a `command`, start PowerShell without the user's profile script. |
 | `hotkey` | string or `null` | `"ctrl + alt + return"` | The key that opens this fleet or brings it back. Every fleet without the key gets the default, so a second fleet needs its own key or `null`. |
+| `with` | list of strings | none | Other fleets, by name, that open with this one, before it, so this one opens last. Their own `with` is not followed. A name that is not a fleet, or the fleet itself, is an error. |
+| `priority` | string | none | `"idle"`, `"below-normal"` or `"normal"`: each terminal's shell runs in `daifuku group` at that priority, and its whole tree ends with the terminal. Needs a `command`. |
 
 Give a Claude Code fleet a `directory`: Claude Code does not remember trust for the profile folder, so a fleet started there asks for trust in every terminal, every time.
 
@@ -76,11 +79,21 @@ Give a Claude Code fleet a `directory`: Claude Code does not remember trust for 
 
 Every pick falls back to the primary monitor. Any other word is an error.
 
+### `area` values
+
+| Value | Fills |
+|---|---|
+| `"full"` | The monitor's whole work area, the screen without the taskbar. |
+| `"left"`, `"right"`, `"top"`, `"bottom"` | That half of it. |
+| `{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }` | A rectangle in fractions of the work area from its top left corner. All four keys are required, each 0 to 1; `width` and `height` more than 0; `x + width` and `y + height` at most 1. |
+
+Any other word, a missing key or a rectangle off the monitor is an error. The outer gap goes around the area. Three terminals on a half come out two over one; `"shape": { "columns": 1, "rows": 3 }` stacks them.
+
 ## `gaps`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `outer` | integer | `24` | Pixels between the outermost terminals and the screen edge, 0 to 1000. |
+| `outer` | integer | `24` | Pixels between the outermost terminals and the screen edge, or the edge of the fleet's `area`, 0 to 1000. |
 | `inner` | integer | `20` | Pixels between neighbouring terminals, 0 to 1000. |
 
 ## `border`

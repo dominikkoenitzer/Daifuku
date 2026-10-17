@@ -58,7 +58,7 @@ Every key with its default: [references/configuration.md](references/configurati
 
 ## Commands
 
-For scripts, `daifuku status --json` prints the agent states as JSON from an administrator terminal; from any other it prints the local status (`"result": "local_status"`, exit code 0), `daifuku config --path` prints the config path and `daifuku schema` prints the config schema. Other commands print text for people. Every command and its output: [references/commands.md](references/commands.md).
+For scripts, `daifuku status --json` prints the agent states as JSON from an administrator terminal; from any other it prints the local status (`"result": "local_status"`, exit code 0), `daifuku config --path` prints the config path and `daifuku schema` prints the config schema. Other commands print text for people. To hand work to other agents, open each with `daifuku spawn --dir <folder> --label <name>` and wait for its turn with `daifuku wait <name>`; run builds and test suites with `daifuku heavy -- <program>`. Every command and its output: [references/commands.md](references/commands.md).
 
 ## Answering "why is this border this colour"
 

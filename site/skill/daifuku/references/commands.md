@@ -19,6 +19,10 @@ daifuku: Daifuku is not running; `daifuku doctor` says why
 | `daifuku close --all` | Close every open fleet. |
 | `daifuku next` | Focus the agent that has waited longest, then the failed ones. |
 | `daifuku demo` | Open six scripted demo agents, to see Daifuku without a real agent. |
+| `daifuku spawn [--dir D] [--label L] [--resume ID] [--fleet F] [--monitor M] [--area A] [--priority P]` | Open one agent terminal on its own, from a fleet's command, profile and administrator setting (the first fleet by default), in `--dir` (this folder by default). Placed only with `--monitor` or `--area`. Its environment is the user's own, without any `CLAUDE*` variable. `--json` prints `{"result":"spawned","window":...,"label":...}`. |
+| `daifuku restore [--dry-run] [--forget]` | Open again the spawned terminals that were open when Windows last stopped, each with `--resume <its last session>` in its own folder. Never a session that runs already. `--dry-run` lists them, `--forget` drops them. |
+| `daifuku label <window> [label]` | Give a terminal a label, which `status` shows and `wait` takes; without a label, take it away. |
+| `daifuku wait <window or label> [--until turn\|stopped\|done\|waiting\|failed] [--timeout S]` | Wait for an agent. `turn`, the default, is the end of its next turn: working first, then anything else. Prints the state reached, `exited` when the agent ended in a terminal that stays open, `closed` when the terminal closed. Exit 1 with code `timeout` after `--timeout` seconds (3600). |
 | `daifuku status` | Show the daemon version, whether it runs elevated, the config in use, every hotkey (refused ones included), open fleets and every agent. |
 | `daifuku status --json` | The same as the raw JSON reply, for scripts. |
 | `daifuku reload` | Re-read the config file now. |
@@ -46,17 +50,28 @@ Agents are listed most urgent first: waiting, failed, working, done, and within 
 
 Prints one JSON object. Every character past ASCII is written as a `\u` escape, so it reads the same in any console code page. Check the exit code first: 0 only when the reply is not an error.
 
-Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`). An error reply is `{"result":"error","message":"..."}`.
+Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`, and when known `label`, `fleet`, `session_id`), `peers` (each `window`, `label`, `directory`, `session_id`: the terminals `spawn` opened). An error reply is `{"result":"error","message":"..."}`.
 
 ### `daifuku status` from a terminal that is not elevated
 
 One line, for example:
 
 ```text
-daifuku 0.1.3 installed, daemon running, logon task registered, config valid (C:\ProgramData\Daifuku\daifuku.json); fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status
+daifuku 0.2.0 installed, daemon running, logon task registered, config valid (C:\ProgramData\Daifuku\daifuku.json); fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status
 ```
 
 With `--json`, one object: `result` (`"local_status"`), `version` (this `daifuku`), `installed`, `installed_version` (null when not known), `daemon_running` (a `daifukud.exe` process in this session), `logon_task`, `config` (the path), `config_exists`, `config_valid` (true when there is no file: the defaults apply), `config_error` (null when valid), `live_state` (always `"needs_administrator_terminal"`) and `message`. Exit code 0 whatever it says. For fleets, agents and hotkeys, give the user the command to run in an administrator terminal.
+
+## Process groups
+
+These need no daemon and work in any terminal.
+
+| Command | Does |
+|---|---|
+| `daifuku group [--priority idle\|below-normal\|normal] -- <program> [args]` | Run a program in a job object: it and everything it starts run at that priority, cannot raise it, and end when the program ends or its terminal closes. Ctrl+C reaches the program. The exit code is the program's. |
+| `daifuku heavy [--priority P] -- <program> [args]` | The same at idle priority by default, and one at a time with every other heavy job in the session. Run builds and test suites this way: `daifuku heavy -- cargo test`. A heavy job started inside one runs at once. |
+
+The program is an executable found on `PATH`, not a PowerShell line; for one, run `daifuku heavy -- pwsh -NoProfile -Command "..."`.
 
 ## Setup commands
 
