@@ -700,6 +700,9 @@ fn only_the_demos_waiting_agents_count() {
         title: String::new(),
         state,
         for_seconds: 0,
+        label: None,
+        fleet: None,
+        session_id: None,
     };
     let s = Status {
         fleets: vec![FleetStatus {
