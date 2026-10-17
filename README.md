@@ -139,6 +139,7 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku close --all` | close every open fleet |
 | `daifuku status` | fleets, agents and hotkeys |
 | `daifuku demo` | six scripted agents |
+| `daifuku spawn [--dir] [--label] [--resume]` | one agent terminal on its own, in a folder |
 | `daifuku reload` | re-read the config |
 | `daifuku stop` | stop the daemon |
 | `daifuku config` | open the config file |
