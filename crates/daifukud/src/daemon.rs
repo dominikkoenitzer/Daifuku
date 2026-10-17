@@ -1318,6 +1318,28 @@ mod tests {
     }
 
     #[test]
+    fn a_fleet_opens_the_ones_it_names_first_and_ends_in_front() {
+        let config = Config::from_json(
+            r#"{"fleets":[
+                {"name":"lead","count":1,"with":["crew","Notes"]},
+                {"name":"crew","count":3,"with":["lead"],"hotkey":null},
+                {"name":"notes","count":1,"hotkey":null}
+            ]}"#,
+        )
+        .unwrap();
+        let names = |name| {
+            opening_order(&config, config.fleet(name).unwrap().clone())
+                .into_iter()
+                .map(|f| f.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("lead"), ["crew", "notes", "lead"]);
+        // Each names the other: one level only, so neither opens twice.
+        assert_eq!(names("crew"), ["lead", "crew"]);
+        assert_eq!(names("notes"), ["notes"]);
+    }
+
+    #[test]
     fn the_demo_command_keeps_any_path_whole() {
         assert_eq!(
             demo_command(std::path::Path::new(
