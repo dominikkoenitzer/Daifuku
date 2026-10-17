@@ -20,6 +20,7 @@
 //! - [`environment`]: the machine `PATH`, and telling programs it changed.
 //! - [`elevate`]: asking Windows for administrator rights, and the console.
 //! - [`apps`]: the entry Settings > Apps lists Daifuku by.
+//! - [`user_env`]: the environment a terminal starts with.
 
 #![cfg(windows)]
 
@@ -36,6 +37,7 @@ pub mod pipe;
 pub mod process;
 pub mod setup;
 pub mod terminal;
+pub mod user_env;
 pub mod window;
 
 mod wide;
