@@ -10,6 +10,7 @@
 //! - [`task`] is the scheduled task that starts the daemon at logon.
 //! - [`saved`] is what the daemon keeps across a restart.
 //! - [`path_list`] adds a folder to a `PATH` value and takes it out again.
+//! - [`peer`] is one agent terminal opened on its own with `daifuku spawn`.
 
 pub mod agents;
 pub mod config;
@@ -18,6 +19,7 @@ pub mod grid;
 pub mod hotkey;
 pub mod monitor;
 pub mod path_list;
+pub mod peer;
 pub mod protocol;
 pub mod saved;
 pub mod state;
