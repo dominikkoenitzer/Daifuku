@@ -15,6 +15,11 @@
   session to resume, and `--fleet` the fleet whose command, profile and
   administrator setting it takes, the first one by default. `--monitor` and
   `--area` place it. `daifuku status` lists these terminals under `peers`.
+- The daemon keeps the terminals `daifuku spawn` opened in
+  `ProgramData\Daifuku\peers.json`, with the last session each one ran.
+  After Windows restarts, `daifuku restore` opens them again, each resuming
+  its session in its own folder; `--dry-run` lists them and `--forget` drops
+  them.
 - Terminals start in the environment Windows builds for the user, with
   `PATH` as last saved, and without any `CLAUDE` variable, so an agent that
   starts another does not hand it its own session.
