@@ -455,7 +455,7 @@
       ]
     },
     "Priority": {
-      "description": "The processor priority a group of processes runs at.",
+      "description": "The processor priority a group of processes runs at. Read in any case,\nas `monitor` and `area` are.",
       "oneOf": [
         {
           "description": "Only when nothing else wants the processor, as a build should run\nwhile someone plays or listens to music.",
