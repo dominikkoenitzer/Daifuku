@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use daifuku_core::config::{Border, Config};
-use daifuku_core::peer::{self, Kept, Spawn};
+use daifuku_core::peer::{self, Kept, KeptFile, Spawn};
 use daifuku_core::protocol::{
     AgentWindow, FleetStatus, HookMessage, PeerStatus, Request, Response, RestoredPeer, Status,
 };
@@ -78,6 +78,8 @@ struct Daemon {
     /// Peers that were open when Windows last stopped, for `daifuku restore`
     /// to open again.
     dormant: Vec<Spawn>,
+    /// The start of Windows the dormant peers were open in.
+    dormant_boot: u64,
     /// Where the peers are kept across a restart of Windows, `None` when
     /// they are not: only the installed daemon keeps them, as with
     /// [`Daemon::state_file`].
@@ -230,6 +232,7 @@ impl Daemon {
             agent_processes: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
             dormant: Vec::new(),
+            dormant_boot: 0,
             peers_file: None,
             borders: None,
             hotkeys: Hotkeys::default(),
@@ -1160,20 +1163,24 @@ impl Daemon {
             return;
         }
         let boot = saved::boot(wall_seconds(), clock::ticks());
-        let kept: Vec<Kept> = self
-            .peers
-            .iter()
-            .map(|p| Kept {
-                spawn: p.spawn.clone(),
-                window: p.window,
-                boot,
-            })
-            .chain(self.dormant.iter().map(|spawn| Kept {
-                spawn: spawn.clone(),
-                window: 0,
-                boot: 0,
-            }))
-            .collect();
+        let kept = KeptFile {
+            boot,
+            dormant_boot: self.dormant_boot,
+            peers: self
+                .peers
+                .iter()
+                .map(|p| Kept {
+                    spawn: p.spawn.clone(),
+                    window: p.window,
+                    boot,
+                })
+                .chain(self.dormant.iter().map(|spawn| Kept {
+                    spawn: spawn.clone(),
+                    window: 0,
+                    boot: self.dormant_boot,
+                }))
+                .collect(),
+        };
         let written = serde_json::to_string_pretty(&kept)
             .map_err(std::io::Error::other)
             .and_then(|text| replace_file(file, &text));
@@ -1183,8 +1190,11 @@ impl Daemon {
     }
 
     /// Reads [`Daemon::peers_file`]: a peer whose terminal is still open,
-    /// as after an install, is open again; one from before Windows last
-    /// started is dormant, when it has a session to resume.
+    /// as after an install, is open again; one that was open when Windows
+    /// last stopped is dormant, when it has a session to resume. Peers from
+    /// any start of Windows before that are dropped, as is one closed in this
+    /// start of Windows while no daemon ran. Written back at once, so the
+    /// file says which start of Windows its dormant peers are from.
     fn load_peers(&mut self) {
         let Some(file) = &self.peers_file else {
             return;
@@ -1193,7 +1203,7 @@ impl Daemon {
             return;
         };
         let boot = saved::boot(wall_seconds(), clock::ticks());
-        let (open, dormant) = sort_kept(peer::read_kept(&text), boot, |w| {
+        let (open, dormant, dormant_boot) = sort_kept(peer::read_kept(&text), boot, |w| {
             window::exists(w) && window::class(w) == WINDOW_CLASS
         });
         self.peers = open
@@ -1201,6 +1211,8 @@ impl Daemon {
             .map(|(window, spawn)| Peer { window, spawn })
             .collect();
         self.dormant = dormant;
+        self.dormant_boot = dormant_boot;
+        self.save_peers();
         tracing::info!(
             open = self.peers.len(),
             dormant = self.dormant.len(),
@@ -1231,6 +1243,11 @@ impl Daemon {
         // way loses none of the rest.
         let mut peers = Vec::new();
         for spawn in self.dormant.clone() {
+            if let Some(running) = self.running(&spawn) {
+                peers.push(listed(&spawn, None, Some(running)));
+                self.dormant.retain(|d| *d != spawn);
+                continue;
+            }
             match self.spawn(&spawn) {
                 Response::Spawned { window, .. } => {
                     peers.push(listed(&spawn, Some(window), None));
@@ -1244,6 +1261,18 @@ impl Daemon {
         }
         self.save_peers();
         Response::Restored { peers }
+    }
+
+    /// Why a dormant peer must not be opened again, when its session runs
+    /// already: in an open peer, or anywhere an agent reports it from. Two
+    /// agents on one session would write over each other.
+    fn running(&self, spawn: &Spawn) -> Option<String> {
+        let id = spawn.resume.as_deref()?;
+        let open = self
+            .peers
+            .iter()
+            .any(|p| p.spawn.resume.as_deref() == Some(id));
+        (open || self.agents.knows(id)).then(|| format!("session {id} runs already"))
     }
 
     /// Opens one peer as `spawn` asks, from the fleet it names or the first
@@ -1501,26 +1530,37 @@ fn shown_session(agents: &Agents<u64>, w: u64, state: AgentState) -> Option<Stri
         .map(|(id, _, _)| id.to_owned())
 }
 
-/// Sorts the peers read from the file into the ones still open, by their
-/// window, and the dormant ones. A peer is open when it was saved in this
-/// start of Windows, by the clock `boot` worked out now, and its window
-/// passes `alive`; else it is dormant when it has a session to resume, and
-/// dropped when it has none.
+/// Sorts the peers read from `file` into the ones still open, by their
+/// window, and the dormant ones, with the start of Windows those are from.
+///
+/// A peer is open when it was saved in this start of Windows, by the clock
+/// `boot` worked out now, and its window passes `alive`. Dormant are the
+/// peers of one start of Windows only: the one the file was written in when
+/// that was an earlier one, as after a restart; else, as after a daemon
+/// restart, the one its dormant peers were already from. Of those, only the
+/// ones with a session to resume. Everything else is dropped: older peers,
+/// and peers of this start of Windows whose terminal closed.
 fn sort_kept(
-    kept: Vec<Kept>,
+    file: KeptFile,
     boot: u64,
     alive: impl Fn(u64) -> bool,
-) -> (Vec<(u64, Spawn)>, Vec<Spawn>) {
+) -> (Vec<(u64, Spawn)>, Vec<Spawn>, u64) {
+    let now = |b: u64| b.abs_diff(boot) <= 10;
+    let from = if now(file.boot) {
+        file.dormant_boot
+    } else {
+        file.boot
+    };
     let mut open = Vec::new();
     let mut dormant = Vec::new();
-    for k in kept {
+    for k in file.peers {
         if k.window != 0 && k.same_boot(boot) && alive(k.window) {
             open.push((k.window, k.spawn));
-        } else if k.resumable() {
+        } else if from != 0 && !now(k.boot) && k.same_boot(from) && k.resumable() {
             dormant.push(k.spawn);
         }
     }
-    (open, dormant)
+    (open, dormant, from)
 }
 
 /// Writes `text` next to `path` and renames it over `path`, so a daemon that
@@ -1780,9 +1820,8 @@ mod tests {
         assert_eq!(shown_session(&agents, 6, state), None);
     }
 
-    #[test]
-    fn kept_peers_come_back_open_dormant_or_not_at_all() {
-        let k = |resume: Option<&str>, window, boot| Kept {
+    fn kept(resume: Option<&str>, window: u64, boot: u64) -> Kept {
+        Kept {
             spawn: Spawn {
                 directory: format!(r"C:\src\{window}").into(),
                 resume: resume.map(Into::into),
@@ -1790,31 +1829,94 @@ mod tests {
             },
             window,
             boot,
-        };
-        let alive = |w| w == 1 || w == 2;
-        let (open, dormant) = sort_kept(
-            vec![
-                // Still open in this start of Windows, after an install.
-                k(Some("a"), 1, 1_000),
-                k(None, 2, 1_000),
-                // A window of the same number from before the restart.
-                k(Some("c"), 2, 500),
-                // Closed, or from before the restart, with or without a session.
-                k(Some("d"), 4, 1_000),
-                k(None, 5, 500),
-                // Dormant already.
-                k(Some("f"), 0, 0),
-            ],
-            1_000,
-            alive,
-        );
-        let windows: Vec<_> = open.iter().map(|(w, _)| *w).collect();
-        assert_eq!(windows, [1, 2]);
-        let sessions: Vec<_> = dormant
+        }
+    }
+
+    fn sessions(spawns: &[Spawn]) -> Vec<&str> {
+        spawns
             .iter()
             .map(|s| s.resume.as_deref().unwrap())
-            .collect();
-        assert_eq!(sessions, ["c", "d", "f"]);
+            .collect()
+    }
+
+    #[test]
+    fn after_a_restart_only_the_peers_open_when_windows_stopped_come_back() {
+        // Written in the start of Windows at 500, before this one at 1000.
+        let file = KeptFile {
+            boot: 500,
+            dormant_boot: 300,
+            peers: vec![
+                // Open when Windows stopped, with and without a session.
+                kept(Some("a"), 2, 500),
+                kept(None, 3, 500),
+                // Dormant since the start before that and never restored.
+                kept(Some("old"), 0, 300),
+            ],
+        };
+        // A window of the same number exists now, but in another start.
+        let (open, dormant, from) = sort_kept(file, 1_000, |w| w == 2);
+        assert!(open.is_empty());
+        assert_eq!(sessions(&dormant), ["a"]);
+        assert_eq!(from, 500);
+    }
+
+    #[test]
+    fn after_a_daemon_restart_open_peers_stay_open_and_dormant_ones_dormant() {
+        // Written earlier in this start of Windows, as before an install.
+        let file = KeptFile {
+            boot: 1_000,
+            dormant_boot: 500,
+            peers: vec![
+                kept(Some("a"), 1, 1_000),
+                kept(None, 2, 1_000),
+                // Closed while no daemon ran: gone, not dormant.
+                kept(Some("closed"), 4, 1_000),
+                kept(Some("b"), 0, 500),
+                kept(Some("older"), 0, 300),
+            ],
+        };
+        let (open, dormant, from) = sort_kept(file, 1_005, |w| w == 1 || w == 2);
+        let windows: Vec<_> = open.iter().map(|(w, _)| *w).collect();
+        assert_eq!(windows, [1, 2]);
+        assert_eq!(sessions(&dormant), ["b"]);
+        assert_eq!(from, 500);
+        // A file of nothing but open peers has nothing dormant.
+        let (_, dormant, _) = sort_kept(
+            KeptFile {
+                boot: 1_000,
+                dormant_boot: 0,
+                peers: vec![kept(Some("x"), 0, 0)],
+            },
+            1_000,
+            |_| false,
+        );
+        assert!(dormant.is_empty());
+    }
+
+    #[test]
+    fn a_session_that_runs_already_is_not_restored() {
+        use daifuku_core::state::HookEvent;
+        let mut d = daemon();
+        let spawn = |id: &str| Spawn {
+            directory: r"C:\no\such\folder".into(),
+            resume: Some(id.into()),
+            ..Spawn::default()
+        };
+        d.peers.push(Peer {
+            window: 9,
+            spawn: spawn("in-a-peer"),
+        });
+        d.agents.apply(
+            5,
+            &HookEvent {
+                session_id: "elsewhere".into(),
+                hook_event_name: "Stop".into(),
+                ..HookEvent::default()
+            },
+        );
+        assert!(d.running(&spawn("in-a-peer")).is_some());
+        assert!(d.running(&spawn("elsewhere")).is_some());
+        assert_eq!(d.running(&spawn("free")), None);
     }
 
     #[test]
@@ -1837,11 +1939,17 @@ mod tests {
         });
         d.save_peers();
         assert_eq!(
-            peer::read_kept(&std::fs::read_to_string(&file).unwrap()).len(),
+            peer::read_kept(&std::fs::read_to_string(&file).unwrap())
+                .peers
+                .len(),
             1
         );
         d.window_destroyed(w);
-        assert!(peer::read_kept(&std::fs::read_to_string(&file).unwrap()).is_empty());
+        assert!(
+            peer::read_kept(&std::fs::read_to_string(&file).unwrap())
+                .peers
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
