@@ -863,6 +863,32 @@ fn same_dir(a: impl AsRef<Path>, b: impl AsRef<Path>) -> bool {
     }
 }
 
+/// Narrower than this, Windows Terminal widens a window it is given. A
+/// runner's screen is 1024 pixels wide, so half of it is narrower.
+const TERMINAL_MIN_WIDTH: i32 = 480;
+
+/// Asserts that terminal `w` is in `cell`: exactly, or for a cell narrower
+/// than Windows Terminal allows, exactly at its left, top and bottom edges
+/// and at most a few pixels wider, which is then listed as known.
+fn assert_in_cell(w: u64, cell: daifuku_core::Rect, what: &str) {
+    let frame = window::frame(w).unwrap_or_else(|| panic!("{what} has no frame"));
+    if frame == cell {
+        return;
+    }
+    let widened = cell.width() < TERMINAL_MIN_WIDTH
+        && (frame.left, frame.top, frame.bottom) == (cell.left, cell.top, cell.bottom)
+        && (0..=12).contains(&(frame.width() - cell.width()));
+    assert!(widened, "{what} is at {frame:?}, not in its cell {cell:?}");
+    expect_failure(
+        &format!(
+            "{what} fills its cell exactly; Windows Terminal widened the {} px cell to {} px",
+            cell.width(),
+            frame.width()
+        ),
+        false,
+    );
+}
+
 /// The JSON `daifuku` printed.
 fn json(text: &str) -> serde_json::Value {
     serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("{e}: {text}"))
@@ -924,11 +950,7 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
     let monitors = daifuku_win::monitor::monitors();
     let primary = monitors.iter().find(|m| m.primary).unwrap();
     let cell = Grid::plan(1, Area::Right.within(primary.work), Gaps::default(), None)[0];
-    assert_eq!(
-        window::frame(w),
-        Some(cell),
-        "the peer is not in the right half"
-    );
+    assert_in_cell(w, cell, "the peer in the right half");
     steps += 1;
 
     // Its agent reported from inside it: waiting, labelled, with its session.
@@ -1147,9 +1169,9 @@ fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
             rows: 3,
         }),
     );
-    assert_eq!(window::frame(lead[0]), Some(left[0]), "the lead");
+    assert_in_cell(lead[0], left[0], "the lead");
     for (i, &w) in crew.iter().enumerate() {
-        assert_eq!(window::frame(w), Some(right[i]), "crew terminal {}", i + 1);
+        assert_in_cell(w, right[i], &format!("crew terminal {}", i + 1));
     }
     // Three rows the width of the half, not two over one.
     assert!(
