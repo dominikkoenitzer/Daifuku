@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::peer::Spawn;
 use crate::state::{AgentState, HookEvent};
 
 /// One hook call, as the hook sends it to the daemon.
@@ -49,6 +50,8 @@ pub enum Request {
     Next,
     /// Open six scripted demo agents, to see Daifuku without a real one.
     Demo,
+    /// Open one agent terminal on its own, in the folder it works in.
+    Spawn(Spawn),
     /// What the daemon knows.
     Status,
     /// Re-read the config file.
@@ -69,6 +72,14 @@ pub enum Response {
     },
     /// The answer to [`Request::Status`].
     Status(Status),
+    /// The answer to [`Request::Spawn`]: the terminal that opened.
+    Spawned {
+        /// Its window handle.
+        window: u64,
+        /// Its label, when it was given one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
     /// It did not work.
     Error {
         /// Why, for a person.
@@ -117,6 +128,21 @@ pub struct Status {
     pub fleets: Vec<FleetStatus>,
     /// Every window an agent has reported from.
     pub agents: Vec<AgentWindow>,
+    /// Every terminal `daifuku spawn` opened that is still open.
+    #[serde(default)]
+    pub peers: Vec<PeerStatus>,
+}
+
+/// One terminal `daifuku spawn` opened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerStatus {
+    /// Its window.
+    pub window: u64,
+    /// Its label, when it was given one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The folder it was opened in.
+    pub directory: String,
 }
 
 /// One open fleet.
@@ -199,6 +225,12 @@ mod tests {
             Request::CloseAll,
             Request::Next,
             Request::Demo,
+            Request::Spawn(Spawn {
+                directory: r"C:\src\site".into(),
+                label: Some("site".into()),
+                resume: Some("abc-1".into()),
+                ..Spawn::default()
+            }),
             Request::Status,
             Request::Reload,
             Request::Stop,
@@ -226,16 +258,49 @@ mod tests {
                 state: AgentState::Waiting,
                 for_seconds: 73,
             }],
+            peers: vec![PeerStatus {
+                window: 3,
+                label: Some("site".into()),
+                directory: r"C:\src\site".into(),
+            }],
         };
         for r in [
             Response::ok(),
             Response::said("opened 6"),
             Response::error("no fleet"),
             Response::Status(status),
+            Response::Spawned {
+                window: 7,
+                label: Some("site".into()),
+            },
+            Response::Spawned {
+                window: 7,
+                label: None,
+            },
         ] {
             let line = to_line(&r).unwrap();
             assert_eq!(from_line::<Response>(&line).unwrap(), r);
         }
+    }
+
+    #[test]
+    fn a_spawn_is_one_flat_object() {
+        let r = Request::Spawn(Spawn {
+            directory: r"C:\src".into(),
+            ..Spawn::default()
+        });
+        assert_eq!(
+            to_line(&r).unwrap(),
+            "{\"command\":\"spawn\",\"directory\":\"C:\\\\src\"}\n"
+        );
+        assert_eq!(
+            to_line(&Response::Spawned {
+                window: 9,
+                label: None
+            })
+            .unwrap(),
+            "{\"result\":\"spawned\",\"window\":9}\n"
+        );
     }
 
     #[test]

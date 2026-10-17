@@ -9,6 +9,7 @@ use daifuku_core::Rect;
 use daifuku_core::config::{Config, Fleet, MonitorPick};
 use daifuku_core::grid::Grid;
 use daifuku_core::monitor::{MonitorInfo, pick};
+use daifuku_core::peer::{Spawn, resume_command};
 use daifuku_win::terminal::{self, Launch, WINDOW_CLASS};
 use daifuku_win::{monitor, window};
 
@@ -193,22 +194,7 @@ pub fn open(
                 title: Some(format!("{} {}", fleet.name, n)),
                 clean: fleet.no_profile,
             };
-            let before = terminals();
-            let r = if fleet.admin || !elevated {
-                terminal::open(&wt, &launch)
-            } else {
-                terminal::open_unelevated(&wt, &launch)
-            };
-            r.with_context(|| format!("could not start Windows Terminal at {}", wt.display()))?;
-            // The launch above runs at the daemon's level for an
-            // administrator fleet and as the desktop user otherwise, which
-            // is elevated too when UAC is turned off.
-            let expect = if fleet.admin || !elevated {
-                elevated
-            } else {
-                daifuku_win::process::shell_is_elevated().unwrap_or(false)
-            };
-            match wait_for_new(&before, record, expect) {
+            match start_one(&wt, &launch, fleet.admin, elevated, record)? {
                 Some(w) => {
                     record.slots[slot] = Some(w);
                     window::place(w, cells[slot]);
@@ -229,6 +215,100 @@ pub fn open(
         !empty.is_empty(),
         record.windows().count(),
     )
+}
+
+/// Starts one terminal for `launch`, as administrator when `admin` is set
+/// and as the desktop user otherwise, and waits for its window: a new one
+/// that is in none of `record`'s slots.
+fn start_one(
+    wt: &Path,
+    launch: &Launch,
+    admin: bool,
+    elevated: bool,
+    record: &OpenFleet,
+) -> anyhow::Result<Option<u64>> {
+    let before = terminals();
+    let r = if admin || !elevated {
+        terminal::open(wt, launch)
+    } else {
+        terminal::open_unelevated(wt, launch)
+    };
+    r.with_context(|| format!("could not start Windows Terminal at {}", wt.display()))?;
+    // The launch above runs at the daemon's level for an administrator
+    // terminal and as the desktop user otherwise, which is elevated too when
+    // UAC is turned off.
+    let expect = if admin || !elevated {
+        elevated
+    } else {
+        daifuku_win::process::shell_is_elevated().unwrap_or(false)
+    };
+    Ok(wait_for_new(&before, record, expect))
+}
+
+/// Opens one peer as `spawn` asks, from the fleet `base`: its command,
+/// profile and administrator setting. `taken` are the terminals Daifuku
+/// already knows, none of which can be the new one. Returns its window.
+pub fn spawn(
+    base: &Fleet,
+    config: &Config,
+    spawn: &Spawn,
+    elevated: bool,
+    taken: &[u64],
+) -> anyhow::Result<u64> {
+    if base.admin && !elevated {
+        return Err(anyhow!(
+            "fleet `{}` opens administrator terminals, and this daemon is not elevated. Install Daifuku, or set \"admin\": false",
+            base.name
+        ));
+    }
+    let command = base.command.as_ref().map(|c| c.replace("{n}", "1"));
+    let command = match (command, &spawn.resume) {
+        (Some(c), Some(id)) => Some(resume_command(&c, id)),
+        (None, Some(_)) => {
+            return Err(anyhow!(
+                "fleet `{}` opens a plain shell, which has no session to resume",
+                base.name
+            ));
+        }
+        (c, None) => c,
+    };
+    let launch = Launch {
+        directory: Some(spawn.directory.clone()),
+        profile: base.profile.clone(),
+        command,
+        title: spawn.label.clone(),
+        clean: base.no_profile,
+    };
+    let wt = terminal::find().context("Windows Terminal is not installed")?;
+    let mut known = OpenFleet::new("");
+    known.slots = taken.iter().copied().map(Some).collect();
+    let w = start_one(&wt, &launch, base.admin, elevated, &known)?.ok_or_else(|| {
+        anyhow!("Windows Terminal did not show the terminal in time; close it if it shows up late")
+    })?;
+    if let Some(fleet) = placement(base, spawn)
+        && let Ok((_, cells)) = cells(&fleet, config, None)
+        && let Some(&cell) = cells.first()
+    {
+        window::place(w, cell);
+    }
+    window::focus(w);
+    Ok(w)
+}
+
+/// A fleet of one with the monitor and area a peer asked for, the base
+/// fleet's monitor when it named only an area, or `None` when it asked for
+/// neither and stays where Windows Terminal opens it.
+fn placement(base: &Fleet, spawn: &Spawn) -> Option<Fleet> {
+    spawn.placed().then(|| Fleet {
+        count: 1,
+        monitor: spawn
+            .monitor
+            .clone()
+            .unwrap_or_else(|| base.monitor.clone()),
+        area: spawn.area.unwrap_or_default(),
+        shape: None,
+        ..base.clone()
+    })
 }
 
 /// What opening fleet `name` with `cells` cells on `device` says, with
