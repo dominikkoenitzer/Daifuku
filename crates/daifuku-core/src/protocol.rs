@@ -24,6 +24,11 @@ pub struct HookMessage {
     pub window: u64,
     /// What the agent reported.
     pub event: HookEvent,
+    /// The agent's own process: the one whose console led the hook to the
+    /// window. When it ends, so has the agent, even when its terminal stays
+    /// open. Left out by hooks older than this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 /// A command for the daemon.
@@ -393,8 +398,12 @@ mod tests {
                 hook_event_name: "PermissionRequest".into(),
                 ..HookEvent::default()
             },
+            pid: Some(4242),
         };
         assert_eq!(from_line::<HookMessage>(&to_line(&m).unwrap()).unwrap(), m);
+        // A hook from before the field still reads.
+        let old = r#"{"window":5,"event":{"session_id":"s","hook_event_name":"Stop"}}"#;
+        assert_eq!(from_line::<HookMessage>(old).unwrap().pid, None);
     }
 
     #[test]
