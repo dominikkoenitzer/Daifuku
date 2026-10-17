@@ -184,6 +184,100 @@ mod tests {
     }
 
     #[test]
+    fn halves_of_an_even_rect_split_it_in_the_middle() {
+        let work = Rect::new(0, 0, 3840, 2112);
+        assert_eq!(work.part(0.0, 0.0, 0.5, 1.0), Rect::new(0, 0, 1920, 2112));
+        assert_eq!(
+            work.part(0.5, 0.0, 0.5, 1.0),
+            Rect::new(1920, 0, 3840, 2112)
+        );
+        assert_eq!(work.part(0.0, 0.0, 1.0, 0.5), Rect::new(0, 0, 3840, 1056));
+        assert_eq!(
+            work.part(0.0, 0.5, 1.0, 0.5),
+            Rect::new(0, 1056, 3840, 2112)
+        );
+        assert_eq!(work.part(0.0, 0.0, 1.0, 1.0), work);
+    }
+
+    #[test]
+    fn halves_of_an_odd_rect_share_their_edge_and_every_pixel() {
+        let work = Rect::new(0, 0, 3841, 2111);
+        let (left, right) = (work.part(0.0, 0.0, 0.5, 1.0), work.part(0.5, 0.0, 0.5, 1.0));
+        assert_eq!(left.right, right.left);
+        assert_eq!((left.left, right.right), (0, 3841));
+        assert!((left.width() - right.width()).abs() <= 1);
+        let (top, bottom) = (work.part(0.0, 0.0, 1.0, 0.5), work.part(0.0, 0.5, 1.0, 0.5));
+        assert_eq!(top.bottom, bottom.top);
+        assert_eq!((top.top, bottom.bottom), (0, 2111));
+        assert!((top.height() - bottom.height()).abs() <= 1);
+    }
+
+    #[test]
+    fn a_part_rounds_the_same_wherever_the_rect_sits() {
+        // A portrait monitor left of and above the primary one has negative
+        // coordinates. Its parts must be the same pixels as at the origin,
+        // only moved.
+        let at_origin = Rect::new(0, 0, 1081, 1873);
+        for (dx, dy) in [(-1081, -233), (-1081, 0), (0, -1873), (3840, 120)] {
+            let moved = Rect::new(dx, dy, dx + 1081, dy + 1873);
+            for (x, y, w, h) in [
+                (0.0, 0.0, 0.5, 1.0),
+                (0.5, 0.0, 0.5, 1.0),
+                (0.0, 0.5, 1.0, 0.5),
+                (1.0 / 3.0, 0.25, 1.0 / 3.0, 0.5),
+                (0.2, 0.7, 0.8, 0.3),
+            ] {
+                let a = at_origin.part(x, y, w, h);
+                let b = moved.part(x, y, w, h);
+                assert_eq!(
+                    b,
+                    Rect::new(a.left + dx, a.top + dy, a.right + dx, a.bottom + dy),
+                    "{x} {y} {w} {h} at {dx},{dy}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_portrait_monitor_left_of_the_primary_splits_into_its_halves() {
+        let work = Rect::new(-1080, -240, 0, 1632);
+        assert_eq!(
+            work.part(0.0, 0.0, 1.0, 0.5),
+            Rect::new(-1080, -240, 0, 696)
+        );
+        assert_eq!(
+            work.part(0.0, 0.5, 1.0, 0.5),
+            Rect::new(-1080, 696, 0, 1632)
+        );
+        assert_eq!(
+            work.part(0.5, 0.0, 0.5, 1.0),
+            Rect::new(-540, -240, 0, 1632)
+        );
+    }
+
+    #[test]
+    fn thirds_tile_without_a_gap_or_an_overlap() {
+        let work = Rect::new(-7, 3, 1000, 500);
+        let third = 1.0 / 3.0;
+        let parts: Vec<_> = (0..3)
+            .map(|i| work.part(f64::from(i) * third, 0.0, third, 1.0))
+            .collect();
+        assert_eq!(parts[0].left, work.left);
+        assert_eq!(parts[0].right, parts[1].left);
+        assert_eq!(parts[1].right, parts[2].left);
+        assert_eq!(parts[2].right, work.right);
+    }
+
+    #[test]
+    fn a_part_too_thin_for_a_pixel_still_gets_one_inside_the_rect() {
+        let work = Rect::new(100, 100, 200, 200);
+        assert_eq!(work.part(0.0, 0.0, 0.001, 1.0).width(), 1);
+        let last = work.part(0.999, 0.999, 0.001, 0.001);
+        assert_eq!(last, Rect::new(199, 199, 200, 200));
+        assert!(Rect::new(5, 5, 5, 5).part(0.0, 0.0, 0.5, 0.5).is_empty());
+    }
+
+    #[test]
     fn contains_excludes_the_far_edges() {
         let r = Rect::new(0, 0, 10, 10);
         assert!(r.contains(0, 0));
