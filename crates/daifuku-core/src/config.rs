@@ -291,6 +291,11 @@ pub struct Fleet {
     /// followed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub with: Vec<String>,
+    /// Run each terminal in a group of its own at this priority: everything
+    /// it starts runs at it and ends when the terminal closes. Left out, the
+    /// terminals run as any other program.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
 }
 
 impl Default for Fleet {
@@ -308,6 +313,7 @@ impl Default for Fleet {
             no_profile: false,
             hotkey: Some(HotkeyText::new("ctrl + alt + return")),
             with: Vec::new(),
+            priority: None,
         }
     }
 }
@@ -413,6 +419,46 @@ fn any_case(words: &[&str]) -> String {
         })
         .collect();
     format!("^({})$", alternatives.join("|"))
+}
+
+/// The processor priority a group of processes runs at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Priority {
+    /// Only when nothing else wants the processor, as a build should run
+    /// while someone plays or listens to music.
+    Idle,
+    /// Below other programs.
+    BelowNormal,
+    /// As any other program.
+    Normal,
+}
+
+impl Priority {
+    /// The name it is written with.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::BelowNormal => "below-normal",
+            Self::Normal => "normal",
+        }
+    }
+}
+
+impl FromStr for Priority {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "idle" => Ok(Self::Idle),
+            "below-normal" => Ok(Self::BelowNormal),
+            "normal" => Ok(Self::Normal),
+            _ => Err(format!(
+                "`{s}` is not a priority, write idle, below-normal or normal"
+            )),
+        }
+    }
 }
 
 /// The part of its monitor's work area a fleet fills: all of it, a half, or

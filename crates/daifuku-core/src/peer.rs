@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Area, MonitorPick};
+use crate::config::{Area, MonitorPick, Priority};
 
 /// The longest label a peer takes, in characters.
 pub const MAX_LABEL: usize = 200;
@@ -44,6 +44,9 @@ pub struct Spawn {
     /// The part of the monitor it fills.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area: Option<Area>,
+    /// The priority its group runs at, instead of its fleet's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
 }
 
 impl Spawn {

@@ -341,6 +341,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "priority": {
+          "description": "Run each terminal in a group of its own at this priority: everything\nit starts runs at it and ends when the terminal closes. Left out, the\nterminals run as any other program.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Priority"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -441,6 +452,26 @@
       "required": [
         "columns",
         "rows"
+      ]
+    },
+    "Priority": {
+      "description": "The processor priority a group of processes runs at.",
+      "oneOf": [
+        {
+          "description": "Only when nothing else wants the processor, as a build should run\nwhile someone plays or listens to music.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "Below other programs.",
+          "type": "string",
+          "const": "below-normal"
+        },
+        {
+          "description": "As any other program.",
+          "type": "string",
+          "const": "normal"
+        }
       ]
     }
   }
