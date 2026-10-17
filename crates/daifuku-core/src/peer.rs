@@ -55,10 +55,12 @@ impl Spawn {
     #[must_use]
     pub fn problem(&self) -> Option<String> {
         if let Some(label) = &self.label
-            && (label.chars().count() > MAX_LABEL || label.chars().any(char::is_control))
+            && (label.chars().count() > MAX_LABEL
+                || label.chars().any(char::is_control)
+                || label.starts_with('-'))
         {
             return Some(format!(
-                "a label is at most {MAX_LABEL} characters, without line breaks or tabs"
+                "a label is at most {MAX_LABEL} characters, without line breaks or tabs, and does not start with -"
             ));
         }
         if let Some(id) = &self.resume
@@ -288,6 +290,12 @@ mod tests {
             ..ok.clone()
         };
         assert!(tab.problem().unwrap().contains("label"));
+        // Windows Terminal would read it as an option.
+        let dash = Spawn {
+            label: Some("--help".into()),
+            ..ok.clone()
+        };
+        assert!(dash.problem().unwrap().contains("label"));
         let long = Spawn {
             label: Some("x".repeat(MAX_LABEL + 1)),
             ..ok.clone()

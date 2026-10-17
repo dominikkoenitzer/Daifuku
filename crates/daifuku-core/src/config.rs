@@ -421,8 +421,9 @@ fn any_case(words: &[&str]) -> String {
     format!("^({})$", alternatives.join("|"))
 }
 
-/// The processor priority a group of processes runs at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// The processor priority a group of processes runs at. Read in any case,
+/// as `monitor` and `area` are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Priority {
     /// Only when nothing else wants the processor, as a build should run
@@ -443,6 +444,14 @@ impl Priority {
             Self::BelowNormal => "below-normal",
             Self::Normal => "normal",
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for Priority {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -785,6 +794,12 @@ pub enum ConfigError {
         /// What is wrong with it.
         reason: String,
     },
+    /// A priority for a fleet whose terminals run no command, so no group
+    /// to run at it.
+    #[error(
+        "fleet `{0}` has a priority but no command: a priority applies to the command a terminal runs"
+    )]
+    PriorityWithoutCommand(String),
     /// A hotkey that does not parse.
     #[error("hotkey `{text}`: {reason}")]
     Hotkey {
@@ -899,6 +914,9 @@ impl Config {
                     name: fleet.name.clone(),
                     text: text.clone(),
                 });
+            }
+            if fleet.priority.is_some() && fleet.command.is_none() {
+                return Err(ConfigError::PriorityWithoutCommand(fleet.name.clone()));
             }
             if let Some(reason) = fleet.area.part().problem() {
                 return Err(ConfigError::Area {
@@ -1476,6 +1494,15 @@ mod tests {
             );
         }
         assert_eq!("IDLE".parse::<Priority>(), Ok(Priority::Idle));
+        let any_case = Config::from_json(r#"{"fleets":[{"name":"a","priority":"Below-Normal"}]}"#);
+        assert_eq!(
+            any_case.unwrap().fleets[0].priority,
+            Some(Priority::BelowNormal)
+        );
+        assert_eq!(
+            Config::from_json(r#"{"fleets":[{"name":"a","priority":"idle","command":null}]}"#),
+            Err(ConfigError::PriorityWithoutCommand("a".into()))
+        );
         assert!("low".parse::<Priority>().is_err());
         assert!(matches!(
             Config::from_json(r#"{"fleets":[{"name":"a","priority":"low"}]}"#),
