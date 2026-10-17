@@ -32,13 +32,14 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku close [fleet] --json` | `{"ok": true}` |
 | `daifuku close --all --json` | `{"ok": true}` |
 | `daifuku demo --json` | `{"ok": true}` |
+| `daifuku spawn --json` | the terminal it opened, below |
 | `daifuku reload --json` | `{"ok": true}` |
 | `daifuku stop --json` | `{"ok": true}` |
 | `daifuku install --dry-run --json` | the plan, below |
 | `daifuku uninstall --dry-run --json` | the plan, below |
 
 A command that worked exits with 0. The commands that talk to the daemon
-(`status`, `open`, `snap`, `next`, `close`, `demo`, `reload` and `stop`) need
+(`status`, `open`, `snap`, `next`, `close`, `demo`, `spawn`, `reload` and `stop`) need
 an administrator terminal, with `--json` too. That is on purpose: the
 daemon's control pipe can open administrator terminals, so only elevated
 processes may use it, `status` included
@@ -79,9 +80,22 @@ runs.
 | `agents[].title` | string | Its title now. |
 | `agents[].state` | string | `"waiting"`, `"failed"`, `"working"` or `"done"`. |
 | `agents[].for_seconds` | integer | How long it has been in that state. |
+| `peers` | array of objects | Every terminal `daifuku spawn` opened that is still open. |
+| `peers[].window` | integer | Its window handle. |
+| `peers[].label` | string | Its label; left out when it has none. |
+| `peers[].directory` | string | The folder it was opened in. |
 
 Every field is there even when the daemon is an older version that leaves
-one out: `elevated` is then `false` and `hotkeys` empty.
+one out: `elevated` is then `false`, and `hotkeys` and `peers` are empty.
+
+### `spawn`
+
+```json
+{ "result": "spawned", "window": 1050190, "label": "site" }
+```
+
+`window` is the new terminal's window handle, as `status` lists it. `label`
+is left out when none was given.
 
 ### `status` from a terminal that is not elevated
 
