@@ -97,7 +97,12 @@ fn plan(
     cursor: (i32, i32),
 ) -> Option<(MonitorInfo, Vec<Rect>)> {
     let m = pick(monitors, &home_pick(&fleet.monitor, stay_on), cursor)?.clone();
-    let cells = Grid::plan(fleet.count, m.work, config.gaps, fleet.shape);
+    let cells = Grid::plan(
+        fleet.count,
+        fleet.area.within(m.work),
+        config.gaps,
+        fleet.shape,
+    );
     Some((m, cells))
 }
 
