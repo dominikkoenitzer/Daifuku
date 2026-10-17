@@ -18,7 +18,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOT, GW_OWNER, GetAncestor, GetWindow, IsWindowVisible,
 };
 
-use crate::process::{Proc, ancestors};
+use crate::process::{Proc, ancestors, started};
+
+/// How much earlier than the hook the agent's process has to have started,
+/// in 100 ns ticks: a second. A shell an agent starts for one hook is
+/// younger; the agent itself has been running since before it ran hooks.
+const AGENT_LEAD: u64 = 10_000_000;
 use crate::{raw, window};
 
 /// The top-level window of the terminal `pid` runs in, looking at `pid`
@@ -35,18 +40,45 @@ pub fn terminal_window(pid: u32) -> Option<u64> {
     terminal_window_of(pid).map(|(w, _)| w)
 }
 
-/// [`terminal_window`], and the process that led to it: the first in the
-/// chain whose console is the terminal's, which is the agent itself, or the
-/// one that owns the window.
+/// [`terminal_window`], and the agent's own process in it, which ends when
+/// the agent does: of the ancestors of `pid` on the terminal's console, the
+/// nearest that started a second or more before `pid`, so neither the hook
+/// nor a shell started just to run it; else the farthest one, the shell the
+/// terminal started. For a terminal found by the window's owner, the owner.
+/// The process is `None` when only the hook itself is on the console.
 #[must_use]
-pub fn terminal_window_of(pid: u32) -> Option<(u64, u32)> {
+pub fn terminal_window_of(pid: u32) -> Option<(u64, Option<u32>)> {
     let chain = ancestors(pid);
-    for p in &chain {
-        if let Some(w) = via_console(p.pid) {
-            return Some((w, p.pid));
-        }
-    }
-    via_owning_process(&chain)
+    let Some((at, w)) = chain
+        .iter()
+        .enumerate()
+        .find_map(|(i, p)| via_console(p.pid).map(|w| (i, w)))
+    else {
+        return via_owning_process(&chain).map(|(w, owner)| (w, Some(owner)));
+    };
+    let on_console: Vec<(u32, Option<u64>)> = chain
+        .iter()
+        .enumerate()
+        .skip(at.max(1))
+        .filter(|&(i, p)| i == at || via_console(p.pid) == Some(w))
+        .map(|(_, p)| (p.pid, started(p.pid)))
+        .collect();
+    Some((w, agent_of(&on_console, started(pid))))
+}
+
+/// Of `on_console`, processes nearest first with when each started, the
+/// agent's: the nearest that started at least [`AGENT_LEAD`] before `hook`
+/// did, else the farthest.
+fn agent_of(on_console: &[(u32, Option<u64>)], hook: Option<u64>) -> Option<u32> {
+    let old_enough = |start: Option<u64>| match (start, hook) {
+        (Some(s), Some(h)) => s.saturating_add(AGENT_LEAD) <= h,
+        _ => false,
+    };
+    on_console
+        .iter()
+        .find(|&&(_, start)| old_enough(start))
+        .or_else(|| on_console.last())
+        .map(|&(pid, _)| pid)
 }
 
 /// The terminal window of the console this process is attached to, without
@@ -150,3 +182,4 @@ fn via_owning_process(chain: &[Proc]) -> Option<(u64, u32)> {
     }
     None
 }
+

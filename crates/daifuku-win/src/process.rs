@@ -131,8 +131,9 @@ pub fn ancestors(pid: u32) -> Vec<Proc> {
     chain
 }
 
-/// When a process started, as a FILETIME tick count.
-fn started(pid: u32) -> Option<u64> {
+/// When a process started, as a FILETIME tick count: 100 ns since 1601.
+#[must_use]
+pub fn started(pid: u32) -> Option<u64> {
     // SAFETY: the handle is closed before returning; the FILETIMEs are
     // valid out pointers.
     unsafe {
