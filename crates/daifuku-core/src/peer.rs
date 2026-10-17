@@ -110,3 +110,103 @@ pub fn without_agent_variables(
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_claude_variable_goes_and_nothing_else() {
+        let vars = [
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "Claude_Config_Dir",
+            "claude_x",
+            "PATH",
+            "USERPROFILE",
+            "MY_CLAUDE",
+            "CLAUD",
+            "ANTHROPIC_API_KEY",
+        ]
+        .map(|n| (OsString::from(n), OsString::from("1")));
+        let kept: Vec<_> = without_agent_variables(vars)
+            .into_iter()
+            .map(|(n, _)| n.into_string().unwrap())
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                "PATH",
+                "USERPROFILE",
+                "MY_CLAUDE",
+                "CLAUD",
+                "ANTHROPIC_API_KEY"
+            ]
+        );
+    }
+
+    #[test]
+    fn only_plain_ids_are_session_ids() {
+        for id in ["0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80", "abc", "a_b-C9"] {
+            assert!(session_id_ok(id), "{id}");
+        }
+        let long = "a".repeat(MAX_SESSION_ID + 1);
+        for id in [
+            "", "a b", "a;b", "a'b", "$(x)", "a\nb", "ä", "--help", "_a", &long,
+        ] {
+            assert!(!session_id_ok(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn resuming_adds_the_id_to_the_command() {
+        assert_eq!(
+            resume_command("claude --dangerously-skip-permissions", "abc-1"),
+            "claude --dangerously-skip-permissions --resume abc-1"
+        );
+    }
+
+    #[test]
+    fn a_bad_label_or_session_id_is_named() {
+        let ok = Spawn {
+            directory: r"C:\src\site".into(),
+            label: Some("Site QA".into()),
+            resume: Some("abc-1".into()),
+            ..Spawn::default()
+        };
+        assert_eq!(ok.problem(), None);
+        let tab = Spawn {
+            label: Some("a\tb".into()),
+            ..ok.clone()
+        };
+        assert!(tab.problem().unwrap().contains("label"));
+        let long = Spawn {
+            label: Some("x".repeat(MAX_LABEL + 1)),
+            ..ok.clone()
+        };
+        assert!(long.problem().is_some());
+        let id = Spawn {
+            resume: Some("a;b".into()),
+            ..ok
+        };
+        assert_eq!(id.problem().unwrap(), "`a;b` is not a session id");
+    }
+
+    #[test]
+    fn a_spawn_round_trips_and_leaves_out_what_is_not_set() {
+        let s = Spawn {
+            directory: r"C:\src".into(),
+            area: Some(Area::Right),
+            monitor: Some(MonitorPick::Landscape),
+            ..Spawn::default()
+        };
+        let text = serde_json::to_string(&s).unwrap();
+        assert_eq!(
+            text,
+            r#"{"directory":"C:\\src","monitor":"landscape","area":"right"}"#
+        );
+        assert_eq!(serde_json::from_str::<Spawn>(&text).unwrap(), s);
+        assert!(s.placed());
+        assert!(!Spawn::default().placed());
+    }
+}
