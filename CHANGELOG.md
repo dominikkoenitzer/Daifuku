@@ -8,37 +8,45 @@
   fractions of the monitor. The default, `"full"`, is the whole monitor as
   before. Snapping, following a monitor change and the demo keep to it.
 - A fleet can open others with it: `"with": ["crew"]` opens or brings back
-  the fleet `crew` whenever this one opens, first, so the one asked for ends
-  up in front.
+  the fleet `crew` whenever this one opens, first, so the one asked for opens
+  last and asks for the focus.
 - `daifuku spawn` opens one agent terminal on its own: `--dir` is the folder
   it works in, this one when left out, `--label` its title, `--resume` a
   session to resume, and `--fleet` the fleet whose command, profile and
   administrator setting it takes, the first one by default. `--monitor` and
   `--area` place it. `daifuku status` lists these terminals under `peers`.
 - The daemon keeps the terminals `daifuku spawn` opened in
-  `ProgramData\Daifuku\peers.json`, with the last session each one ran.
-  After Windows restarts, `daifuku restore` opens them again, each resuming
-  its session in its own folder; `--dry-run` lists them and `--forget` drops
-  them.
+  `ProgramData\Daifuku\peers-<SID>.json`, with the last session each one ran.
+  After Windows restarts, `daifuku restore` opens the ones that were open
+  when it stopped again, each resuming its session in its own folder, and
+  never a session that runs already; `--dry-run` lists them and `--forget`
+  drops them. A peer closed by hand leaves the file at once, and older peers
+  expire with the next restart. A peer takes a session only from a hook that
+  ran inside its own terminal.
 - `daifuku status --json` gives each agent a `label`, its `fleet` and the
   `session_id` its state comes from, and each peer its last `session_id`.
   A fleet's terminals are called by the fleet's name and their number,
   `agents 2`, until `daifuku label <window> <label>` names them.
-- `daifuku wait <window or label>` waits until the agent stops working, or
-  with `--until done`, `waiting` or `failed` until it reaches that state,
-  and says which state it reached; `--timeout` gives up after so many
-  seconds with the new error code `timeout`.
+- `daifuku wait <window or label>` waits until the agent's next turn ends,
+  or with `--until stopped`, `done`, `waiting` or `failed` for that state,
+  and says which state it reached, `exited` when the agent ended and its
+  terminal stayed; `--timeout` gives up after so many seconds with the new
+  error code `timeout`.
 - A border goes when its agent's process ends, even when the terminal stays
   open, as a Windows Terminal tab does when its shell is killed. The hook
   names the agent's process, and the daemon forgets the sessions it reported
   once it ends.
+- The saved state is kept per user, in `state-<SID>.json` beside the old
+  `state.json`, which is read once when a user's own file is missing.
 - `daifuku group [--priority idle|below-normal|normal] -- <program>` runs a
   program in a job object of its own: everything it starts runs at that
   priority and cannot raise it, and ends when the program does or its
   terminal closes. Ctrl+C reaches the program, not the group.
 - `daifuku heavy -- <program>` does the same at idle priority and one at a
   time with every other heavy job in the session, so two builds never run
-  side by side.
+  side by side. A heavy job started inside one has its turn already.
+- When a grouped terminal closes, the group gives its program up to four
+  seconds to shut down, so an agent's last hooks run.
 - The fleet key `priority` and `daifuku spawn --priority` run each terminal's
   shell inside `daifuku group`, so an agent's whole tree runs at that
   priority and nothing it started outlives its terminal.
