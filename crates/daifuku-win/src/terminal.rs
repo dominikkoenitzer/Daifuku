@@ -19,7 +19,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Security::{
     DuplicateTokenEx, SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT,
-    TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY, TokenPrimary,
+    TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+    TokenPrimary,
 };
 use windows::Win32::Storage::Packaging::Appx::{
     FindPackagesByPackageFamily, GetPackagePathByFullName, GetStagedPackageOrigin,
@@ -340,7 +341,8 @@ fn escape(s: &str) -> String {
     s.replace(';', r"\;")
 }
 
-/// Opens one window, elevated if this process is.
+/// Opens one window, elevated if this process is, in the environment
+/// [`crate::user_env::for_terminal`] builds.
 ///
 /// # Errors
 ///
@@ -352,6 +354,8 @@ pub fn open(wt: &Path, launch: &Launch) -> std::io::Result<()> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     Command::new(wt)
         .args(launch.args(shell().as_deref(), windows_powershell_refuses_scripts()))
+        .env_clear()
+        .envs(crate::user_env::for_terminal())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map(drop)
@@ -390,6 +394,7 @@ pub fn open_unelevated(wt: &Path, launch: &Launch) -> std::io::Result<()> {
             TOKEN_QUERY.0
                 | TOKEN_ASSIGN_PRIMARY.0
                 | TOKEN_DUPLICATE.0
+                | TOKEN_IMPERSONATE.0
                 | TOKEN_ADJUST_DEFAULT.0
                 | TOKEN_ADJUST_SESSIONID.0,
         );
@@ -408,13 +413,16 @@ pub fn open_unelevated(wt: &Path, launch: &Launch) -> std::io::Result<()> {
             ..Default::default()
         };
         let mut pi = PROCESS_INFORMATION::default();
+        // The user's environment without the agents' variables. Without a
+        // block Windows builds the same from the profile, agents' included.
+        let environment = crate::user_env::block_for(primary);
         let started = CreateProcessWithTokenW(
             primary,
             LOGON_WITH_PROFILE,
             PCWSTR(app.as_ptr()),
             Some(PWSTR(line_w.as_mut_ptr())),
             CREATE_UNICODE_ENVIRONMENT,
-            None,
+            environment.as_ref().map(|b| b.as_ptr().cast()),
             PCWSTR::null(),
             &raw const si,
             &raw mut pi,
