@@ -62,6 +62,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
 | `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet ends up in front. Their own `with` is not followed (after 0.1.3). |
+| `priority` | none | `"idle"`, `"below-normal"` or `"normal"`: each terminal runs in a group of its own at that priority. Everything started in it runs at it and cannot raise it, and all of it ends when the terminal closes, shells and watchers an agent left behind included. Left out, the terminals run as any other program (after 0.1.3). |
 
 Opening a fleet that is already open brings it back: terminals that were
 closed are opened again, each in its own cell with its own number (after
