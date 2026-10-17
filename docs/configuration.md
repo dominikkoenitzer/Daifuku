@@ -61,6 +61,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `admin` | `true` | Open the terminals as administrator. With `false`, Windows starts them as you through its Secondary Logon service (seclogon), which must not be disabled, and takes at most 1024 characters for their whole command line. The encoded `command` uses almost three of those for each of its own, so keep it under about 250 characters. |
 | `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
+| `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet ends up in front. Their own `with` is not followed (after 0.1.3). |
 
 Opening a fleet that is already open brings it back: terminals that were
 closed are opened again, each in its own cell with its own number (after
@@ -97,12 +98,19 @@ terminal you minimised or maximised stays that way.
 | `{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }` | Any rectangle, in fractions of the monitor from its top left corner. All four keys are needed, each 0 to 1. `width` and `height` must be more than 0, and the rectangle must stay on the monitor. |
 
 One agent that hands out the work on the left half, and the three it hands
-it to stacked on the right:
+it to stacked on the right, all four on one key:
 
 ```json
 {
   "fleets": [
-    { "name": "lead", "count": 1, "monitor": "landscape", "area": "left", "hotkey": "ctrl + alt + return" },
+    {
+      "name": "lead",
+      "count": 1,
+      "monitor": "landscape",
+      "area": "left",
+      "hotkey": "ctrl + alt + return",
+      "with": ["crew"]
+    },
     {
       "name": "crew",
       "count": 3,
@@ -116,7 +124,9 @@ it to stacked on the right:
 ```
 
 On their own, three terminals on a half come out two over one, so `shape`
-stacks them in three rows the width of the half.
+stacks them in three rows the width of the half. Ctrl+Alt+Return opens the
+crew and then the lead, which ends up in front; Ctrl+Alt+W opens or brings
+back the crew alone.
 
 The outer gap goes around the area as it goes around the monitor, so on the
 monitor's own edges the terminals line up with a fleet that fills all of it.
