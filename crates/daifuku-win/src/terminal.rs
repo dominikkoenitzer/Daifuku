@@ -41,6 +41,8 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
 use windows::core::{PCWSTR, PWSTR};
 
+use daifuku_core::config::Priority;
+
 use crate::wide::{from_wide, to_wide};
 
 /// The package families Windows Terminal ships as, stable first.
@@ -254,6 +256,9 @@ pub struct Launch {
     /// Skip the PowerShell profile: a faster start, and nothing from the
     /// user's own setup on screen.
     pub clean: bool,
+    /// Run the shell inside `daifuku group` at this priority, from the
+    /// `daifuku.exe` given, so the whole tree in the tab ends with it.
+    pub group: Option<(PathBuf, Priority)>,
 }
 
 impl Launch {
@@ -279,6 +284,12 @@ impl Launch {
             a.push(escape(t).into());
         }
         if let (Some(cmd), Some(shell)) = (&self.command, shell) {
+            if let Some((exe, priority)) = &self.group {
+                a.push(exe.as_os_str().to_owned());
+                for s in ["group", "--priority", priority.name(), "--"] {
+                    a.push(s.into());
+                }
+            }
             a.push(shell.as_os_str().to_owned());
             if self.clean {
                 a.push("-NoProfile".into());
@@ -534,6 +545,7 @@ mod tests {
             title: Some("agents 1".into()),
             profile: None,
             clean: false,
+            group: None,
         };
         assert_eq!(
             strs(&l.args(
