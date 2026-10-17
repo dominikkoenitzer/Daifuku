@@ -667,6 +667,36 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_on_the_left_half_and_a_crew_of_three_stacked_on_the_right() {
+        let text = r#"{"fleets":[
+            {"name":"lead","count":1,"monitor":"landscape","area":"left","hotkey":"ctrl + alt + return"},
+            {"name":"crew","count":3,"monitor":"landscape","area":"right",
+             "shape":{"columns":1,"rows":3},"hotkey":"ctrl + alt + w"}
+        ]}"#;
+        let config = Config::from_json(text).unwrap();
+        let monitors = [MonitorInfo {
+            device: r"\\.\DISPLAY1".into(),
+            bounds: Rect::new(0, 0, 3840, 2160),
+            work: Rect::new(0, 0, 3840, 2112),
+            dpi: 144,
+            primary: true,
+        }];
+        let cells = |name| {
+            let fleet = config.fleet(name).unwrap();
+            plan(fleet, &config, None, &monitors, (0, 0)).unwrap().1
+        };
+        assert_eq!(cells("lead"), vec![Rect::new(24, 24, 1896, 2088)]);
+        assert_eq!(
+            cells("crew"),
+            vec![
+                Rect::new(1944, 24, 3816, 698),
+                Rect::new(1944, 718, 3816, 1393),
+                Rect::new(1944, 1413, 3816, 2088),
+            ]
+        );
+    }
+
+    #[test]
     fn settling_fits_the_slots_to_the_count() {
         let fleet = fleet_on(MonitorPick::Portrait);
         let mut r = record("", vec![Some(1), None, Some(3)]);
