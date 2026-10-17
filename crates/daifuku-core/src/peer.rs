@@ -212,6 +212,39 @@ mod tests {
         }
     }
 
+    fn kept(resume: Option<&str>, window: u64, boot: u64) -> Kept {
+        Kept {
+            spawn: Spawn {
+                directory: r"C:\src".into(),
+                resume: resume.map(Into::into),
+                ..Spawn::default()
+            },
+            window,
+            boot,
+        }
+    }
+
+    #[test]
+    fn a_kept_peer_knows_its_start_of_windows_and_whether_it_resumes() {
+        let k = kept(Some("abc"), 7, 1_000);
+        assert!(k.same_boot(1_000) && k.same_boot(1_010) && k.same_boot(990));
+        assert!(!k.same_boot(1_011) && !k.same_boot(5_000));
+        assert!(k.resumable());
+        assert!(!kept(None, 7, 1_000).resumable());
+    }
+
+    #[test]
+    fn the_kept_file_reads_leniently_and_drops_ids_that_are_not_ids() {
+        let text =
+            serde_json::to_string(&[kept(Some("abc-1"), 7, 1_000), kept(Some("a;rm"), 8, 1_000)])
+                .unwrap();
+        let read = read_kept(&text);
+        assert_eq!(read[0], kept(Some("abc-1"), 7, 1_000));
+        assert_eq!(read[1].spawn.resume, None);
+        assert!(read_kept("not json").is_empty());
+        assert!(read_kept("").is_empty());
+    }
+
     #[test]
     fn resuming_adds_the_id_to_the_command() {
         assert_eq!(
