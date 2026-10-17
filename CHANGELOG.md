@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A fleet can fill part of its monitor with the new `area` key: `"left"`,
+  `"right"`, `"top"` or `"bottom"` for a half, or
+  `{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }` for any rectangle in
+  fractions of the monitor. The default, `"full"`, is the whole monitor as
+  before. Snapping, following a monitor change and the demo keep to it.
+
 ## 0.1.3, 2026-10-10
 
 - `daifuku status` works from a terminal that is not elevated. It leaves
