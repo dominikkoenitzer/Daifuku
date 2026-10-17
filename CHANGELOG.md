@@ -32,6 +32,16 @@
   open, as a Windows Terminal tab does when its shell is killed. The hook
   names the agent's process, and the daemon forgets the sessions it reported
   once it ends.
+- `daifuku group [--priority idle|below-normal|normal] -- <program>` runs a
+  program in a job object of its own: everything it starts runs at that
+  priority and cannot raise it, and ends when the program does or its
+  terminal closes. Ctrl+C reaches the program, not the group.
+- `daifuku heavy -- <program>` does the same at idle priority and one at a
+  time with every other heavy job in the session, so two builds never run
+  side by side.
+- The fleet key `priority` and `daifuku spawn --priority` run each terminal's
+  shell inside `daifuku group`, so an agent's whole tree runs at that
+  priority and nothing it started outlives its terminal.
 - Terminals start in the environment Windows builds for the user, with
   `PATH` as last saved, and without any `CLAUDE` variable, so an agent that
   starts another does not hand it its own session.
