@@ -10,7 +10,9 @@
 use std::io;
 
 use daifuku_core::config::Priority;
+use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+
 use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -19,14 +21,29 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, IDLE_PRIORITY_CLASS, INFINITE,
-    NORMAL_PRIORITY_CLASS, ReleaseMutex, WaitForSingleObject,
+    NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_SYNCHRONIZE, ReleaseMutex, WaitForSingleObject,
 };
 use windows::core::{BOOL, PCWSTR};
 
 use crate::wide::to_wide;
 
-/// The name of the lock heavy jobs take turns at, one per signed-in session.
+/// The name of the lock heavy jobs take turns at, one per signed-in session,
+/// unless `DAIFUKU_HEAVY_QUEUE` names another, as the tests do so they never
+/// wait for a real build.
 const HEAVY: &str = r"Local\Daifuku.Heavy";
+
+/// Set for everything a heavy job runs: a heavy job started from inside one
+/// has its turn already, and waiting for the turn its own parent holds would
+/// never end.
+pub const IN_HEAVY: &str = "DAIFUKU_HEAVY";
+
+/// How long the group waits for its program when the console closes, in
+/// milliseconds. Windows gives every process five seconds then; the program
+/// gets most of them for its own shutdown before the group ends it.
+const CLOSE_GRACE_MS: u32 = 4000;
+
+/// The program the group runs, once it started.
+static CHILD: AtomicU32 = AtomicU32::new(0);
 
 /// A job object, closed when dropped, which ends every process in it.
 pub struct Job(HANDLE);
@@ -89,10 +106,25 @@ impl Drop for Job {
 /// Keeps this process alive through Ctrl+C and Ctrl+Break, which the
 /// console sends to every process in it: they are meant for the program
 /// running in the group, and the group ending would end that program too.
-/// Closing the console still ends it, and the group with it.
+/// When the console closes, the group waits up to four seconds for the
+/// program, which is told too, so an agent's own shutdown and its last hooks
+/// run before the group ends what is left.
 pub fn outlive_ctrl_c() {
     unsafe extern "system" fn handler(event: u32) -> BOOL {
-        BOOL::from(event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT)
+        if event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT {
+            return BOOL::from(true);
+        }
+        let pid = CHILD.load(Ordering::SeqCst);
+        // SAFETY: the handle is closed before returning.
+        unsafe {
+            if pid != 0
+                && let Ok(child) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid)
+            {
+                let _ = WaitForSingleObject(child, CLOSE_GRACE_MS);
+                let _ = CloseHandle(child);
+            }
+        }
+        BOOL::from(false)
     }
     // SAFETY: the handler is a plain function that lives as long as the
     // process. A handler is not passed on to child processes, so they keep
@@ -100,6 +132,12 @@ pub fn outlive_ctrl_c() {
     unsafe {
         let _ = SetConsoleCtrlHandler(Some(handler), true);
     }
+}
+
+/// Names `pid` as the program the group runs, for the wait when the console
+/// closes.
+pub fn running(pid: u32) {
+    CHILD.store(pid, Ordering::SeqCst);
 }
 
 /// This process's turn at the heavy-job queue, until it is dropped or the
@@ -114,7 +152,8 @@ pub struct Turn(HANDLE);
 /// When Windows refuses the lock, as it does to a process that is not
 /// elevated when an elevated one made it.
 pub fn wait_turn(waiting: impl FnOnce()) -> io::Result<Turn> {
-    let name = to_wide(HEAVY);
+    let name = std::env::var("DAIFUKU_HEAVY_QUEUE").unwrap_or_else(|_| HEAVY.to_owned());
+    let name = to_wide(&name);
     // SAFETY: the name is NUL terminated; the handle is owned by the Turn.
     let lock =
         unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) }.map_err(io::Error::other)?;

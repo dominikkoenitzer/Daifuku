@@ -15,9 +15,20 @@ fn cli() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_daifuku"))
 }
 
+/// `daifuku`, on a heavy-job queue of this test run's own, so a test never
+/// waits for a real build on the machine, nor a build for a test.
+fn daifuku() -> Command {
+    let mut c = Command::new(cli());
+    c.env(
+        "DAIFUKU_HEAVY_QUEUE",
+        format!(r"Local\Daifuku.Heavy.test-{}", std::process::id()),
+    );
+    c
+}
+
 /// What a PowerShell line run inside `daifuku <args> --` printed.
 fn powershell_in(args: &[&str], line: &str) -> String {
-    let out = Command::new(cli())
+    let out = daifuku()
         .args(args)
         .args([
             "--",
@@ -52,12 +63,12 @@ fn the_group_s_priority_reaches_the_program_and_what_it_starts() {
 
 #[test]
 fn the_exit_code_comes_back() {
-    let status = Command::new(cli())
+    let status = daifuku()
         .args(["group", "--", "cmd.exe", "/d", "/c", "exit 7"])
         .status()
         .unwrap();
     assert_eq!(status.code(), Some(7));
-    let missing = Command::new(cli())
+    let missing = daifuku()
         .args(["group", "--", "no-such-program-here"])
         .stderr(Stdio::piped())
         .output()
@@ -88,7 +99,7 @@ fn what_the_program_leaves_running_ends_with_it() {
 fn heavy_jobs_take_turns() {
     // Two jobs of about two seconds each, started together.
     let job = || {
-        Command::new(cli())
+        daifuku()
             .args(["heavy", "--", "ping.exe", "-n", "3", "127.0.0.1"])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -110,4 +121,26 @@ fn heavy_jobs_take_turns() {
         said.contains("waiting for the heavy job before this one"),
         "{said}"
     );
+}
+
+#[test]
+fn a_heavy_job_inside_a_heavy_job_has_its_turn_already() {
+    let mut nested = daifuku()
+        .args(["heavy", "--"])
+        .arg(cli())
+        .args(["heavy", "--", "cmd.exe", "/d", "/c", "exit 3"])
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = nested.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > Duration::from_secs(20) {
+            let _ = nested.kill();
+            panic!("the inner heavy job waited for the outer one's turn");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status.code(), Some(3));
 }

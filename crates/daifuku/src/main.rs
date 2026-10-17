@@ -1223,7 +1223,9 @@ fn group_cmd(
         return ExitCode::FAILURE;
     };
     job::outlive_ctrl_c();
-    let _turn = if queue {
+    // Inside a heavy job already, which holds the turn for its whole tree.
+    let nested = std::env::var_os(job::IN_HEAVY).is_some();
+    let _turn = if queue && !nested {
         match job::wait_turn(|| eprintln!("daifuku: waiting for the heavy job before this one")) {
             Ok(turn) => Some(turn),
             Err(e) => {
@@ -1234,8 +1236,16 @@ fn group_cmd(
     } else {
         None
     };
-    let code = match std::process::Command::new(program).args(args).status() {
-        Ok(status) => status.code().unwrap_or(1),
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    if queue {
+        command.env(job::IN_HEAVY, "1");
+    }
+    let code = match command.spawn() {
+        Ok(mut child) => {
+            job::running(child.id());
+            child.wait().ok().and_then(|s| s.code()).unwrap_or(1)
+        }
         Err(e) => {
             eprintln!(
                 "daifuku: could not start {}: {e}",
