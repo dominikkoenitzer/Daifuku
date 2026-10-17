@@ -75,6 +75,7 @@ path to check another file first.
 |---|---|---|
 | `count` | `6` | 1 to 16 terminals |
 | `monitor` | `"portrait"` | `portrait`, `landscape`, `primary`, `secondary`, `cursor`, or a device name |
+| `area` | `"full"` | the part of the monitor it fills: `full`, `left`, `right`, `top`, `bottom`, or `{ "x", "y", "width", "height" }` in fractions |
 | `command` | `"claude"` | the PowerShell command each terminal runs; `{n}` is its number; `null` for a plain shell |
 | `directory` | your profile | where the terminals start; `{n}` is its number |
 | `admin` | `true` | open as administrator |
