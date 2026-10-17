@@ -1563,10 +1563,55 @@ fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
     named.filter(|p| sender.iter().skip(1).any(|s| s == p))
 }
 
+/// How long the daemon waits for `daifuku console-window`.
+const CONSOLE_HELPER_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Whether process `pid` runs in the terminal that is window `w`: its
 /// console, or one of its ancestors', leads there.
+///
+/// Asked of `daifuku console-window`, next to the daemon, never found out
+/// here: finding out means attaching to the agent's console, and a process
+/// attached to a console that closes is ended with it. The helper may end;
+/// the daemon must not.
 fn in_terminal(pid: u32, w: u64) -> bool {
-    daifuku_win::console::terminal_window(pid) == Some(w)
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Some(exe) = std::env::current_exe()
+        .ok()
+        .map(|d| d.with_file_name("daifuku.exe"))
+        .filter(|e| e.is_file())
+    else {
+        return false;
+    };
+    let Ok(mut helper) = std::process::Command::new(exe)
+        .args(["console-window", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+    else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match helper.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if start.elapsed() < CONSOLE_HELPER_WAIT => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = helper.kill();
+                let _ = helper.wait();
+                return false;
+            }
+        }
+    }
+    let mut out = String::new();
+    if let Some(mut stdout) = helper.stdout.take() {
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+    }
+    out.trim().parse::<u64>().ok() == Some(w)
 }
 
 /// The session whose state window `w` shows as `state`: of the sessions in

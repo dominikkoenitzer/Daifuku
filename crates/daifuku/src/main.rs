@@ -196,6 +196,14 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<std::ffi::OsString>,
     },
+    /// The terminal window process `pid` runs in, as a number on one line,
+    /// or nothing. The daemon asks this rather than attach to an agent's
+    /// console itself, which would end it if that console closed.
+    #[command(hide = true)]
+    ConsoleWindow {
+        /// The process.
+        pid: u32,
+    },
     /// One scripted demo agent. `daifuku demo` starts these.
     #[command(hide = true)]
     DemoAgent {
@@ -428,6 +436,7 @@ fn main() -> ExitCode {
             demo_agent(number);
             ExitCode::SUCCESS
         }
+        Command::ConsoleWindow { pid } => console_window(pid),
         Command::Status { format } => status_cmd(format.json),
         Command::Restore {
             dry_run,
@@ -1196,6 +1205,24 @@ fn control_code(e: &std::io::Error, elevated: bool) -> ErrorCode {
     }
 }
 
+/// `daifuku console-window`: prints the window `pid`'s terminal is, or
+/// nothing and exits 1.
+#[cfg(windows)]
+fn console_window(pid: u32) -> ExitCode {
+    match daifuku_win::console::terminal_window(pid) {
+        Some(w) => {
+            println!("{w}");
+            ExitCode::SUCCESS
+        }
+        None => ExitCode::FAILURE,
+    }
+}
+
+#[cfg(not(windows))]
+fn console_window(_: u32) -> ExitCode {
+    ExitCode::FAILURE
+}
+
 /// A priority as `group` and `heavy` take it.
 fn parse_priority(text: &str) -> Result<daifuku_core::config::Priority, String> {
     text.parse()
@@ -1818,6 +1845,7 @@ mod tests {
             Command::DemoAgent { .. }
             | Command::Hook
             | Command::Group { .. }
+            | Command::ConsoleWindow { .. }
             | Command::Heavy { .. } => None,
         }
     }
