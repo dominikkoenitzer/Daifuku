@@ -1141,6 +1141,7 @@ fn spawn_request(
         fleet,
         monitor,
         area,
+        priority: None,
     };
     match spawn.problem() {
         Some(problem) => Err(problem),
