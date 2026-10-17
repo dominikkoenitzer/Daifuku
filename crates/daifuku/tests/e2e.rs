@@ -1173,3 +1173,109 @@ fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
 }
+
+#[test]
+fn a_border_goes_when_its_agent_process_is_killed() {
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    let dir = scratch().join("kill");
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = peer_config(&dir);
+    std::fs::write(
+        dir.join("peer-event.json"),
+        r#"{"session_id":"e2e-kill-1","hook_event_name":"PermissionRequest"}"#,
+    )
+    .unwrap();
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, None, &[]);
+
+    // A console of its own whose processes are killed, not closed.
+    let tag = format!("daifuku-e2e-kill-{}", std::process::id());
+    let script = format!(
+        "title {tag} & \"{h}\" hook < \"{e}\" & ping -n 120 127.0.0.1 >nul",
+        h = cli().display(),
+        e = dir.join("peer-event.json").display(),
+    );
+    let mut console = Command::new("cmd.exe")
+        .args(["/d", "/s", "/c"])
+        .raw_arg(format!("\"{script}\""))
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .unwrap();
+    let agent = wait_for(
+        "the console's agent to wait",
+        Duration::from_secs(15),
+        || {
+            status()?
+                .agents
+                .into_iter()
+                .find(|a| a.state.name() == "waiting" && a.title.contains(&tag))
+        },
+    );
+    let border = wait_for(
+        "a border around the console",
+        Duration::from_secs(5),
+        || border_around(agent.window),
+    );
+    // The whole tree, as a crash takes it: cmd and the ping it started.
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &console.id().to_string()])
+        .output();
+    let _ = console.wait();
+    let start = Instant::now();
+    while window::is_shown(border) && start.elapsed() < Duration::from_secs(15) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let gone = !window::is_shown(border);
+    if !gone {
+        expect_failure(
+            "the border goes when every process of a console window that stays open is killed",
+            gone,
+        );
+        let _ = window::close(agent.window);
+    }
+    steps += 1;
+
+    // A Windows Terminal tab whose shell is killed: the tab stays, showing
+    // that the process ended, and nothing tells the daemon the agent is gone.
+    if daifuku_win::terminal::find().is_some() {
+        let w = spawn(&["--dir", &dir.display().to_string(), "--label", "killed"]);
+        let (_, _, _, pid) = ran(&dir, "");
+        let border = wait_for("a border around the tab", Duration::from_secs(20), || {
+            status()?
+                .agents
+                .iter()
+                .any(|a| a.window == w && a.state.name() == "waiting")
+                .then(|| border_around(w))
+                .flatten()
+        });
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+        let start = Instant::now();
+        while window::is_shown(border) && start.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        expect_failure(
+            "the border goes when the agent's shell in a Windows Terminal tab is killed",
+            !window::is_shown(border),
+        );
+        // Closing the window then takes the border down.
+        let _ = window::close(w);
+        wait_for("the tab to close", Duration::from_secs(15), || {
+            (!window::exists(w)).then_some(())
+        });
+        wait_for(
+            "the border to go with the window",
+            Duration::from_secs(5),
+            || (!window::is_shown(border)).then_some(()),
+        );
+        steps += 1;
+    }
+
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
