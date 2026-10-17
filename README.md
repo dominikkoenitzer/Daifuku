@@ -141,6 +141,8 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku demo` | six scripted agents |
 | `daifuku spawn [--dir] [--label] [--resume]` | one agent terminal on its own, in a folder |
 | `daifuku restore [--dry-run] [--forget]` | open the spawned terminals from before Windows restarted again |
+| `daifuku label <window> [label]` | give an agent's terminal a label |
+| `daifuku wait <window or label> [--until done]` | wait until an agent stops working, or reaches one state |
 | `daifuku reload` | re-read the config |
 | `daifuku stop` | stop the daemon |
 | `daifuku config` | open the config file |
