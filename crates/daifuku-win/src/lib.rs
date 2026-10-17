@@ -21,6 +21,7 @@
 //! - [`elevate`]: asking Windows for administrator rights, and the console.
 //! - [`apps`]: the entry Settings > Apps lists Daifuku by.
 //! - [`user_env`]: the environment a terminal starts with.
+//! - [`job`]: a process tree that runs at one priority and ends as one.
 
 #![cfg(windows)]
 
@@ -31,6 +32,7 @@ pub mod console;
 pub mod dpi;
 pub mod elevate;
 pub mod environment;
+pub mod job;
 pub mod monitor;
 pub mod paths;
 pub mod pipe;
