@@ -66,6 +66,12 @@ struct Daemon {
     fleets: Vec<OpenFleet>,
     /// Every peer `daifuku spawn` opened that is still open.
     peers: Vec<Peer>,
+    /// The agents' own processes, as their hooks name them, and the sessions
+    /// each one reported. An agent whose process ended is gone even when its
+    /// terminal stays open, as a Windows Terminal tab does when its shell is
+    /// killed: nothing else would tell the daemon.
+    agent_processes:
+        std::collections::HashMap<u32, (process::Watch, std::collections::BTreeSet<String>)>,
     /// Labels `daifuku label` gave terminals that are not peers, whose
     /// labels live in their [`Spawn`].
     labels: std::collections::HashMap<u64, String>,
@@ -221,6 +227,7 @@ impl Daemon {
             agents: Agents::new(),
             fleets: Vec::new(),
             peers: Vec::new(),
+            agent_processes: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
             dormant: Vec::new(),
             peers_file: None,
@@ -409,6 +416,11 @@ impl Daemon {
         let now = self.agents.session_state(session);
         if changed || now != before {
             self.note_states();
+        }
+        if let Some(pid) = message.pid
+            && now.is_some()
+        {
+            self.watch_agent(pid, session);
         }
         if self.config.sound && now == Some(AgentState::Waiting) && before != now {
             access::chime();
@@ -763,7 +775,55 @@ impl Daemon {
         }
     }
 
+    /// Watches agent process `pid` for the end of `session`. A process that
+    /// cannot be opened, as one that ended already, is not watched; past
+    /// [`MAX_SESSIONS`] processes, new ones are not either.
+    fn watch_agent(&mut self, pid: u32, session: &str) {
+        if let Some((_, sessions)) = self.agent_processes.get_mut(&pid) {
+            if sessions.len() < MAX_SESSIONS {
+                sessions.insert(session.to_owned());
+            }
+            return;
+        }
+        if self.agent_processes.len() >= MAX_SESSIONS {
+            return;
+        }
+        if let Some(watch) = process::Watch::open(pid) {
+            self.agent_processes
+                .insert(pid, (watch, std::iter::once(session.to_owned()).collect()));
+        }
+    }
+
+    /// Forgets the sessions of every agent whose process ended, and takes
+    /// their borders down where no other agent in the window remains. Lets
+    /// go of processes whose sessions all ended otherwise.
+    fn reap_agents(&mut self) {
+        let ended: Vec<u32> = self
+            .agent_processes
+            .iter()
+            .filter(|(_, (watch, _))| watch.ended())
+            .map(|(&pid, _)| pid)
+            .collect();
+        let mut forgot = false;
+        for pid in ended {
+            if let Some((_, sessions)) = self.agent_processes.remove(&pid) {
+                for session in &sessions {
+                    forgot |= self.agents.forget_session(session);
+                }
+                tracing::info!(pid, sessions = sessions.len(), "an agent's process ended");
+            }
+        }
+        let agents = &self.agents;
+        self.agent_processes
+            .retain(|_, (_, sessions)| sessions.iter().any(|s| agents.knows(s)));
+        if forgot {
+            self.note_states();
+            self.refresh_borders();
+        }
+    }
+
     fn sweep(&mut self) {
+        self.reap_agents();
         // The config changed on disk: take it, as `daifuku reload` would.
         if stamp(&self.config_path) != self.config_stamp {
             tracing::info!("config file changed, reloading");
