@@ -4,10 +4,14 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use daifuku_core::config::{Border, Config};
-use daifuku_core::protocol::{AgentWindow, FleetStatus, HookMessage, Request, Response, Status};
+use daifuku_core::peer::Spawn;
+use daifuku_core::protocol::{
+    AgentWindow, FleetStatus, HookMessage, PeerStatus, Request, Response, Status,
+};
 use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
+use daifuku_win::terminal::WINDOW_CLASS;
 use daifuku_win::{access, clock, dpi, paths, process, window};
 use windows::Win32::UI::Shell::{QUNS_NOT_PRESENT, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -46,12 +50,22 @@ const PULSE_PERIOD: f64 = 1.6;
 /// often enough that a daemon restarted on an error finds it fresh.
 const RESAVE_TICKS: u64 = 60 * 10_000_000;
 
+/// A peer `daifuku spawn` opened.
+struct Peer {
+    /// Its terminal.
+    window: u64,
+    /// What it was opened with.
+    spawn: Spawn,
+}
+
 struct Daemon {
     config: Config,
     config_path: PathBuf,
     config_error: Option<String>,
     agents: Agents<u64>,
     fleets: Vec<OpenFleet>,
+    /// Every peer `daifuku spawn` opened that is still open.
+    peers: Vec<Peer>,
     borders: Option<BorderManager>,
     hotkeys: Hotkeys,
     elevated: bool,
@@ -191,6 +205,7 @@ impl Daemon {
             config_error: None,
             agents: Agents::new(),
             fleets: Vec::new(),
+            peers: Vec::new(),
             borders: None,
             hotkeys: Hotkeys::default(),
             elevated,
@@ -316,6 +331,7 @@ impl Daemon {
             Request::CloseAll => self.close_all(),
             Request::Next => self.next(),
             Request::Demo => self.demo(),
+            Request::Spawn(spawn) => self.spawn(spawn),
             Request::Status => Response::Status(self.status()),
             Request::Reload => {
                 self.load_config();
@@ -656,6 +672,15 @@ impl Daemon {
                 .iter()
                 .map(|k| format!("{k}: refused, another program holds it")),
         );
+        let peers = self
+            .peers
+            .iter()
+            .map(|p| PeerStatus {
+                window: p.window,
+                label: p.spawn.label.clone(),
+                directory: p.spawn.directory.display().to_string(),
+            })
+            .collect();
         Status {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             config,
@@ -663,6 +688,7 @@ impl Daemon {
             hotkeys,
             fleets,
             agents,
+            peers,
         }
     }
 
@@ -683,6 +709,7 @@ impl Daemon {
                     for f in &mut self.fleets {
                         f.forget(w);
                     }
+                    self.peers.retain(|p| p.window != w);
                     self.drop_closed_fleets();
                     refresh |= forgot;
                 }
@@ -954,6 +981,53 @@ impl Daemon {
     /// opened again starts from its config, as a new one does.
     fn drop_closed_fleets(&mut self) {
         self.fleets.retain(|f| f.windows().next().is_some());
+        self.peers
+            .retain(|p| window::exists(p.window) && window::class(p.window) == WINDOW_CLASS);
+    }
+
+    /// Opens one peer as `spawn` asks, from the fleet it names or the first
+    /// one, or from the defaults when the config has no fleet.
+    fn spawn(&mut self, spawn: &Spawn) -> Response {
+        if let Some(problem) = spawn.problem() {
+            return Response::error(problem);
+        }
+        if !spawn.directory.is_absolute() || !spawn.directory.is_dir() {
+            return Response::error(format!("there is no folder {}", spawn.directory.display()));
+        }
+        let base = match &spawn.fleet {
+            Some(name) => match self.config.fleet(name).cloned() {
+                Some(f) => f,
+                None => {
+                    return Response::error(format!(
+                        "no fleet called `{name}` in {}",
+                        self.config_path.display()
+                    ));
+                }
+            },
+            None => self.config.fleets.first().cloned().unwrap_or_default(),
+        };
+        self.drop_closed_fleets();
+        let taken: Vec<u64> = self
+            .fleets
+            .iter()
+            .flat_map(OpenFleet::windows)
+            .chain(self.peers.iter().map(|p| p.window))
+            .collect();
+        match fleet::spawn(&base, &self.config, spawn, self.elevated, &taken) {
+            Ok(window) => {
+                tracing::info!(window = format!("{window:#x}"), label = ?spawn.label, "spawned a peer");
+                self.peers.push(Peer {
+                    window,
+                    spawn: spawn.clone(),
+                });
+                self.refresh_borders();
+                Response::Spawned {
+                    window,
+                    label: spawn.label.clone(),
+                }
+            }
+            Err(e) => Response::error(format!("{e:#}")),
+        }
     }
 
     /// Sends the borders their end state: one frame per agent window that is

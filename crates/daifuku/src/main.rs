@@ -7,6 +7,7 @@
 //! daifuku close --all    close every fleet's terminals
 //! daifuku next           focus the agent that has waited longest
 //! daifuku demo           open six scripted demo agents
+//! daifuku spawn          open one agent terminal on its own, in a folder
 //! daifuku status         what the daemon knows
 //! daifuku reload         re-read the config
 //! daifuku stop           stop the daemon
@@ -95,6 +96,33 @@ enum Command {
     },
     /// Open six scripted demo agents: Daifuku without a real agent.
     Demo {
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Open one agent terminal on its own, in the folder it works in, with
+    /// the command, profile and administrator setting of a fleet. The
+    /// variables an agent sets for itself are left out of its environment.
+    Spawn {
+        /// The folder it works in; this one when left out.
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+        /// Its title, for people and for `daifuku status`.
+        #[arg(long)]
+        label: Option<String>,
+        /// A session to resume, by its id.
+        #[arg(long)]
+        resume: Option<String>,
+        /// The fleet whose command it runs; the first one when left out.
+        #[arg(long)]
+        fleet: Option<String>,
+        /// The monitor to put it on, as a fleet's `monitor` takes it.
+        #[arg(long)]
+        monitor: Option<String>,
+        /// The part of the monitor it fills: full, left, right, top or
+        /// bottom. With neither this nor --monitor it stays where Windows
+        /// Terminal opens it.
+        #[arg(long)]
+        area: Option<String>,
         #[command(flatten)]
         format: Format,
     },
@@ -306,6 +334,22 @@ fn main() -> ExitCode {
         Command::Close { fleet, format, .. } => control(&Request::Close { fleet }, format.json),
         Command::Next { format } => control(&Request::Next, format.json),
         Command::Demo { format } => control(&Request::Demo, format.json),
+        Command::Spawn {
+            dir,
+            label,
+            resume,
+            fleet,
+            monitor,
+            area,
+            format,
+        } => match spawn_request(dir, label, resume, fleet, monitor.as_deref(), area.as_deref()) {
+            Ok(spawn) => control(&Request::Spawn(spawn), format.json),
+            Err(message) if format.json => fail_json(ErrorCode::Usage, &message),
+            Err(message) => {
+                eprintln!("daifuku: {message}");
+                ExitCode::from(2)
+            }
+        },
         Command::DemoAgent { number } => {
             demo_agent(number);
             ExitCode::SUCCESS
@@ -877,6 +921,20 @@ fn control(request: &Request, json: bool) -> ExitCode {
             print_status(&status);
             ExitCode::SUCCESS
         }
+        Ok(spawned @ Response::Spawned { .. }) if json => {
+            print!(
+                "{}",
+                output::ascii_json(&to_line(&spawned).unwrap_or_default())
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(Response::Spawned { window, label }) => {
+            match label {
+                Some(l) => println!("opened {l} ({window:#010x})"),
+                None => println!("opened a terminal ({window:#010x})"),
+            }
+            ExitCode::SUCCESS
+        }
         Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
         Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
     }
@@ -932,6 +990,7 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Snap => "snap".to_owned(),
         Request::Next => "next".to_owned(),
         Request::Demo => "demo".to_owned(),
+        Request::Spawn(_) => "spawn".to_owned(),
         Request::Status => "status".to_owned(),
         Request::Reload => "reload".to_owned(),
         Request::Stop => "stop".to_owned(),
@@ -955,6 +1014,53 @@ fn shell_word(word: &str) -> String {
         word.to_owned()
     } else {
         format!("\"{word}\"")
+    }
+}
+
+/// The request `daifuku spawn` sends, from its arguments: the folder made
+/// absolute, as the daemon runs in another one, and the monitor and area
+/// checked as the config checks them.
+fn spawn_request(
+    dir: Option<std::path::PathBuf>,
+    label: Option<String>,
+    resume: Option<String>,
+    fleet: Option<String>,
+    monitor: Option<&str>,
+    area: Option<&str>,
+) -> Result<daifuku_core::peer::Spawn, String> {
+    use daifuku_core::config::{Area, MonitorPick};
+    let dir = match dir {
+        Some(d) => d,
+        None => std::env::current_dir().map_err(|e| format!("no current folder: {e}"))?,
+    };
+    let directory = std::path::absolute(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let monitor = match monitor {
+        Some(text) => match text.parse::<MonitorPick>() {
+            Ok(MonitorPick::Device(d)) if !d.starts_with(r"\\.\") => {
+                return Err(format!(
+                    r"monitor `{d}` is not portrait, landscape, primary, secondary, cursor or a device name such as \\.\DISPLAY2"
+                ));
+            }
+            Ok(pick) => Some(pick),
+            Err(never) => match never {},
+        },
+        None => None,
+    };
+    let area = area
+        .map(str::parse::<Area>)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let spawn = daifuku_core::peer::Spawn {
+        directory,
+        label,
+        resume,
+        fleet,
+        monitor,
+        area,
+    };
+    match spawn.problem() {
+        Some(problem) => Err(problem),
+        None => Ok(spawn),
     }
 }
 
@@ -1023,6 +1129,17 @@ fn print_status(s: &daifuku_core::protocol::Status) {
             since(a.for_seconds),
             a.title,
             a.window
+        );
+    }
+    if !s.peers.is_empty() {
+        println!("\npeers");
+    }
+    for p in &s.peers {
+        println!(
+            "  {}  {}  ({:#010x})",
+            p.label.as_deref().unwrap_or("-"),
+            p.directory,
+            p.window
         );
     }
 }
@@ -1356,6 +1473,7 @@ mod tests {
             | Command::Close { format, .. }
             | Command::Next { format }
             | Command::Demo { format }
+            | Command::Spawn { format, .. }
             | Command::Status { format }
             | Command::Reload { format }
             | Command::Stop { format }
@@ -1396,6 +1514,8 @@ mod tests {
             &["close", "--all", "--json"],
             &["next", "--json"],
             &["demo", "--json"],
+            &["spawn", "--json"],
+            &["spawn", "--dir", "x", "--label", "a b", "--json"],
             &["reload", "--json"],
             &["stop", "--json"],
             &["install", "--dry-run", "--json"],
