@@ -48,8 +48,10 @@ const CONTROL_IO: Duration = Duration::from_secs(5);
 
 /// What a pipe thread hands to the main thread.
 pub enum Inbound {
-    /// An agent's hook reported.
-    Hook(HookMessage),
+    /// An agent's hook reported, and the processes the pipe client and its
+    /// ancestors were when it connected, itself first: what the daemon
+    /// knows of who sent it, as the message itself can say anything.
+    Hook(HookMessage, Vec<u32>),
     /// A command, where to send the answer, and the claim on it: see
     /// [`claim`].
     Control(Request, SyncSender<Response>, Arc<AtomicBool>),
@@ -133,12 +135,18 @@ fn serve_hook(
     sender: &Sender<Inbound>,
     main_thread: u32,
 ) {
+    // Before reading: the hook waits until its line is read, so it and
+    // every process it ran in are still there to be named.
+    let chain: Vec<u32> = daifuku_win::process::ancestors(connection.client)
+        .iter()
+        .map(|p| p.pid)
+        .collect();
     let Ok(line) = connection.read_line(HOOK_READ) else {
         return;
     };
     match from_line::<HookMessage>(&line) {
         Ok(message) => {
-            if sender.send(Inbound::Hook(message)).is_ok() {
+            if sender.send(Inbound::Hook(message, chain)).is_ok() {
                 wake(main_thread);
             }
         }

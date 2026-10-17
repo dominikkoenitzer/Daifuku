@@ -344,7 +344,7 @@ impl Daemon {
     fn inbox(&mut self, inbox: &Inbox) {
         while let Ok(item) = inbox.receiver.try_recv() {
             match item {
-                Inbound::Hook(message) => self.hook(&message),
+                Inbound::Hook(message, sender) => self.hook(&message, &sender),
                 Inbound::Control(request, reply, claimed) => {
                     // Withdrawn while it waited behind something long: its
                     // client was told nothing was done, so nothing is.
@@ -394,7 +394,11 @@ impl Daemon {
         }
     }
 
-    fn hook(&mut self, message: &HookMessage) {
+    /// One hook report. `sender` is the pipe client's process and its
+    /// ancestors, as the pipe told them, which the agent's own process is
+    /// trusted from: a process the message names is the agent's only when it
+    /// is one of them.
+    fn hook(&mut self, message: &HookMessage, sender: &[u32]) {
         // Only a live, visible top-level window gets a frame. A pseudo console
         // window, which a hook names when its terminal was not ready yet, is
         // followed to the terminal window now; anything else is a stale handle
@@ -425,14 +429,15 @@ impl Daemon {
         // window that waits already changes nothing on screen, yet it is one
         // more agent that needs you.
         let session = &message.event.session_id;
-        self.note_peer_session(w, session);
+        let agent = trusted_agent(message.pid, sender);
+        self.note_peer_session(w, session, agent);
         let before = self.agents.session_state(session);
         let changed = self.agents.apply(w, &message.event);
         let now = self.agents.session_state(session);
         if changed || now != before {
             self.note_states();
         }
-        if let Some(pid) = message.pid
+        if let Some(pid) = agent
             && now.is_some()
         {
             self.watch_agent(pid, session);
@@ -1153,19 +1158,34 @@ impl Daemon {
     }
 
     /// Notes `session` as the one peer window `w` runs now, so the peer
-    /// resumes it after a restart of Windows. Only a session id that can go
-    /// into a command line is kept: the hook pipe is open to every process
-    /// of the user.
-    fn note_peer_session(&mut self, w: u64, session: &str) {
+    /// resumes it after a restart of Windows.
+    ///
+    /// The hook pipe is open to every process of the user, and `restore`
+    /// runs the session in an administrator terminal. So a session is kept
+    /// only when it can go into a command line, and only from `agent`, the
+    /// process the hook ran under, when that process is in the peer's own
+    /// terminal: its console leads to `w`. A process of the user outside the
+    /// peer cannot be under the peer's agent, and one that is not elevated
+    /// cannot reach an administrator peer's console.
+    fn note_peer_session(&mut self, w: u64, session: &str, agent: Option<u32>) {
         if !peer::session_id_ok(session) {
             return;
         }
-        if let Some(p) = self.peers.iter_mut().find(|p| p.window == w)
-            && p.spawn.resume.as_deref() != Some(session)
-        {
-            p.spawn.resume = Some(session.to_owned());
-            self.save_peers();
+        let Some(i) = self.peers.iter().position(|p| p.window == w) else {
+            return;
+        };
+        if self.peers[i].spawn.resume.as_deref() == Some(session) {
+            return;
         }
+        if !agent.is_some_and(|a| in_terminal(a, w)) {
+            tracing::warn!(
+                window = format!("{w:#x}"),
+                "a hook outside the peer named its session; kept the old one"
+            );
+            return;
+        }
+        self.peers[i].spawn.resume = Some(session.to_owned());
+        self.save_peers();
     }
 
     /// Writes the peers, open and dormant, to [`Daemon::peers_file`]. Not
@@ -1535,6 +1555,18 @@ fn wall_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// The agent's process a hook named, when the pipe says the hook ran under
+/// it: one of the client's ancestors, not the client itself.
+fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
+    named.filter(|p| sender.iter().skip(1).any(|s| s == p))
+}
+
+/// Whether process `pid` runs in the terminal that is window `w`: its
+/// console, or one of its ancestors', leads there.
+fn in_terminal(pid: u32, w: u64) -> bool {
+    daifuku_win::console::terminal_window(pid) == Some(w)
 }
 
 /// The session whose state window `w` shows as `state`: of the sessions in
@@ -1910,29 +1942,28 @@ mod tests {
     }
 
     #[test]
-    fn a_session_that_runs_already_is_not_restored() {
-        use daifuku_core::state::HookEvent;
+    fn only_a_process_the_hook_ran_under_counts_as_its_agent() {
+        // The client, then its ancestors, as the pipe found them.
+        let sender = [30, 20, 10];
+        assert_eq!(trusted_agent(Some(20), &sender), Some(20));
+        assert_eq!(trusted_agent(Some(10), &sender), Some(10));
+        // Not the hook itself, nothing it did not run under, nothing at all
+        // when the pipe could not tell.
+        assert_eq!(trusted_agent(Some(30), &sender), None);
+        assert_eq!(trusted_agent(Some(99), &sender), None);
+        assert_eq!(trusted_agent(Some(20), &[]), None);
+        assert_eq!(trusted_agent(None, &sender), None);
+    }
+
+    #[test]
+    fn a_peer_takes_no_session_from_a_hook_it_cannot_place() {
         let mut d = daemon();
-        let spawn = |id: &str| Spawn {
-            directory: r"C:\no\such\folder".into(),
-            resume: Some(id.into()),
-            ..Spawn::default()
-        };
         d.peers.push(Peer {
-            window: 9,
-            spawn: spawn("in-a-peer"),
+            window: 7,
+            spawn: Spawn::default(),
         });
-        d.agents.apply(
-            5,
-            &HookEvent {
-                session_id: "elsewhere".into(),
-                hook_event_name: "Stop".into(),
-                ..HookEvent::default()
-            },
-        );
-        assert!(d.running(&spawn("in-a-peer")).is_some());
-        assert!(d.running(&spawn("elsewhere")).is_some());
-        assert_eq!(d.running(&spawn("free")), None);
+        d.note_peer_session(7, "planted", None);
+        assert_eq!(d.peers[0].spawn.resume, None);
     }
 
     #[test]
@@ -1967,6 +1998,32 @@ mod tests {
                 .is_empty()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_that_runs_already_is_not_restored() {
+        use daifuku_core::state::HookEvent;
+        let mut d = daemon();
+        let spawn = |id: &str| Spawn {
+            directory: r"C:\no\such\folder".into(),
+            resume: Some(id.into()),
+            ..Spawn::default()
+        };
+        d.peers.push(Peer {
+            window: 9,
+            spawn: spawn("in-a-peer"),
+        });
+        d.agents.apply(
+            5,
+            &HookEvent {
+                session_id: "elsewhere".into(),
+                hook_event_name: "Stop".into(),
+                ..HookEvent::default()
+            },
+        );
+        assert!(d.running(&spawn("in-a-peer")).is_some());
+        assert!(d.running(&spawn("elsewhere")).is_some());
+        assert_eq!(d.running(&spawn("free")), None);
     }
 
     #[test]
