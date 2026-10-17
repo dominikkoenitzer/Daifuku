@@ -770,19 +770,33 @@ fn expect_failure(what: &str, passed: bool) {
 }
 
 /// The script a peer's terminal runs. It writes what it was started with to
-/// `ran-<its arguments>.txt` beside it: its folder, its arguments, how many
-/// `CLAUDE` variables it sees, its process id and its priority class. Then
-/// it reports the hook
-/// event in `peer-event.json`, from inside its terminal as an agent would.
+/// `ran-<its arguments>.txt` beside it, as [`Ran`] reads it, and reports the
+/// hook event in `peer-event.json` from inside its terminal, as an agent
+/// would. With a file `ping-me` beside it, it first starts a hidden `ping`
+/// that would outlive it; with `agent-me`, a second PowerShell on its
+/// console plays the agent, reports the event two seconds later instead and
+/// stays, its process id in `agent-pid.txt`.
 fn peer_script(dir: &Path) -> PathBuf {
     let script = dir.join("peer.ps1");
     let text = format!(
-        r#"$out = Join-Path '{dir}' ('ran-' + ($args -join '-') + '.txt')
+        r#"$here = '{dir}'
+$out = Join-Path $here ('ran-' + ($args -join '-') + '.txt')
 $claude = @(Get-ChildItem env: | Where-Object Name -like 'CLAUDE*').Count
 $class = (Get-Process -Id $PID).PriorityClass
-Set-Content -LiteralPath $out -Value ("$PWD|" + ($args -join ' ') + "|$claude|$PID|$class")
-$event = Join-Path '{dir}' 'peer-event.json'
-if (Test-Path $event) {{ Get-Content -Raw $event | & '{cli}' hook }}
+$stale = [int](Test-Path env:DAIFUKU_E2E_STALE)
+$fresh = [int](($env:PATH -like '*\System32*') -and -not ($env:PATH -like '*daifuku-e2e-stale*'))
+$ping = 0
+if (Test-Path (Join-Path $here 'ping-me')) {{
+    $ping = (Start-Process ping.exe -ArgumentList '-n','120','127.0.0.1' -PassThru -WindowStyle Hidden).Id
+}}
+$event = Join-Path $here 'peer-event.json'
+if (Test-Path (Join-Path $here 'agent-me')) {{
+    $agent = Start-Process powershell.exe -NoNewWindow -PassThru -ArgumentList '-NoProfile','-Command',"Start-Sleep 2; Get-Content -Raw '$event' | & '{cli}' hook; Start-Sleep 120"
+    Set-Content -LiteralPath (Join-Path $here 'agent-pid.txt') -Value $agent.Id
+}} elseif (Test-Path $event) {{
+    Get-Content -Raw $event | & '{cli}' hook
+}}
+Set-Content -LiteralPath $out -Value ("$PWD|" + ($args -join ' ') + "|$claude|$PID|$class|$stale|$fresh|$ping")
 "#,
         dir = dir.display(),
         cli = cli().display()
@@ -791,15 +805,36 @@ if (Test-Path $event) {{ Get-Content -Raw $event | & '{cli}' hook }}
     script
 }
 
+/// What a peer's script wrote.
+struct Ran {
+    /// The folder it started in.
+    folder: String,
+    /// Its arguments, joined by spaces.
+    args: String,
+    /// How many `CLAUDE` variables it saw.
+    claude: String,
+    /// Its process id.
+    pid: u32,
+    /// Its priority class, `Normal`, `BelowNormal` and so on.
+    class: String,
+    /// `1` when it saw the daemon's own `DAIFUKU_E2E_STALE`.
+    stale: String,
+    /// `1` when its `PATH` is the one saved in the registry, not the
+    /// daemon's.
+    fresh_path: String,
+    /// The hidden `ping` it started, 0 for none.
+    ping: u32,
+}
+
 /// What a peer's script wrote: folder, arguments, `CLAUDE` variables seen
 /// and process id.
 fn ran(dir: &Path, args: &str) -> (String, String, String, u32) {
-    let (folder, args, claude, pid, _) = ran_at(dir, args);
-    (folder, args, claude, pid)
+    let r = ran_full(dir, args);
+    (r.folder, r.args, r.claude, r.pid)
 }
 
-/// What a peer's script wrote, with the priority class it ran at.
-fn ran_at(dir: &Path, args: &str) -> (String, String, String, u32, String) {
+/// Everything a peer's script wrote, once it wrote it.
+fn ran_full(dir: &Path, args: &str) -> Ran {
     let file = dir.join(format!("ran-{args}.txt"));
     let text = wait_for(
         &format!("{} to be written", file.display()),
@@ -811,14 +846,40 @@ fn ran_at(dir: &Path, args: &str) -> (String, String, String, u32, String) {
         },
     );
     let parts: Vec<&str> = text.trim_end().split('|').collect();
-    assert_eq!(parts.len(), 5, "{text}");
-    (
-        parts[0].to_owned(),
-        parts[1].to_owned(),
-        parts[2].to_owned(),
-        parts[3].parse().unwrap(),
-        parts[4].to_owned(),
-    )
+    assert_eq!(parts.len(), 8, "{text}");
+    Ran {
+        folder: parts[0].to_owned(),
+        args: parts[1].to_owned(),
+        claude: parts[2].to_owned(),
+        pid: parts[3].parse().unwrap(),
+        class: parts[4].to_owned(),
+        stale: parts[5].to_owned(),
+        fresh_path: parts[6].to_owned(),
+        ping: parts[7].parse().unwrap(),
+    }
+}
+
+/// Whether process `pid` still runs.
+fn alive(pid: u32) -> bool {
+    let out = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).contains(&format!(" {pid} "))
+}
+
+/// The peers file a daemon keeps in `state`, one per user.
+fn peers_file(state: &Path) -> PathBuf {
+    std::fs::read_dir(state)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("peers") && n.ends_with(".json"))
+        })
+        .expect("a peers file")
 }
 
 /// A border shown around `w`'s frame, if there is one.
@@ -929,10 +990,17 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
     let mut steps = 0;
     // The daemon carries an agent's variables, as one started from inside an
     // agent would: none of them may reach the terminal.
+    // Its PATH is not the one in the registry, and it carries a variable of
+    // its own: the terminal must see neither, only what Windows builds now.
     let (mut cleanup, _) = start_with(
         &config,
         None,
-        &[("CLAUDECODE", "1"), ("CLAUDE_CODE_ENTRYPOINT", "e2e")],
+        &[
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_ENTRYPOINT", "e2e"),
+            ("DAIFUKU_E2E_STALE", "1"),
+            ("PATH", r"C:\daifuku-e2e-stale"),
+        ],
     );
 
     let w = spawn(&[
@@ -945,14 +1013,20 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         "--area",
         "right",
     ]);
-    let (folder, args, claude, _) = ran(&dir, "");
+    let first = ran_full(&dir, "");
     assert!(
-        same_dir(&folder, &work),
-        "the peer started in {folder}, not in its folder"
+        same_dir(&first.folder, &work),
+        "the peer started in {}, not in its folder",
+        first.folder
     );
-    assert_eq!(args, "", "a peer without --resume got arguments");
+    assert_eq!(first.args, "", "a peer without --resume got arguments");
     steps += 1;
-    assert_eq!(claude, "0", "the terminal saw CLAUDE variables");
+    assert_eq!(first.claude, "0", "the terminal saw CLAUDE variables");
+    assert_eq!(
+        first.stale, "0",
+        "the terminal saw the daemon's own variable"
+    );
+    assert_eq!(first.fresh_path, "1", "the terminal got the daemon's PATH");
     steps += 1;
 
     // In the right half of the primary monitor, as a fleet of one.
@@ -1030,6 +1104,7 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
     let low = dir.join("low");
     std::fs::create_dir_all(&low).unwrap();
     std::fs::remove_file(dir.join("ran-.txt")).unwrap();
+    std::fs::write(dir.join("ping-me"), "").unwrap();
     let grouped = spawn(&[
         "--dir",
         &low.display().to_string(),
@@ -1038,21 +1113,29 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         "--priority",
         "below-normal",
     ]);
-    let (_, _, _, shell, class) = ran_at(&dir, "");
-    assert_eq!(class, "BelowNormal", "the grouped peer's shell");
+    let grouped_ran = ran_full(&dir, "");
+    std::fs::remove_file(dir.join("ping-me")).unwrap();
+    let (shell, ping) = (grouped_ran.pid, grouped_ran.ping);
+    assert_eq!(grouped_ran.class, "BelowNormal", "the grouped peer's shell");
+    assert!(
+        ping != 0 && alive(ping),
+        "the grouped peer's ping did not start"
+    );
     assert!(window::close(grouped));
+    // A ping started hidden, in a console of its own, lives on after its
+    // terminal unless the group ends it.
     let start = Instant::now();
-    let alive = || {
-        let out = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {shell}"), "/NH"])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).contains(&shell.to_string())
-    };
-    while alive() && start.elapsed() < Duration::from_secs(15) {
+    while (alive(shell) || alive(ping)) && start.elapsed() < Duration::from_secs(15) {
         std::thread::sleep(Duration::from_millis(200));
     }
-    assert!(!alive(), "the grouped peer's shell outlived its terminal");
+    assert!(
+        !alive(shell),
+        "the grouped peer's shell outlived its terminal"
+    );
+    assert!(
+        !alive(ping),
+        "what the grouped peer started outlived its terminal"
+    );
     steps += 1;
 
     stop(&mut cleanup);
@@ -1076,13 +1159,38 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(&state).unwrap();
     let config = peer_config(&dir);
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
+
+    // A peer closed while the daemon runs leaves the file, so no restore
+    // opens it again.
+    std::fs::write(
+        dir.join("peer-event.json"),
+        r#"{"session_id":"e2e-closed-1","hook_event_name":"Stop"}"#,
+    )
+    .unwrap();
+    let closed = spawn(&["--dir", &work.display().to_string(), "--label", "closed"]);
+    wait_for("the closed peer's session", Duration::from_secs(30), || {
+        status()?
+            .peers
+            .into_iter()
+            .find(|p| p.window == closed && p.session_id.as_deref() == Some("e2e-closed-1"))
+    });
+    assert!(window::close(closed));
+    wait_for(
+        "the closed peer to leave the status",
+        Duration::from_secs(15),
+        || status().filter(|s| s.peers.iter().all(|p| p.window != closed)),
+    );
+    let kept = std::fs::read_to_string(peers_file(&state)).unwrap();
+    assert!(!kept.contains("e2e-closed-1"), "{kept}");
+    steps += 1;
+
     std::fs::write(
         dir.join("peer-event.json"),
         r#"{"session_id":"e2e-restore-1","hook_event_name":"Stop"}"#,
     )
     .unwrap();
-    let mut steps = 0;
-    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
 
     let w = spawn(&["--dir", &work.display().to_string(), "--label", "keep"]);
     wait_for("the peer's session", Duration::from_secs(30), || {
@@ -1091,7 +1199,7 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
             .into_iter()
             .find(|p| p.window == w && p.session_id.as_deref() == Some("e2e-restore-1"))
     });
-    let kept = std::fs::read_to_string(state.join("peers.json")).unwrap();
+    let kept = std::fs::read_to_string(peers_file(&state)).unwrap();
     assert!(kept.contains("e2e-restore-1"), "{kept}");
     steps += 1;
 
@@ -1108,15 +1216,30 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
     );
     steps += 1;
 
-    // As at a restart of Windows: the daemon stops, then its terminal goes.
+    // As at a restart of Windows: the daemon stops, then its terminal goes,
+    // and the next daemon runs in a later start of Windows. A runner cannot
+    // restart, so the file is moved a day back instead.
     stop(&mut cleanup);
     assert!(window::close(w));
     wait_for("the peer to close", Duration::from_secs(15), || {
         (!window::exists(w)).then_some(())
     });
+    let file = peers_file(&state);
+    let mut kept = json(&std::fs::read_to_string(&file).unwrap());
+    let day = 86_400;
+    kept["boot"] = (kept["boot"].as_u64().unwrap() - day).into();
+    for p in kept["peers"].as_array_mut().unwrap() {
+        p["boot"] = (p["boot"].as_u64().unwrap() - day).into();
+    }
+    std::fs::write(&file, kept.to_string()).unwrap();
     let (mut cleanup, first) = start_with(&config, Some(&state), &[]);
     assert!(first.peers.is_empty(), "{:?}", first.peers);
     let listed = json(&run(&["restore", "--dry-run", "--json"]));
+    assert_eq!(
+        listed["peers"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
     assert_eq!(
         listed["peers"][0]["session_id"], "e2e-restore-1",
         "{listed}"
@@ -1323,6 +1446,48 @@ fn a_border_goes_when_its_agent_process_is_killed() {
         wait_for("the tab to close", Duration::from_secs(15), || {
             (!window::exists(w)).then_some(())
         });
+
+        // The case as it happens: the agent ends, and the shell it ran in
+        // stays, its prompt back. The agent here is a second PowerShell on
+        // the tab's console that reports two seconds after the shell started.
+        std::fs::remove_file(dir.join("ran-.txt")).unwrap();
+        std::fs::write(dir.join("agent-me"), "").unwrap();
+        let w = spawn(&["--dir", &dir.display().to_string(), "--label", "agent"]);
+        let shell = ran_full(&dir, "").pid;
+        let agent: u32 = wait_for("the agent's process id", Duration::from_secs(20), || {
+            std::fs::read_to_string(dir.join("agent-pid.txt"))
+                .ok()
+                .and_then(|t| t.trim().parse().ok())
+        });
+        let border = wait_for(
+            "a border around the agent's tab",
+            Duration::from_secs(20),
+            || {
+                status()?
+                    .agents
+                    .iter()
+                    .any(|a| a.window == w && a.state.name() == "waiting")
+                    .then(|| border_around(w))
+                    .flatten()
+            },
+        );
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &agent.to_string()])
+            .output();
+        wait_for(
+            "the border to go with the agent",
+            Duration::from_secs(15),
+            || (!window::is_shown(border)).then_some(()),
+        );
+        assert!(
+            alive(shell) && window::exists(w),
+            "the shell and its tab stay"
+        );
+        wait_for("the agent to be forgotten", Duration::from_secs(5), || {
+            status().filter(|s| s.agents.iter().all(|a| a.window != w))
+        });
+        steps += 1;
+        let _ = window::close(w);
     }
 
     stop(&mut cleanup);
