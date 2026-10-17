@@ -607,6 +607,42 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_with_a_priority_runs_its_shell_inside_a_group() {
+        let l = Launch {
+            command: Some("claude".into()),
+            group: Some((
+                r"C:\Program Files\Daifuku\daifuku.exe".into(),
+                Priority::BelowNormal,
+            )),
+            ..Launch::default()
+        };
+        let shell = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
+        let args = strs(&l.args(Some(shell), false));
+        let at = args
+            .iter()
+            .position(|a| a.ends_with("daifuku.exe"))
+            .unwrap();
+        assert_eq!(
+            args[at..at + 6],
+            [
+                r"C:\Program Files\Daifuku\daifuku.exe",
+                "group",
+                "--priority",
+                "below-normal",
+                "--",
+                r"C:\Program Files\PowerShell\7\pwsh.exe",
+            ]
+        );
+        // Without a command there is no shell to put in a group.
+        let bare = Launch { command: None, ..l };
+        assert!(
+            !strs(&bare.args(Some(shell), false))
+                .iter()
+                .any(|a| a == "group")
+        );
+    }
+
+    #[test]
     fn a_clean_launch_skips_the_profile_and_escapes_every_semicolon() {
         let l = Launch {
             profile: Some("a;b".into()),
