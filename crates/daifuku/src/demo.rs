@@ -151,6 +151,8 @@ impl Reporter {
                 daifuku_at: at,
                 ..HookEvent::default()
             },
+            // The demo agent is the agent: it reports from its own process.
+            pid: Some(process::current()),
         };
         if let Ok(line) = to_line(&message) {
             let _ = send(Pipe::Hook, &line, Duration::from_millis(200));

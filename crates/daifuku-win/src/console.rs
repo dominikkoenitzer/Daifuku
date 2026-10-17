@@ -32,10 +32,18 @@ use crate::{raw, window};
 /// process that is done writing to its console, as the hook is.
 #[must_use]
 pub fn terminal_window(pid: u32) -> Option<u64> {
+    terminal_window_of(pid).map(|(w, _)| w)
+}
+
+/// [`terminal_window`], and the process that led to it: the first in the
+/// chain whose console is the terminal's, which is the agent itself, or the
+/// one that owns the window.
+#[must_use]
+pub fn terminal_window_of(pid: u32) -> Option<(u64, u32)> {
     let chain = ancestors(pid);
     for p in &chain {
         if let Some(w) = via_console(p.pid) {
-            return Some(w);
+            return Some((w, p.pid));
         }
     }
     via_owning_process(&chain)
@@ -125,7 +133,7 @@ fn via_console(pid: u32) -> Option<u64> {
 /// The fallback for terminals whose pseudo console has no owner, such as an
 /// editor's built-in terminal: the nearest ancestor that owns a visible
 /// top-level window, and of its windows the largest.
-fn via_owning_process(chain: &[Proc]) -> Option<u64> {
+fn via_owning_process(chain: &[Proc]) -> Option<(u64, u32)> {
     let windows = window::top_level();
     for p in chain {
         let best = windows
@@ -137,7 +145,7 @@ fn via_owning_process(chain: &[Proc]) -> Option<u64> {
             })
             .max_by_key(|&(_, area)| area);
         if let Some((w, _)) = best {
-            return Some(w);
+            return Some((w, p.pid));
         }
     }
     None

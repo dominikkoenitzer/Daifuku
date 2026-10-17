@@ -814,10 +814,15 @@ fn hook() {
     if event.transition() == Transition::Ignore {
         return;
     }
-    let Some(window) = console::terminal_window(process::current()) else {
+    let Some((window, agent)) = console::terminal_window_of(process::current()) else {
         return;
     };
-    let Ok(line) = to_line(&HookMessage { window, event }) else {
+    let message = HookMessage {
+        window,
+        event,
+        pid: Some(agent),
+    };
+    let Ok(line) = to_line(&message) else {
         return;
     };
     // A short wait: an agent that waits for its hook must never notice a
