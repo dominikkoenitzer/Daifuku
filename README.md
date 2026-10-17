@@ -81,6 +81,7 @@ path to check another file first.
 | `admin` | `true` | open as administrator |
 | `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet; a second fleet needs its own, or `null` |
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
+| `with` | none | other fleets, by name, that open with this one |
 
 Gaps are in `gaps`, the look of the borders in `border`, the global keys in
 `hotkeys`, and `"sound": true` plays Windows' Asterisk sound when an agent
