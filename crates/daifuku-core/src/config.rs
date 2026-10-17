@@ -1386,6 +1386,40 @@ mod tests {
     }
 
     #[test]
+    fn a_fleet_opens_others_with_it_by_name_in_any_case() {
+        let c = Config::from_json(
+            r#"{"fleets":[{"name":"lead","with":["CREW"]},{"name":"crew","hotkey":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(c.fleets[0].with, ["CREW"]);
+        assert!(c.fleets[1].with.is_empty());
+        let text = serde_json::to_string(&c.fleets[1]).unwrap();
+        assert!(!text.contains("with"), "{text}");
+    }
+
+    #[test]
+    fn a_fleet_cannot_open_itself_or_one_that_is_not_there() {
+        for (with, reason) in [("Lead", "itself"), ("crow", "not a fleet in the file")] {
+            let json = format!(
+                r#"{{"fleets":[{{"name":"lead","with":["{with}"]}},{{"name":"crew","hotkey":null}}]}}"#
+            );
+            assert_eq!(
+                Config::from_json(&json),
+                Err(ConfigError::With {
+                    name: "lead".into(),
+                    other: with.into(),
+                    reason
+                })
+            );
+        }
+        let e = Config::from_json(r#"{"fleets":[{"name":"lead","with":["crow"]}]}"#).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "fleet `lead` opens `crow` with it, which is not a fleet in the file"
+        );
+    }
+
+    #[test]
     fn every_state_has_its_own_width() {
         let b = Border::default();
         let widths: Vec<_> = AgentState::ALL.iter().map(|&s| b.width_for(s)).collect();
