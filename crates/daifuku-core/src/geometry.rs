@@ -78,6 +78,21 @@ impl Rect {
         )
     }
 
+    /// The part from `x` to `x + width` across and from `y` to `y + height`
+    /// down, each a fraction of this rectangle's size from 0 to 1.
+    ///
+    /// Each edge is rounded to the nearest pixel on its own, counted from
+    /// this rectangle's top left corner, so two parts that meet at one
+    /// fraction share that edge exactly and the rounding does not depend on
+    /// where the rectangle sits on the desktop. A part too thin for a pixel
+    /// still gets one, and no part leaves the rectangle.
+    #[must_use]
+    pub fn part(&self, x: f64, y: f64, width: f64, height: f64) -> Self {
+        let (left, right) = part_span(self.left, self.width(), x, x + width);
+        let (top, bottom) = part_span(self.top, self.height(), y, y + height);
+        Self::new(left, top, right, bottom)
+    }
+
     /// Whether the point lies inside.
     #[must_use]
     pub const fn contains(&self, x: i32, y: i32) -> bool {
@@ -89,6 +104,19 @@ impl Rect {
     pub const fn centre(&self) -> (i32, i32) {
         (self.left + self.width() / 2, self.top + self.height() / 2)
     }
+}
+
+/// The span from fraction `from` to fraction `to` of `size` pixels starting
+/// at `start`, at least one pixel wide when `size` has one.
+fn part_span(start: i32, size: i32, from: f64, to: f64) -> (i32, i32) {
+    // Between 0 and size once clamped and rounded, so the cast is exact.
+    let at = |f: f64| start + (f64::from(size) * f.clamp(0.0, 1.0)).round() as i32;
+    let (from, to) = (at(from), at(to));
+    if size > 0 && to <= from {
+        let from = from.min(start + size - 1);
+        return (from, from + 1);
+    }
+    (from, to.max(from))
 }
 
 #[cfg(test)]
