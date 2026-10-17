@@ -96,11 +96,27 @@ terminal you minimised or maximised stays that way.
 | `"top"`, `"bottom"` | The top or the bottom half. |
 | `{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }` | Any rectangle, in fractions of the monitor from its top left corner. All four keys are needed, each 0 to 1. `width` and `height` must be more than 0, and the rectangle must stay on the monitor. |
 
-Three terminals on the right half of a landscape monitor:
+One agent that hands out the work on the left half, and the three it hands
+it to stacked on the right:
 
 ```json
-{ "name": "side", "count": 3, "monitor": "landscape", "area": "right" }
+{
+  "fleets": [
+    { "name": "lead", "count": 1, "monitor": "landscape", "area": "left", "hotkey": "ctrl + alt + return" },
+    {
+      "name": "crew",
+      "count": 3,
+      "monitor": "landscape",
+      "area": "right",
+      "shape": { "columns": 1, "rows": 3 },
+      "hotkey": "ctrl + alt + w"
+    }
+  ]
+}
 ```
+
+On their own, three terminals on a half come out two over one, so `shape`
+stacks them in three rows the width of the half.
 
 The outer gap goes around the area as it goes around the monitor, so on the
 monitor's own edges the terminals line up with a fleet that fills all of it.
