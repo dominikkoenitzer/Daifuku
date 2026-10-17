@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Security::{
     DuplicateTokenEx, EqualSid, GetTokenInformation, RevertToSelf, SecurityImpersonation,
     TOKEN_ACCESS_MASK, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_IMPERSONATE, TOKEN_QUERY,
@@ -14,13 +14,45 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, SetThreadToken,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, SetThreadToken, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetShellWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_SHUTTINGDOWN,
 };
 
 use crate::wide::from_wide;
+
+/// A process watched until it ends. The handle keeps its id from being
+/// handed to another process meanwhile.
+pub struct Watch(HANDLE);
+
+impl Watch {
+    /// Watches process `pid`, or `None` when it cannot be opened, as when it
+    /// has ended already.
+    #[must_use]
+    pub fn open(pid: u32) -> Option<Self> {
+        // SAFETY: the handle is owned by the returned value.
+        unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }
+            .ok()
+            .map(Self)
+    }
+
+    /// Whether the process has ended.
+    #[must_use]
+    pub fn ended(&self) -> bool {
+        // SAFETY: a valid handle, not waited on.
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        // SAFETY: the handle is owned and closed once.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
 
 /// Whether the session is signing out or Windows is shutting down, when
 /// windows close because everything stops, not because someone closed them.
