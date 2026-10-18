@@ -42,6 +42,9 @@ pub mod terminal;
 pub mod user_env;
 pub mod window;
 
+#[cfg(test)]
+mod test_support;
+
 mod wide;
 
 use windows::Win32::Foundation::HWND;
