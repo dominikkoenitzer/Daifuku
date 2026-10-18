@@ -772,7 +772,8 @@ fn expect_failure(what: &str, passed: bool) {
 /// The script a peer's terminal runs. It writes what it was started with to
 /// `ran-<its arguments>.txt` beside it, as [`Ran`] reads it, and reports the
 /// hook event in `peer-event.json` from inside its terminal, as an agent
-/// would. With a file `ping-me` beside it, it first starts a hidden `ping`
+/// would, or `peer-event-<its arguments>.json` when there is one. With a
+/// file `ping-me` beside it, it first starts a hidden `ping`
 /// that would outlive it; with `agent-me`, a second PowerShell on its
 /// console plays the agent, reports the event two seconds later instead and
 /// stays, its process id in `agent-pid.txt`.
@@ -790,6 +791,8 @@ if (Test-Path (Join-Path $here 'ping-me')) {{
     $ping = (Start-Process ping.exe -ArgumentList '-n','120','127.0.0.1' -PassThru -WindowStyle Hidden).Id
 }}
 $event = Join-Path $here 'peer-event.json'
+$own = Join-Path $here ('peer-event-' + ($args -join '-') + '.json')
+if ($args.Count -gt 0 -and (Test-Path $own)) {{ $event = $own }}
 if (Test-Path (Join-Path $here 'agent-me')) {{
     $agent = Start-Process powershell.exe -NoNewWindow -PassThru -ArgumentList '-NoProfile','-Command',"Start-Sleep 2; Get-Content -Raw '$event' | & '{cli}' hook; Start-Sleep 120"
     Set-Content -LiteralPath (Join-Path $here 'agent-pid.txt') -Value $agent.Id
@@ -1524,9 +1527,10 @@ fn fleet_windows(name: &str) -> Vec<u64> {
 }
 
 #[test]
-fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
+fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
     use daifuku_core::config::Area;
     use daifuku_core::grid::{Gaps, Grid, Shape};
+    use daifuku_core::protocol::RestoredPeer;
 
     if !enabled() {
         eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
@@ -1541,7 +1545,8 @@ fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
     let work = dir.join("work");
     std::fs::create_dir_all(&work).unwrap();
     // A crew of two, stacked on the right half: each terminal runs the peer
-    // script with its number, which names the file it writes.
+    // script with its number, which names the file it writes and the event
+    // it reports, so each one has a session of its own.
     let config = dir.join("daifuku.json");
     let command = format!("& '{}' {{n}}", peer_script(&dir).display());
     let json = serde_json::json!({
@@ -1553,6 +1558,18 @@ fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
         "hotkeys": { "next_waiting": null, "snap": null, "close": null }
     });
     std::fs::write(&config, json.to_string()).unwrap();
+    let events = |on: bool| {
+        for n in 1..=2 {
+            let file = dir.join(format!("peer-event-{n}.json"));
+            if on {
+                let event = format!(r#"{{"session_id":"e2e-crew-{n}","hook_event_name":"Stop"}}"#);
+                std::fs::write(&file, event).unwrap();
+            } else {
+                let _ = std::fs::remove_file(&file);
+            }
+        }
+    };
+    events(true);
     let mut steps = 0;
     let (mut cleanup, _) = start_with(&config, None, &[]);
     let monitors = daifuku_win::monitor::monitors();
@@ -1572,6 +1589,32 @@ fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
         all.extend_from_slice(args);
         spawned(&all)
     };
+    // A peer's session once its agent reported it from inside it.
+    let session_of = |w: u64| {
+        wait_for("a peer's session", Duration::from_secs(20), || {
+            status()?
+                .peers
+                .into_iter()
+                .find(|p| p.window == w)
+                .and_then(|p| p.session_id)
+        })
+    };
+    let restore = |args: &[&str]| -> Vec<RestoredPeer> {
+        let mut all = vec!["restore"];
+        all.extend_from_slice(args);
+        all.push("--json");
+        let reply = run(&all);
+        match from_line::<Response>(&reply) {
+            Ok(Response::Restored { peers }) => peers,
+            other => panic!("restore answered {other:?}: {reply}"),
+        }
+    };
+    let terminals = || {
+        window::top_level()
+            .into_iter()
+            .filter(|&w| window::class(w) == daifuku_win::terminal::WINDOW_CLASS)
+            .count()
+    };
 
     // The first peer takes the first cell and is the crew's first terminal,
     // numbered as it.
@@ -1580,28 +1623,18 @@ fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
     let first = ran_full(&dir, "1");
     assert!(same_dir(&first.folder, &work), "{}", first.folder);
     assert_in_cell(a, cells[0], "the first peer");
+    assert_eq!(session_of(a), "e2e-crew-1");
     steps += 1;
 
     // The second takes the next one; the crew is open with both.
     let (b, _, cell) = at(&["--cell"]);
     assert_eq!(cell, Some(2));
-    ran_full(&dir, "2");
     assert_in_cell(b, cells[1], "the second peer");
+    assert_eq!(session_of(b), "e2e-crew-2");
     assert_eq!(fleet_windows("crew"), vec![a, b]);
-    let named = status().unwrap();
-    assert!(
-        named.peers.iter().any(|p| p.window == b),
-        "the second peer is a peer too"
-    );
     steps += 1;
 
     // A third finds no cell and opens nothing.
-    let terminals = || {
-        window::top_level()
-            .into_iter()
-            .filter(|&w| window::class(w) == daifuku_win::terminal::WINDOW_CLASS)
-            .count()
-    };
     let before = terminals();
     let full = run(&[
         "spawn", "--dir", &dir_arg, "--fleet", "crew", "--cell", "--json",
@@ -1617,7 +1650,8 @@ fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
     assert_in_cell(a, cells[0], "the first peer after a snap");
     steps += 1;
 
-    // Close one by its label: only it goes, and its cell is free again.
+    // Close one by its label: only it goes, its cell is free again, and as
+    // it was closed by hand, nothing waits to be restored.
     let closed = run(&["close", "--terminal", "SITE"]);
     assert!(closed.contains("closed site"), "{closed}");
     assert!(!window::exists(a), "the peer named is still open");
@@ -1625,6 +1659,7 @@ fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
     wait_for("the crew to keep one", Duration::from_secs(5), || {
         (fleet_windows("crew") == vec![b]).then_some(())
     });
+    assert!(restore(&["--dry-run"]).is_empty());
     let unknown = run(&["close", "--terminal", "nobody"]);
     assert!(
         unknown.contains("no terminal is called `nobody`"),
@@ -1634,22 +1669,74 @@ fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
 
     // A peer that asks for the first cell gets it back.
     std::fs::remove_file(dir.join("ran-1.txt")).unwrap();
-    let (c, _, cell) = at(&["--cell", "1"]);
+    let (c, _, cell) = at(&["--cell", "1", "--label", "site"]);
     assert_eq!(cell, Some(1));
     ran_full(&dir, "1");
     assert_in_cell(c, cells[0], "the peer in the freed cell");
     assert_eq!(fleet_windows("crew"), vec![c, b]);
+    assert_eq!(session_of(c), "e2e-crew-1");
     steps += 1;
 
-    // By its window, then the rest with the crew.
-    let closed = run(&["close", "--terminal", &format!("{b:#x}")]);
-    assert!(closed.contains("closed crew 2"), "{closed}");
-    assert!(!window::exists(b));
+    // Closed with their fleet, as the close key does: kept for restore,
+    // which opens each again in its own cell.
     run(&["close", "crew"]);
     wait_for("the crew to close", Duration::from_secs(15), || {
-        (!window::exists(c)).then_some(())
+        (!window::exists(b) && !window::exists(c)).then_some(())
     });
-    wait_for("no peer to be left", Duration::from_secs(5), || {
+    let mut kept: Vec<String> = restore(&["--dry-run"])
+        .into_iter()
+        .map(|p| p.session_id)
+        .collect();
+    kept.sort();
+    assert_eq!(kept, ["e2e-crew-1", "e2e-crew-2"]);
+    let back = restore(&[]);
+    assert_eq!(back.len(), 2, "{back:?}");
+    for p in &back {
+        assert_eq!(p.error, None, "{p:?}");
+        let w = p.window.expect("a restored window");
+        let cell = if p.session_id == "e2e-crew-1" { 0 } else { 1 };
+        assert_in_cell(w, cells[cell], &format!("{} restored", p.session_id));
+        assert!(
+            fleet_windows("crew").contains(&w),
+            "{p:?} is not in the crew"
+        );
+    }
+    steps += 1;
+
+    // Closed with the crew again, then the crew opened afresh, which fills
+    // both cells: restore still opens them, beside the crew.
+    run(&["close", "crew"]);
+    wait_for("the crew to close again", Duration::from_secs(15), || {
+        status().filter(|s| s.fleets.is_empty() && s.peers.is_empty())
+    });
+    events(false);
+    run(&["open", "crew"]);
+    wait_for(
+        "the crew to fill its cells",
+        Duration::from_secs(30),
+        || (fleet_windows("crew").len() == 2).then_some(()),
+    );
+    let crew = fleet_windows("crew");
+    let beside = restore(&[]);
+    assert_eq!(beside.len(), 2, "{beside:?}");
+    for p in &beside {
+        assert_eq!(p.error, None, "{p:?}");
+        let w = p.window.expect("a restored window");
+        assert!(window::exists(w));
+        assert!(!crew.contains(&w), "{p:?} took a cell of the crew");
+    }
+    assert_eq!(fleet_windows("crew"), crew, "the crew kept its terminals");
+    steps += 1;
+
+    // By its window, a peer beside the crew; then the rest with the crew.
+    for p in &beside {
+        let w = p.window.unwrap();
+        let closed = run(&["close", "--terminal", &format!("{w:#x}")]);
+        assert!(closed.contains("closed"), "{closed}");
+        assert!(!window::exists(w));
+    }
+    run(&["close", "crew"]);
+    wait_for("nothing to be left", Duration::from_secs(15), || {
         status().filter(|s| s.peers.is_empty() && s.fleets.is_empty())
     });
     steps += 1;
