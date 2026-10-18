@@ -92,10 +92,44 @@ pub fn session_id_ok(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// `command` resuming session `id`, as Claude Code takes it.
+/// `command` resuming session `id`: right after the program it starts, so a
+/// line of several statements resumes in its first, the agent. Codex takes
+/// `codex resume <id>`, Claude Code and any other `--resume <id>`.
 #[must_use]
 pub fn resume_command(command: &str, id: &str) -> String {
-    format!("{command} --resume {id}")
+    let end = program_end(command);
+    let program = command[..end]
+        .trim_start()
+        .trim_start_matches('&')
+        .trim()
+        .trim_matches(['\'', '"']);
+    let name = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let resume = if name.split('.').next() == Some("codex") {
+        format!(" resume {id}")
+    } else {
+        format!(" --resume {id}")
+    };
+    format!("{}{resume}{}", &command[..end], &command[end..])
+}
+
+/// Where the program a PowerShell line starts ends: after its name, bare or
+/// in quotes, past a leading `&` that calls it.
+fn program_end(line: &str) -> usize {
+    let mut i = line.len() - line.trim_start().len();
+    if let Some(after) = line[i..].strip_prefix('&') {
+        i += 1 + (after.len() - after.trim_start().len());
+    }
+    let rest = &line[i..];
+    match rest.chars().next() {
+        Some(q @ ('\'' | '"')) => rest[1..].find(q).map_or(line.len(), |close| i + close + 2),
+        _ => rest
+            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '|'))
+            .map_or(line.len(), |n| i + n),
+    }
 }
 
 /// Whether a variable is one an agent sets for itself and its children:
@@ -269,11 +303,37 @@ mod tests {
     }
 
     #[test]
-    fn resuming_adds_the_id_to_the_command() {
-        assert_eq!(
-            resume_command("claude --dangerously-skip-permissions", "abc-1"),
-            "claude --dangerously-skip-permissions --resume abc-1"
-        );
+    fn resuming_puts_the_id_right_after_the_agent() {
+        for (command, resumed) in [
+            (
+                "claude --dangerously-skip-permissions",
+                "claude --resume abc-1 --dangerously-skip-permissions",
+            ),
+            ("claude", "claude --resume abc-1"),
+            // A later statement is not the agent.
+            (
+                "claude; Write-Host done",
+                "claude --resume abc-1; Write-Host done",
+            ),
+            (
+                r#"& "C:\Program Files\x\claude.exe" --model opus"#,
+                r#"& "C:\Program Files\x\claude.exe" --resume abc-1 --model opus"#,
+            ),
+            // Codex resumes with a subcommand, its flags after it.
+            (
+                "codex --dangerously-bypass-approvals-and-sandbox",
+                "codex resume abc-1 --dangerously-bypass-approvals-and-sandbox",
+            ),
+            (
+                r"& 'C:\tools\Codex.CMD' -m o4",
+                r"& 'C:\tools\Codex.CMD' resume abc-1 -m o4",
+            ),
+            ("  codex.exe|Out-Host", "  codex.exe resume abc-1|Out-Host"),
+            // A quote left open runs to the end.
+            (r#"& "C:\x\claude"#, r#"& "C:\x\claude --resume abc-1"#),
+        ] {
+            assert_eq!(resume_command(command, "abc-1"), resumed, "{command}");
+        }
     }
 
     #[test]
