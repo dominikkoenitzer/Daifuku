@@ -31,8 +31,9 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku next --json` | `{"ok": true}` |
 | `daifuku close [fleet] --json` | `{"ok": true}` |
 | `daifuku close --all --json` | `{"ok": true}` |
+| `daifuku close --terminal <window or label> --json` | `{"ok": true}` |
 | `daifuku demo --json` | `{"ok": true}` |
-| `daifuku spawn --json` | the terminal it opened, below |
+| `daifuku spawn [--cell [n]] --json` | the terminal it opened, below |
 | `daifuku restore [--dry-run] [--forget] --json` | every peer it looked at, below |
 | `daifuku label <window> [label] --json` | `{"ok": true}` |
 | `daifuku wait <window or label> [--until state] [--timeout seconds] --json` | the terminal once it got there, below |
@@ -98,11 +99,13 @@ one out: `elevated` is then `false`, and `hotkeys` and `peers` are empty.
 ### `spawn`
 
 ```json
-{ "result": "spawned", "window": 1050190, "label": "site" }
+{ "result": "spawned", "window": 1050190, "label": "site", "fleet": "crew", "cell": 2 }
 ```
 
 `window` is the new terminal's window handle, as `status` lists it. `label`
-is left out when none was given.
+is left out when none was given. `fleet` and `cell` say which fleet's grid
+it took a cell of, counted from 1, with `--cell`, and are left out without.
+With `--cell` and every cell taken, it fails and opens nothing.
 
 ### `wait`
 
