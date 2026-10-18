@@ -51,6 +51,12 @@ pub enum Request {
     },
     /// Close the terminals of every open fleet.
     CloseAll,
+    /// Close one terminal Daifuku knows, a fleet's, a peer or one an agent
+    /// reports from, by its window or its label.
+    CloseTerminal {
+        /// Its window handle, in decimal or as 0x and hex, or its label.
+        terminal: String,
+    },
     /// Focus the terminal that has waited longest.
     Next,
     /// Open six scripted demo agents, to see Daifuku without a real one.
@@ -290,6 +296,9 @@ mod tests {
                 fleet: Some("x".into()),
             },
             Request::CloseAll,
+            Request::CloseTerminal {
+                terminal: "site".into(),
+            },
             Request::Next,
             Request::Demo,
             Request::Spawn(Spawn {

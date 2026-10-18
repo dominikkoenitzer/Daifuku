@@ -363,6 +363,7 @@ impl Daemon {
             Request::Snap => self.snap(),
             Request::Close { fleet } => self.close(fleet.as_deref()),
             Request::CloseAll => self.close_all(),
+            Request::CloseTerminal { terminal } => self.close_terminal(terminal),
             Request::Next => self.next(),
             Request::Demo => self.demo(),
             Request::Spawn(spawn) => self.spawn(spawn),
@@ -626,6 +627,50 @@ impl Daemon {
         let every: Vec<usize> = (0..self.fleets.len()).collect();
         let (closed, open) = self.close_fleets(&every);
         Response::said(closed_message(None, closed, open))
+    }
+
+    /// Closes the one terminal `target` names, by its window or its label,
+    /// of the terminals Daifuku knows, and waits for it to go.
+    fn close_terminal(&mut self, target: &str) -> Response {
+        let known: Vec<(u64, Option<String>)> = self
+            .known_terminals()
+            .into_iter()
+            .filter(|&w| window::exists(w) && window::class(w) == WINDOW_CLASS)
+            .map(|w| (w, self.label_of(w)))
+            .collect();
+        let w = match pick_terminal(target, &known) {
+            Ok(w) => w,
+            Err(message) => return Response::error(message),
+        };
+        let name = self.label_of(w).unwrap_or_else(|| format!("{w:#010x}"));
+        if !window::close(w) {
+            return Response::error(format!("Windows refused to close {name}"));
+        }
+        let start = std::time::Instant::now();
+        while window::exists(w) && start.elapsed() < CLOSE_WAIT {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        if window::exists(w) {
+            return Response::said(format!(
+                "Windows Terminal kept {name} open, perhaps to ask about closing tabs"
+            ));
+        }
+        if self.window_destroyed(w) {
+            self.refresh_borders();
+        }
+        Response::said(format!("closed {name}"))
+    }
+
+    /// Every terminal Daifuku knows: the fleets', the peers, the ones agents
+    /// report from and the ones given a label.
+    fn known_terminals(&self) -> std::collections::BTreeSet<u64> {
+        self.fleets
+            .iter()
+            .flat_map(OpenFleet::windows)
+            .chain(self.peers.iter().map(|p| p.window))
+            .chain(self.agents.windows().into_keys())
+            .chain(self.labels.keys().copied())
+            .collect()
     }
 
     /// Asks every terminal of the fleets at `indices` to close, waits for
@@ -1568,6 +1613,47 @@ fn single_quoted(text: &str) -> String {
     out
 }
 
+/// The terminal of `known`, each with its label, that `target` names: its
+/// window, in decimal or as 0x and hex, or its label in any case, which must
+/// name one terminal only.
+fn pick_terminal(target: &str, known: &[(u64, Option<String>)]) -> Result<u64, String> {
+    let number = match target
+        .strip_prefix("0x")
+        .or_else(|| target.strip_prefix("0X"))
+    {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => target.parse().ok(),
+    };
+    if let Some(n) = number {
+        return known
+            .iter()
+            .any(|&(w, _)| w == n)
+            .then_some(n)
+            .ok_or_else(|| format!("window {n:#010x} is no terminal Daifuku knows"));
+    }
+    let called: Vec<u64> = known
+        .iter()
+        .filter(|(_, label)| {
+            label
+                .as_ref()
+                .is_some_and(|l| l.eq_ignore_ascii_case(target))
+        })
+        .map(|&(w, _)| w)
+        .collect();
+    match called.as_slice() {
+        [w] => Ok(*w),
+        [] => Err(format!("no terminal is called `{target}`")),
+        many => Err(format!(
+            "{} terminals are called `{target}`: name one by its window, {}",
+            many.len(),
+            many.iter()
+                .map(|w| format!("{w:#010x}"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        )),
+    }
+}
+
 /// What `close` says about fleet `name`, or about every fleet without one:
 /// how many terminals closed, and how many are still `open`.
 fn closed_message(name: Option<&str>, closed: usize, open: usize) -> String {
@@ -1880,6 +1966,65 @@ mod tests {
             }
             assert!(d.peers.is_empty());
         }
+    }
+
+    #[test]
+    fn one_terminal_is_named_by_its_window_or_its_one_label() {
+        let known = [
+            (0x10, Some("Site QA".to_owned())),
+            (0x20, Some("crew 2".to_owned())),
+            (0x30, None),
+            (0x40, Some("docs".to_owned())),
+            (0x50, Some("Docs".to_owned())),
+        ];
+        assert_eq!(pick_terminal("site qa", &known), Ok(0x10));
+        assert_eq!(pick_terminal("CREW 2", &known), Ok(0x20));
+        assert_eq!(pick_terminal("48", &known), Ok(0x30));
+        assert_eq!(pick_terminal("0x30", &known), Ok(0x30));
+        assert_eq!(pick_terminal("0X10", &known), Ok(0x10));
+        assert_eq!(
+            pick_terminal("0x99", &known),
+            Err("window 0x00000099 is no terminal Daifuku knows".into())
+        );
+        assert_eq!(
+            pick_terminal("lead", &known),
+            Err("no terminal is called `lead`".into())
+        );
+        assert_eq!(
+            pick_terminal("docs", &known),
+            Err(
+                "2 terminals are called `docs`: name one by its window, 0x00000040 or 0x00000050"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn closing_a_terminal_daifuku_does_not_know_is_an_error_and_closes_nothing() {
+        let mut d = daemon();
+        assert_eq!(
+            d.close_terminal("site"),
+            Response::error("no terminal is called `site`")
+        );
+        // A real window, but none of Daifuku's: the desktop.
+        // SAFETY: no arguments.
+        let desktop = daifuku_win::raw(unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow()
+        });
+        assert!(window::exists(desktop));
+        assert_eq!(
+            d.close_terminal(&desktop.to_string()),
+            Response::error(format!(
+                "window {desktop:#010x} is no terminal Daifuku knows"
+            ))
+        );
+        // Labelled, but not a terminal: still not closed.
+        d.labels.insert(desktop, "site".into());
+        assert_eq!(
+            d.close_terminal("site"),
+            Response::error("no terminal is called `site`")
+        );
+        assert!(window::exists(desktop));
     }
 
     #[test]

@@ -92,6 +92,10 @@ enum Command {
         /// Close every open fleet instead.
         #[arg(long, conflicts_with = "fleet")]
         all: bool,
+        /// Close only this terminal: a fleet's, a peer or one an agent
+        /// reports from, by its window handle or its label.
+        #[arg(long, value_name = "WINDOW_OR_LABEL", conflicts_with_all = ["fleet", "all"])]
+        terminal: Option<String>,
         #[command(flatten)]
         format: Format,
     },
@@ -411,6 +415,11 @@ fn main() -> ExitCode {
         Command::Doctor { format } => doctor_cmd(format.json),
         Command::Open { fleet, format } => control(&Request::Open { fleet }, format.json),
         Command::Snap { format } => control(&Request::Snap, format.json),
+        Command::Close {
+            terminal: Some(terminal),
+            format,
+            ..
+        } => control(&Request::CloseTerminal { terminal }, format.json),
         Command::Close {
             all: true, format, ..
         } => control(&Request::CloseAll, format.json),
@@ -1119,6 +1128,9 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Open { fleet } => with_fleet("open", fleet),
         Request::Close { fleet } => with_fleet("close", fleet),
         Request::CloseAll => "close --all".to_owned(),
+        Request::CloseTerminal { terminal } => {
+            format!("close --terminal {}", shell_word(terminal))
+        }
         Request::Snap => "snap".to_owned(),
         Request::Next => "next".to_owned(),
         Request::Demo => "demo".to_owned(),
@@ -1703,6 +1715,9 @@ mod tests {
                 fleet: Some("agents".into()),
             },
             Request::CloseAll,
+            Request::CloseTerminal {
+                terminal: "0x10064e".into(),
+            },
             Request::Next,
             Request::Demo,
             Request::Status,
@@ -1716,6 +1731,10 @@ mod tests {
             let back = match cli.command {
                 Command::Open { fleet, .. } => Request::Open { fleet },
                 Command::Snap { .. } => Request::Snap,
+                Command::Close {
+                    terminal: Some(terminal),
+                    ..
+                } => Request::CloseTerminal { terminal },
                 Command::Close { all: true, .. } => Request::CloseAll,
                 Command::Close { fleet, .. } => Request::Close { fleet },
                 Command::Next { .. } => Request::Next,
