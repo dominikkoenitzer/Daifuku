@@ -650,15 +650,11 @@ impl Daemon {
         while window::exists(w) && start.elapsed() < CLOSE_WAIT {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        if window::exists(w) {
-            return Response::said(format!(
-                "Windows Terminal kept {name} open, perhaps to ask about closing tabs"
-            ));
-        }
-        if self.window_destroyed(w) {
+        let closed = !window::exists(w);
+        if closed && self.window_destroyed(w) {
             self.refresh_borders();
         }
-        Response::said(format!("closed {name}"))
+        close_outcome(&name, closed)
     }
 
     /// Every terminal Daifuku knows: the fleets', the peers, the ones agents
@@ -1613,6 +1609,19 @@ fn single_quoted(text: &str) -> String {
     out
 }
 
+/// What `close --terminal` says about terminal `name`, once it `closed` or
+/// the wait for it ended: a terminal still open is a failure, as nothing
+/// was closed.
+fn close_outcome(name: &str, closed: bool) -> Response {
+    if closed {
+        Response::said(format!("closed {name}"))
+    } else {
+        Response::error(format!(
+            "asked {name} to close, and it is still open: Windows Terminal may be asking whether to close its tabs"
+        ))
+    }
+}
+
 /// The terminal of `known`, each with its label, that `target` names: its
 /// window, in decimal or as 0x and hex, or its label in any case, which must
 /// name one terminal only.
@@ -1997,6 +2006,15 @@ mod tests {
                     .into()
             )
         );
+    }
+
+    #[test]
+    fn a_terminal_still_open_after_the_wait_was_not_closed() {
+        assert_eq!(close_outcome("site", true), Response::said("closed site"));
+        assert!(matches!(
+            close_outcome("site", false),
+            Response::Error { message } if message.starts_with("asked site to close, and it is still open")
+        ));
     }
 
     #[test]
