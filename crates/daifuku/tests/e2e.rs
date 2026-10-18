@@ -1494,3 +1494,167 @@ fn a_border_goes_when_its_agent_process_is_killed() {
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
 }
+
+/// `daifuku spawn` with `args`, as the daemon answered it.
+fn spawned(args: &[&str]) -> (u64, Option<String>, Option<u32>) {
+    let mut all = vec!["spawn"];
+    all.extend_from_slice(args);
+    all.push("--json");
+    let reply = run(&all);
+    match from_line::<Response>(&reply) {
+        Ok(Response::Spawned {
+            window,
+            fleet,
+            cell,
+            ..
+        }) => (window, fleet, cell),
+        other => panic!("spawn answered {other:?}: {reply}"),
+    }
+}
+
+/// The open fleet `name`'s terminals, in cell order.
+fn fleet_windows(name: &str) -> Vec<u64> {
+    status()
+        .unwrap()
+        .fleets
+        .into_iter()
+        .find(|f| f.name == name)
+        .map(|f| f.windows)
+        .unwrap_or_default()
+}
+
+#[test]
+fn peers_take_the_cells_of_a_crew_and_close_one_at_a_time() {
+    use daifuku_core::config::Area;
+    use daifuku_core::grid::{Gaps, Grid, Shape};
+
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    daifuku_win::dpi::per_monitor_v2();
+    let dir = scratch().join("crew");
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    // A crew of two, stacked on the right half: each terminal runs the peer
+    // script with its number, which names the file it writes.
+    let config = dir.join("daifuku.json");
+    let command = format!("& '{}' {{n}}", peer_script(&dir).display());
+    let json = serde_json::json!({
+        "fleets": [{
+            "name": "crew", "count": 2, "monitor": "primary", "area": "right",
+            "shape": { "columns": 1, "rows": 2 },
+            "command": command, "admin": true, "no_profile": true, "hotkey": null
+        }],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, json.to_string()).unwrap();
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, None, &[]);
+    let monitors = daifuku_win::monitor::monitors();
+    let primary = monitors.iter().find(|m| m.primary).unwrap();
+    let cells = Grid::plan(
+        2,
+        Area::Right.within(primary.work),
+        Gaps::default(),
+        Some(Shape {
+            columns: 1,
+            rows: 2,
+        }),
+    );
+    let dir_arg = work.display().to_string();
+    let at = |args: &[&str]| {
+        let mut all = vec!["--dir", dir_arg.as_str(), "--fleet", "crew"];
+        all.extend_from_slice(args);
+        spawned(&all)
+    };
+
+    // The first peer takes the first cell and is the crew's first terminal,
+    // numbered as it.
+    let (a, fleet, cell) = at(&["--cell", "--label", "site"]);
+    assert_eq!((fleet.as_deref(), cell), (Some("crew"), Some(1)));
+    let first = ran_full(&dir, "1");
+    assert!(same_dir(&first.folder, &work), "{}", first.folder);
+    assert_in_cell(a, cells[0], "the first peer");
+    steps += 1;
+
+    // The second takes the next one; the crew is open with both.
+    let (b, _, cell) = at(&["--cell"]);
+    assert_eq!(cell, Some(2));
+    ran_full(&dir, "2");
+    assert_in_cell(b, cells[1], "the second peer");
+    assert_eq!(fleet_windows("crew"), vec![a, b]);
+    let named = status().unwrap();
+    assert!(
+        named.peers.iter().any(|p| p.window == b),
+        "the second peer is a peer too"
+    );
+    steps += 1;
+
+    // A third finds no cell and opens nothing.
+    let terminals = || {
+        window::top_level()
+            .into_iter()
+            .filter(|&w| window::class(w) == daifuku_win::terminal::WINDOW_CLASS)
+            .count()
+    };
+    let before = terminals();
+    let full = run(&[
+        "spawn", "--dir", &dir_arg, "--fleet", "crew", "--cell", "--json",
+    ]);
+    assert!(full.contains("every cell of fleet `crew`"), "{full}");
+    assert_eq!(fleet_windows("crew"), vec![a, b]);
+    assert_eq!(terminals(), before, "a third terminal opened");
+    steps += 1;
+
+    // Snap puts a peer that was moved back in its cell, as any of the crew.
+    let _ = window::place(a, daifuku_core::Rect::new(10, 10, 600, 400));
+    run(&["snap"]);
+    assert_in_cell(a, cells[0], "the first peer after a snap");
+    steps += 1;
+
+    // Close one by its label: only it goes, and its cell is free again.
+    let closed = run(&["close", "--terminal", "SITE"]);
+    assert!(closed.contains("closed site"), "{closed}");
+    assert!(!window::exists(a), "the peer named is still open");
+    assert!(window::exists(b), "the other peer closed too");
+    wait_for("the crew to keep one", Duration::from_secs(5), || {
+        (fleet_windows("crew") == vec![b]).then_some(())
+    });
+    let unknown = run(&["close", "--terminal", "nobody"]);
+    assert!(
+        unknown.contains("no terminal is called `nobody`"),
+        "{unknown}"
+    );
+    steps += 1;
+
+    // A peer that asks for the first cell gets it back.
+    std::fs::remove_file(dir.join("ran-1.txt")).unwrap();
+    let (c, _, cell) = at(&["--cell", "1"]);
+    assert_eq!(cell, Some(1));
+    ran_full(&dir, "1");
+    assert_in_cell(c, cells[0], "the peer in the freed cell");
+    assert_eq!(fleet_windows("crew"), vec![c, b]);
+    steps += 1;
+
+    // By its window, then the rest with the crew.
+    let closed = run(&["close", "--terminal", &format!("{b:#x}")]);
+    assert!(closed.contains("closed crew 2"), "{closed}");
+    assert!(!window::exists(b));
+    run(&["close", "crew"]);
+    wait_for("the crew to close", Duration::from_secs(15), || {
+        (!window::exists(c)).then_some(())
+    });
+    wait_for("no peer to be left", Duration::from_secs(5), || {
+        status().filter(|s| s.peers.is_empty() && s.fleets.is_empty())
+    });
+    steps += 1;
+
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
