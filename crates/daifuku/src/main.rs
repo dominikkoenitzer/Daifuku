@@ -133,6 +133,11 @@ enum Command {
         /// instead of its fleet's.
         #[arg(long, value_parser = parse_priority)]
         priority: Option<daifuku_core::config::Priority>,
+        /// Take a cell of the fleet's grid, the first free one or the one
+        /// numbered, and be one of its terminals: placed, snapped and closed
+        /// with it.
+        #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "free", conflicts_with_all = ["monitor", "area"])]
+        cell: Option<daifuku_core::peer::Cell>,
         #[command(flatten)]
         format: Format,
     },
@@ -420,10 +425,15 @@ fn main() -> ExitCode {
             monitor,
             area,
             priority,
+            cell,
             format,
         } => match spawn_request(dir, label, resume, fleet, monitor.as_deref(), area.as_deref()) {
             Ok(spawn) => control(
-                &Request::Spawn(daifuku_core::peer::Spawn { priority, ..spawn }),
+                &Request::Spawn(daifuku_core::peer::Spawn {
+                    priority,
+                    cell,
+                    ..spawn
+                }),
                 format.json,
             ),
             Err(message) if format.json => fail_json(ErrorCode::Usage, &message),
@@ -1034,11 +1044,16 @@ fn control(request: &Request, json: bool) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Ok(Response::Spawned { window, label }) => {
-            match label {
-                Some(l) => println!("opened {l} ({window:#010x})"),
-                None => println!("opened a terminal ({window:#010x})"),
-            }
+        Ok(Response::Spawned {
+            window,
+            label,
+            fleet,
+            cell,
+        }) => {
+            println!(
+                "{}",
+                spawned_line(window, label.as_deref(), fleet.as_deref(), cell)
+            );
             ExitCode::SUCCESS
         }
         Ok(restored @ Response::Restored { .. }) if json => {
@@ -1185,10 +1200,26 @@ fn spawn_request(
         monitor,
         area,
         priority: None,
+        cell: None,
     };
     match spawn.problem() {
         Some(problem) => Err(problem),
         None => Ok(spawn),
+    }
+}
+
+/// What `daifuku spawn` says about the terminal it opened: its label, and
+/// the fleet and cell it took when it asked for one.
+fn spawned_line(
+    window: u64,
+    label: Option<&str>,
+    fleet: Option<&str>,
+    cell: Option<u32>,
+) -> String {
+    let what = label.unwrap_or("a terminal");
+    match (fleet, cell) {
+        (Some(f), Some(n)) => format!("opened {what} in cell {n} of {f} ({window:#010x})"),
+        _ => format!("opened {what} ({window:#010x})"),
     }
 }
 
@@ -1639,6 +1670,18 @@ mod tests {
     }
 
     #[test]
+    fn spawn_says_the_cell_a_peer_took() {
+        assert_eq!(
+            spawned_line(0x1234, Some("Site QA"), Some("crew"), Some(2)),
+            "opened Site QA in cell 2 of crew (0x00001234)"
+        );
+        assert_eq!(
+            spawned_line(0x1234, None, None, None),
+            "opened a terminal (0x00001234)"
+        );
+    }
+
+    #[test]
     fn a_fleet_name_is_quoted_only_when_it_needs_it() {
         assert_eq!(shell_word("agents-2.b_c"), "agents-2.b_c");
         assert_eq!(shell_word("my agents"), "\"my agents\"");
@@ -1884,6 +1927,24 @@ mod tests {
                 spawn_request(None, None, resume.map(Into::into), None, monitor, area).unwrap_err();
             assert!(e.starts_with(says), "{e}");
         }
+        use daifuku_core::peer::Cell;
+        let cell = |args: &[&str]| match Cli::try_parse_from(
+            ["daifuku", "spawn", "--fleet", "crew"].iter().chain(args),
+        )
+        .map(|c| c.command)
+        {
+            Ok(Command::Spawn { cell, .. }) => Ok(cell),
+            Ok(_) => panic!("not spawn"),
+            Err(e) => Err(e.kind()),
+        };
+        assert_eq!(cell(&[]), Ok(None));
+        assert_eq!(cell(&["--cell"]), Ok(Some(Cell::Free)));
+        assert_eq!(cell(&["--cell", "2"]), Ok(Some(Cell::At(2))));
+        assert_eq!(cell(&["--cell", "--json"]), Ok(Some(Cell::Free)));
+        assert!(cell(&["--cell", "0"]).is_err());
+        // Its fleet's grid places it; a place of its own is a mistake.
+        assert!(cell(&["--cell", "--area", "left"]).is_err());
+        assert!(cell(&["--cell", "2", "--monitor", "portrait"]).is_err());
         let cli = Cli::try_parse_from(["daifuku", "spawn", "--area", "left", "--dir", r"C:\x"]);
         assert!(matches!(
             cli.unwrap().command,
