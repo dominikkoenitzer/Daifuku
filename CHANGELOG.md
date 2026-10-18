@@ -5,18 +5,29 @@
 - `daifuku spawn --cell` puts the terminal in a cell of its fleet's grid,
   the first free one, or with `--cell 2` that one while it is free, and
   makes it one of the fleet's terminals: `snap` puts it back there,
-  `close <fleet>` closes it, it is numbered as that cell, `{n}` included,
-  and `status` calls it by the fleet's name and number until it has a
-  label. A lead on the left half can fill a crew of three on the right half
-  one task at a time. The answer names the `fleet` and `cell`; with every
-  cell taken it fails and opens nothing. `restore` puts it back in the same
-  cell.
+  `close <fleet>` and the close key close it, it is numbered as that cell,
+  `{n}` included, and `status` calls it by the fleet's name and number
+  until it has a label. A lead on the left half can fill a crew of three on
+  the right half one task at a time. The answer names the `fleet` and
+  `cell`; with every cell taken it fails and opens nothing.
+- `daifuku restore` puts such a terminal back in its cell. When every cell
+  has a terminal in it by then, as after the fleet was opened afresh, it
+  opens the terminal beside the fleet instead.
+- Terminals closed with their fleet, by `daifuku close` or the close key,
+  are kept for `daifuku restore` when their agent reported a session, as
+  ones open when Windows stopped are. One closed by hand, or with
+  `close --terminal`, is not.
 - `daifuku close --terminal <window or label>` closes one terminal Daifuku
   knows, a fleet's, a peer or one an agent reports from, and nothing else.
-  A label two terminals share is refused with both windows named.
-- A resumed session goes right after the agent's program in its command, so
-  a command of several statements resumes the agent and not the last
-  statement, and a Codex command resumes as `codex resume <id>`.
+  A label is looked for first, so one such as `2` names its terminal; a
+  label two terminals share is refused with both windows named. When the
+  terminal is still open after the wait, as when Windows Terminal asks
+  whether to close its tabs, it fails.
+- A resumed session goes right after the agent's program, in the statement
+  that starts it: a command that sets a variable or changes folder first
+  keeps those as they are, `npx @anthropic-ai/claude-code` resumes after
+  the package, and Codex resumes as `codex resume <id>`. A command with no
+  agent in it gets `--resume <id>` at its end, as before.
 - `daifuku spawn` looks for the folder of a terminal without administrator
   rights as the user, as fleets do, so a `subst` or mapped drive of the
   user's works there too.
