@@ -138,9 +138,10 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku next` | focus the agent that has waited longest, then failed ones |
 | `daifuku close [fleet]` | close a fleet |
 | `daifuku close --all` | close every open fleet |
+| `daifuku close --terminal <window or label>` | close one terminal |
 | `daifuku status` | fleets, agents and hotkeys |
 | `daifuku demo` | six scripted agents |
-| `daifuku spawn [--dir] [--label] [--resume]` | one agent terminal on its own, in a folder |
+| `daifuku spawn [--dir] [--label] [--resume] [--cell]` | one agent terminal on its own, in a folder, or in a cell of a fleet |
 | `daifuku restore [--dry-run] [--forget]` | open the spawned terminals from before Windows restarted again |
 | `daifuku label <window> [label]` | give an agent's terminal a label |
 | `daifuku wait <window or label> [--until done]` | wait until an agent stops working, or reaches one state |
@@ -196,6 +197,17 @@ daifuku status --json
 `wait` returns when the agent's next turn ends, with the state it ended in.
 After Windows restarts, `daifuku restore` opens the spawned terminals that
 were open again, each resuming its session in its own folder.
+
+A lead with a crew: with a fleet `crew` of three stacked on the right half,
+`--cell` puts each spawned terminal in the next free cell of its grid, where
+`snap` and `close crew` treat it as one of the crew, and `restore` puts it
+back in the same cell. `close --terminal` closes one when its work is done.
+
+```powershell
+daifuku spawn --fleet crew --cell --dir C:\src\site --label site --json
+daifuku spawn --fleet crew --cell --dir C:\src\docs --label docs --json
+daifuku close --terminal site
+```
 
 ## Other ways to install
 
