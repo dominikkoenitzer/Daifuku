@@ -173,44 +173,142 @@ pub fn session_id_ok(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// `command` resuming session `id`: right after the program it starts, so a
-/// line of several statements resumes in its first, the agent. Codex takes
-/// `codex resume <id>`, Claude Code and any other `--resume <id>`.
+/// `command` resuming session `id`: right after the agent's program, in the
+/// statement that starts it, so the statements before it, such as one that
+/// sets a variable or changes folder, stay as they are. The agent is
+/// `claude` or `codex` by any path, or a package of theirs a package runner
+/// such as `npx` starts. Codex takes `codex resume <id>`, Claude Code
+/// `--resume <id>`. A command with no agent in it gets `--resume <id>` at
+/// its end.
 #[must_use]
 pub fn resume_command(command: &str, id: &str) -> String {
-    let end = program_end(command);
-    let program = command[..end]
-        .trim_start()
-        .trim_start_matches('&')
-        .trim()
-        .trim_matches(['\'', '"']);
-    let name = program
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(program)
-        .to_ascii_lowercase();
-    let resume = if name.split('.').next() == Some("codex") {
-        format!(" resume {id}")
-    } else {
-        format!(" --resume {id}")
-    };
-    format!("{}{resume}{}", &command[..end], &command[end..])
+    match agent_in(command) {
+        Some((end, Agent::Codex)) => {
+            format!("{} resume {id}{}", &command[..end], &command[end..])
+        }
+        Some((end, Agent::Claude)) => {
+            format!("{} --resume {id}{}", &command[..end], &command[end..])
+        }
+        None => format!("{command} --resume {id}"),
+    }
 }
 
-/// Where the program a PowerShell line starts ends: after its name, bare or
-/// in quotes, past a leading `&` that calls it.
-fn program_end(line: &str) -> usize {
-    let mut i = line.len() - line.trim_start().len();
-    if let Some(after) = line[i..].strip_prefix('&') {
-        i += 1 + (after.len() - after.trim_start().len());
+/// The agents a command can resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Agent {
+    Claude,
+    Codex,
+}
+
+/// Where the agent's program ends in `line`, and which agent it is: the
+/// first statement whose program is an agent, or a package runner that
+/// starts one.
+fn agent_in(line: &str) -> Option<(usize, Agent)> {
+    for statement in statements(line) {
+        let mut words = statement.iter();
+        let Some((first, end)) = words.next() else {
+            continue;
+        };
+        if let Some(agent) = agent_named(first) {
+            return Some((*end, agent));
+        }
+        if is_package_runner(first) {
+            // `npx -y pkg`, `pnpm dlx pkg`, `bun x pkg`: the package is the
+            // first word that is no option and no subcommand.
+            if let Some((package, end)) = words
+                .find(|(w, _)| !w.starts_with('-') && !matches!(w.as_str(), "x" | "dlx" | "exec"))
+                && let Some(agent) = agent_named(package)
+            {
+                return Some((*end, agent));
+            }
+        }
     }
-    let rest = &line[i..];
-    match rest.chars().next() {
-        Some(q @ ('\'' | '"')) => rest[1..].find(q).map_or(line.len(), |close| i + close + 2),
-        _ => rest
-            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '|'))
-            .map_or(line.len(), |n| i + n),
+    None
+}
+
+/// The agent a program or package names: its last path part, without a
+/// version after `@` or an extension. A word that sets a variable is none,
+/// whatever its value says.
+fn agent_named(word: &str) -> Option<Agent> {
+    if word.starts_with('$') || word.contains('=') {
+        return None;
     }
+    let last = word.rsplit(['\\', '/']).next().unwrap_or(word);
+    let name = last.split('@').next().unwrap_or_default();
+    match name.split('.').next()?.to_ascii_lowercase().as_str() {
+        "claude" | "claude-code" => Some(Agent::Claude),
+        "codex" => Some(Agent::Codex),
+        _ => None,
+    }
+}
+
+/// Whether `word` is a program that runs a package by its name.
+fn is_package_runner(word: &str) -> bool {
+    let last = word.rsplit(['\\', '/']).next().unwrap_or(word);
+    let stem = last
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        stem.as_str(),
+        "npx" | "pnpx" | "bunx" | "npm" | "pnpm" | "yarn" | "bun"
+    )
+}
+
+/// The statements of a PowerShell line, each as its words with where each
+/// word ends in the line. Quotes hold a word together and are not part of
+/// it; `;`, `|`, `&&` and `||` outside them end a statement, and `&` alone
+/// is the call operator, no word.
+fn statements(line: &str) -> Vec<Vec<(String, usize)>> {
+    let mut all: Vec<Vec<(String, usize)>> = vec![Vec::new()];
+    let mut word: Option<(String, usize)> = None;
+    let mut quote: Option<char> = None;
+    let mut chars = line.char_indices().peekable();
+    let finish = |all: &mut Vec<Vec<(String, usize)>>, word: &mut Option<(String, usize)>| {
+        if let Some(w) = word.take()
+            && let Some(statement) = all.last_mut()
+        {
+            statement.push(w);
+        }
+    };
+    while let Some((i, c)) = chars.next() {
+        let after = i + c.len_utf8();
+        if let Some(q) = quote {
+            let (text, end) = word.get_or_insert_with(|| (String::new(), after));
+            if c == q {
+                quote = None;
+            } else {
+                text.push(c);
+            }
+            *end = after;
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                word.get_or_insert_with(|| (String::new(), after)).1 = after;
+            }
+            ';' | '|' => {
+                finish(&mut all, &mut word);
+                all.push(Vec::new());
+            }
+            '&' => {
+                finish(&mut all, &mut word);
+                if chars.next_if(|&(_, n)| n == '&').is_some() {
+                    all.push(Vec::new());
+                }
+            }
+            c if c.is_whitespace() => finish(&mut all, &mut word),
+            c => {
+                let (text, end) = word.get_or_insert_with(|| (String::new(), after));
+                text.push(c);
+                *end = after;
+            }
+        }
+    }
+    finish(&mut all, &mut word);
+    all
 }
 
 /// Whether a variable is one an agent sets for itself and its children:
@@ -391,10 +489,29 @@ mod tests {
                 "claude --resume abc-1 --dangerously-skip-permissions",
             ),
             ("claude", "claude --resume abc-1"),
-            // A later statement is not the agent.
+            // A statement before the agent stays as it is, even one whose
+            // value looks like the agent.
             (
-                "claude; Write-Host done",
-                "claude --resume abc-1; Write-Host done",
+                r"$env:CLAUDE_CONFIG_DIR='C:\claude'; claude --dangerously-skip-permissions",
+                r"$env:CLAUDE_CONFIG_DIR='C:\claude'; claude --resume abc-1 --dangerously-skip-permissions",
+            ),
+            (r"cd C:\src; claude", r"cd C:\src; claude --resume abc-1"),
+            (
+                "Write-Host hi && codex --yolo",
+                "Write-Host hi && codex resume abc-1 --yolo",
+            ),
+            // Started by a package runner: after the package.
+            (
+                "npx @anthropic-ai/claude-code",
+                "npx @anthropic-ai/claude-code --resume abc-1",
+            ),
+            (
+                "npx -y @anthropic-ai/claude-code@latest --model opus",
+                "npx -y @anthropic-ai/claude-code@latest --resume abc-1 --model opus",
+            ),
+            (
+                "pnpm dlx @openai/codex --yolo",
+                "pnpm dlx @openai/codex resume abc-1 --yolo",
             ),
             (
                 r#"& "C:\Program Files\x\claude.exe" --model opus"#,
@@ -410,11 +527,34 @@ mod tests {
                 r"& 'C:\tools\Codex.CMD' resume abc-1 -m o4",
             ),
             ("  codex.exe|Out-Host", "  codex.exe resume abc-1|Out-Host"),
-            // A quote left open runs to the end.
-            (r#"& "C:\x\claude"#, r#"& "C:\x\claude --resume abc-1"#),
+            // No agent to be found: at the end, as before.
+            ("my-agent --flag", "my-agent --flag --resume abc-1"),
+            ("npx some-tool", "npx some-tool --resume abc-1"),
         ] {
             assert_eq!(resume_command(command, "abc-1"), resumed, "{command}");
         }
+    }
+
+    #[test]
+    fn a_line_splits_into_statements_of_words_outside_quotes() {
+        let words = |line: &str| -> Vec<Vec<String>> {
+            statements(line)
+                .into_iter()
+                .map(|s| s.into_iter().map(|(w, _)| w).collect())
+                .collect()
+        };
+        assert_eq!(
+            words(r#"& "C:\a b\c.exe" -x 'y; z'; d|e && f"#),
+            [
+                vec![r"C:\a b\c.exe", "-x", "y; z"],
+                vec!["d"],
+                vec!["e"],
+                vec!["f"],
+            ]
+        );
+        let line = r#"a "b c" d"#;
+        let ends: Vec<usize> = statements(line)[0].iter().map(|&(_, e)| e).collect();
+        assert_eq!(ends, [1, 7, 9]);
     }
 
     #[test]
