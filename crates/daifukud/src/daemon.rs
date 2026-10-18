@@ -370,7 +370,7 @@ impl Daemon {
             Request::CloseTerminal { terminal } => self.close_terminal(terminal),
             Request::Next => self.next(),
             Request::Demo => self.demo(),
-            Request::Spawn(spawn) => self.spawn(spawn),
+            Request::Spawn(spawn) => self.spawn(spawn, false),
             Request::Label { window, label } => self.label(*window, label.as_deref()),
             Request::Restore { dry_run, forget } => self.restore_peers(*dry_run, *forget),
             Request::Status => Response::Status(self.status()),
@@ -1348,7 +1348,7 @@ impl Daemon {
                 self.forget_waiting(&spawn);
                 continue;
             }
-            match self.spawn(&spawn) {
+            match self.spawn(&spawn, true) {
                 Response::Spawned { window, .. } => {
                     peers.push(listed(&spawn, Some(window), None));
                     self.forget_waiting(&spawn);
@@ -1413,7 +1413,12 @@ impl Daemon {
 
     /// Opens one peer as `spawn` asks, from the fleet it names or the first
     /// one, or from the defaults when the config has no fleet.
-    fn spawn(&mut self, spawn: &Spawn) -> Response {
+    ///
+    /// `restoring` is set for a peer `daifuku restore` opens again. One that
+    /// asks for a cell when every cell of its fleet has a terminal in it, as
+    /// when the fleet was opened afresh in the meantime, then opens beside
+    /// the fleet and keeps asking for its cell, rather than not at all.
+    fn spawn(&mut self, spawn: &Spawn, restoring: bool) -> Response {
         if let Some(problem) = spawn.problem() {
             return Response::error(problem);
         }
@@ -1454,7 +1459,16 @@ impl Daemon {
                 .map_or_else(|| OpenFleet::new(&base.name), |i| self.fleets.remove(i));
             let planned = fleet::cell_for(&base, &self.config, &mut record, cell);
             match planned {
-                Ok(slot) => joined = Some((record, slot)),
+                Ok(Some(slot)) => joined = Some((record, slot)),
+                Ok(None) if restoring => {
+                    tracing::info!(fleet = %base.name, "no free cell for a restored peer, opening it beside");
+                    self.keep_fleet(record);
+                }
+                Ok(None) => {
+                    let message = fleet::no_free_cell(&base.name, record.slots.len());
+                    self.keep_fleet(record);
+                    return Response::error(message);
+                }
                 Err(e) => {
                     self.keep_fleet(record);
                     return Response::error(format!("{e:#}"));
@@ -2045,10 +2059,13 @@ mod tests {
             d.elevated = elevated;
             d.config.fleets[0].admin = admin;
             for directory in [missing.clone(), PathBuf::from("relative")] {
-                let said = d.spawn(&Spawn {
-                    directory: directory.clone(),
-                    ..Spawn::default()
-                });
+                let said = d.spawn(
+                    &Spawn {
+                        directory: directory.clone(),
+                        ..Spawn::default()
+                    },
+                    false,
+                );
                 assert_eq!(
                     said,
                     Response::error(format!("there is no folder {}", directory.display())),

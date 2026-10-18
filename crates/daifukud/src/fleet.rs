@@ -323,18 +323,19 @@ fn free_slot(slots: &[Option<u64>], cell: Cell) -> Option<usize> {
 
 /// A cell of `fleet`'s grid for a peer that asks for `cell`, in `record`,
 /// the fleet's record, empty when the fleet is not open: its slot and where
-/// it is. The record is brought in line with the fleet's terminals, count
-/// and monitor first, as opening the fleet would.
+/// it is, or `None` when every cell has a terminal in it. The record is
+/// brought in line with the fleet's terminals, count and monitor first, as
+/// opening the fleet would.
 ///
 /// # Errors
 ///
-/// When there is no monitor, or every cell has a terminal in it.
+/// When there is no monitor.
 pub fn cell_for(
     fleet: &Fleet,
     config: &Config,
     record: &mut OpenFleet,
     cell: Cell,
-) -> anyhow::Result<(usize, Rect)> {
+) -> anyhow::Result<Option<(usize, Rect)>> {
     record.prune();
     plan_cell(
         fleet,
@@ -355,7 +356,7 @@ fn plan_cell(
     cell: Cell,
     monitors: &[MonitorInfo],
     cursor: (i32, i32),
-) -> anyhow::Result<(usize, Rect)> {
+) -> anyhow::Result<Option<(usize, Rect)>> {
     record
         .slots
         .truncate(usize::try_from(fleet.count).unwrap_or(usize::MAX));
@@ -363,14 +364,16 @@ fn plan_cell(
     let (m, cells) = plan(fleet, config, stay_on.as_deref(), monitors, cursor)
         .ok_or_else(|| anyhow!("no monitor"))?;
     settle(fleet, record, &m, cells.len());
-    let slot = free_slot(&record.slots, cell).ok_or_else(|| {
-        anyhow!(
-            "every cell of fleet `{}` has a terminal in it ({}); close one, or spawn without --cell",
-            fleet.name,
-            terminals_count(cells.len())
-        )
-    })?;
-    Ok((slot, cells[slot]))
+    Ok(free_slot(&record.slots, cell).map(|slot| (slot, cells[slot])))
+}
+
+/// What a peer that asked for a cell of fleet `name`, whose `cells` all have
+/// a terminal in them, is told.
+pub fn no_free_cell(name: &str, cells: usize) -> String {
+    format!(
+        "every cell of fleet `{name}` has a terminal in it ({}); close one, or spawn without --cell",
+        terminals_count(cells)
+    )
 }
 
 /// The `daifuku.exe` a terminal at `priority` runs its shell in, next to
@@ -973,30 +976,30 @@ mod tests {
         let mut record = OpenFleet::new("crew");
         let take = |record: &mut OpenFleet, cell| {
             let got = plan_cell(crew, &config, record, cell, &monitors, (0, 0));
-            if let Ok((slot, _)) = &got {
+            if let Ok(Some((slot, _))) = &got {
                 record.slots[*slot] = Some(100 + u64::try_from(*slot).unwrap());
             }
-            got
+            got.unwrap()
         };
         for (i, &rect) in all.iter().enumerate() {
-            assert_eq!(take(&mut record, Cell::Free).unwrap(), (i, rect));
+            assert_eq!(take(&mut record, Cell::Free), Some((i, rect)));
         }
         assert_eq!(record.monitor, r"\\.\DISPLAY1");
-        let full = take(&mut record, Cell::Free).unwrap_err().to_string();
+        assert_eq!(take(&mut record, Cell::Free), None, "every cell is taken");
         assert_eq!(
-            full,
+            no_free_cell("crew", 3),
             "every cell of fleet `crew` has a terminal in it (3 terminals); close one, or spawn without --cell"
         );
         // The middle one closed: the next peer goes there, as one restored
         // into its own cell does.
         record.slots[1] = None;
-        assert_eq!(take(&mut record, Cell::At(2)).unwrap(), (1, all[1]));
+        assert_eq!(take(&mut record, Cell::At(2)), Some((1, all[1])));
         record.slots[2] = None;
-        assert_eq!(take(&mut record, Cell::At(1)).unwrap(), (2, all[2]));
+        assert_eq!(take(&mut record, Cell::At(1)), Some((2, all[2])));
         // A record from a larger count is cut down to the grid first.
         let mut wide = OpenFleet::new("crew");
         wide.slots = vec![None, None, None, Some(7)];
-        assert_eq!(take(&mut wide, Cell::At(4)).unwrap(), (0, all[0]));
+        assert_eq!(take(&mut wide, Cell::At(4)), Some((0, all[0])));
         assert_eq!(wide.slots.len(), 3);
     }
 
