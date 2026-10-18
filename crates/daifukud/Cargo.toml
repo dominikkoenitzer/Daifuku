@@ -29,3 +29,7 @@ windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Com",
 ] }
+
+# The unit tests make a drive only the desktop user's sign-in has.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }

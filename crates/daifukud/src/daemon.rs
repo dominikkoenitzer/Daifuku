@@ -2077,6 +2077,41 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_s_folder_on_a_drive_only_the_user_has_is_found_when_it_runs_as_the_user() {
+        let here = std::env::current_dir().unwrap();
+        // Only where an elevated process runs beside an ordinary desktop
+        // shell, as in an administrator terminal: CI's shell is elevated.
+        let Some(drive) = crate::test_support::UserDrive::new(&here) else {
+            return;
+        };
+        // A resume for a fleet with no command fails before anything starts,
+        // so no terminal opens: the error says how far it got.
+        for admin in [true, false] {
+            let mut d = daemon();
+            d.elevated = true;
+            d.config.fleets[0].admin = admin;
+            d.config.fleets[0].command = None;
+            let said = d.spawn(
+                &Spawn {
+                    directory: drive.root().to_path_buf(),
+                    resume: Some("abc".into()),
+                    ..Spawn::default()
+                },
+                false,
+            );
+            let Response::Error { message } = said else {
+                panic!("a terminal was opened: {said:?}");
+            };
+            if admin {
+                // An administrator terminal does not have the user's drive.
+                assert!(message.starts_with("there is no folder"), "{message}");
+            } else {
+                assert!(message.contains("opens a plain shell"), "{message}");
+            }
+        }
+    }
+
+    #[test]
     fn one_terminal_is_named_by_its_window_or_its_one_label() {
         let known = [
             (0x10, Some("Site QA".to_owned())),
