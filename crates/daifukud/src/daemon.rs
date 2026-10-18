@@ -1623,23 +1623,10 @@ fn close_outcome(name: &str, closed: bool) -> Response {
 }
 
 /// The terminal of `known`, each with its label, that `target` names: its
-/// window, in decimal or as 0x and hex, or its label in any case, which must
-/// name one terminal only.
+/// label in any case, which must name one terminal only, else its window,
+/// in decimal or as 0x and hex. A label wins, so one that looks like a
+/// number, such as `2`, still names its terminal.
 fn pick_terminal(target: &str, known: &[(u64, Option<String>)]) -> Result<u64, String> {
-    let number = match target
-        .strip_prefix("0x")
-        .or_else(|| target.strip_prefix("0X"))
-    {
-        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => target.parse().ok(),
-    };
-    if let Some(n) = number {
-        return known
-            .iter()
-            .any(|&(w, _)| w == n)
-            .then_some(n)
-            .ok_or_else(|| format!("window {n:#010x} is no terminal Daifuku knows"));
-    }
     let called: Vec<u64> = known
         .iter()
         .filter(|(_, label)| {
@@ -1650,16 +1637,30 @@ fn pick_terminal(target: &str, known: &[(u64, Option<String>)]) -> Result<u64, S
         .map(|&(w, _)| w)
         .collect();
     match called.as_slice() {
-        [w] => Ok(*w),
-        [] => Err(format!("no terminal is called `{target}`")),
-        many => Err(format!(
-            "{} terminals are called `{target}`: name one by its window, {}",
-            many.len(),
-            many.iter()
-                .map(|w| format!("{w:#010x}"))
-                .collect::<Vec<_>>()
-                .join(" or ")
-        )),
+        [w] => return Ok(*w),
+        [] => {}
+        many => {
+            return Err(format!(
+                "{} terminals are called `{target}`: name one by its window, {}",
+                many.len(),
+                many.iter()
+                    .map(|w| format!("{w:#010x}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ));
+        }
+    }
+    let number = match target
+        .strip_prefix("0x")
+        .or_else(|| target.strip_prefix("0X"))
+    {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => target.parse().ok(),
+    };
+    match number {
+        Some(n) if known.iter().any(|&(w, _)| w == n) => Ok(n),
+        Some(n) => Err(format!("window {n:#010x} is no terminal Daifuku knows")),
+        None => Err(format!("no terminal is called `{target}`")),
     }
 }
 
@@ -1999,6 +2000,16 @@ mod tests {
             pick_terminal("lead", &known),
             Err("no terminal is called `lead`".into())
         );
+        // A label that reads as a number is still a label, and wins over a
+        // window of that number.
+        let numbered = [
+            (0x2, None),
+            (0x10, Some("2".to_owned())),
+            (0x20, Some("0x1f".to_owned())),
+        ];
+        assert_eq!(pick_terminal("2", &numbered), Ok(0x10));
+        assert_eq!(pick_terminal("0X1F", &numbered), Ok(0x20));
+        assert_eq!(pick_terminal("0x2", &numbered), Ok(0x2));
         assert_eq!(
             pick_terminal("docs", &known),
             Err(
