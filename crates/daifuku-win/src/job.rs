@@ -191,36 +191,56 @@ mod tests {
 
     #[test]
     fn an_ordinary_terminal_waits_at_a_queue_an_elevated_one_made() {
-        // Only an elevated run beside an ordinary desktop shell shows it, as
-        // in an administrator terminal; CI's shell runs elevated.
-        if !crate::process::current_is_elevated()
-            || crate::process::shell_is_elevated() != Some(false)
-        {
-            return;
-        }
         let name = format!(r"Local\Daifuku.Heavy.ordinary-{}", std::process::id());
+        // Made and held by this process, elevated on CI and in an
+        // administrator terminal.
         let held = queue(&name).unwrap();
         // SAFETY: a valid handle.
         assert_ne!(unsafe { WaitForSingleObject(held, 0) }, WAIT_TIMEOUT);
-        // With the desktop shell's own rights, on another thread, as an
-        // ordinary terminal's heavy job would.
-        let other = {
-            let name = name.clone();
-            std::thread::spawn(move || {
-                crate::process::as_shell_user(|| queue(&name))
-                    .unwrap()
-                    .map(|h| h.0 as usize)
-            })
-        };
-        let theirs = HANDLE(other.join().unwrap().expect("refused the queue") as *mut _);
-        // SAFETY: valid handles, each closed once.
+        let (asked, released) = (
+            std::sync::mpsc::channel::<bool>(),
+            std::sync::mpsc::channel::<()>(),
+        );
+        // On another thread, with an ordinary terminal's rights: the
+        // desktop shell's own where it runs ordinary beside this one, else
+        // this process's without administrator rights, at medium integrity.
+        let other = std::thread::spawn(move || {
+            let ordinary_shell = crate::process::current_is_elevated()
+                && crate::process::shell_is_elevated() == Some(false);
+            let theirs = if ordinary_shell {
+                crate::process::as_shell_user(|| queue(&name)).unwrap()
+            } else {
+                crate::test_support::as_ordinary_user(|| queue(&name))
+            }
+            .expect("an ordinary terminal could not open the queue");
+            // SAFETY: a valid handle, closed once.
+            unsafe {
+                asked
+                    .0
+                    .send(WaitForSingleObject(theirs, 0) == WAIT_TIMEOUT)
+                    .unwrap();
+                released.1.recv().unwrap();
+                let turn = WaitForSingleObject(theirs, 5000) != WAIT_TIMEOUT;
+                let let_go = ReleaseMutex(theirs).is_ok();
+                let _ = CloseHandle(theirs);
+                (turn, let_go)
+            }
+        });
+        assert!(
+            asked.1.recv().unwrap(),
+            "the ordinary terminal's turn came while the elevated job held the queue"
+        );
+        // SAFETY: the handle this thread holds, closed once.
         unsafe {
             let _ = ReleaseMutex(held);
             let _ = CloseHandle(held);
-            assert_ne!(WaitForSingleObject(theirs, 1000), WAIT_TIMEOUT);
-            let _ = ReleaseMutex(theirs);
-            let _ = CloseHandle(theirs);
         }
+        released.0.send(()).unwrap();
+        assert_eq!(
+            other.join().unwrap(),
+            (true, true),
+            "its turn, and letting go of it"
+        );
     }
 
     #[test]
