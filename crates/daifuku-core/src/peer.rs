@@ -22,6 +22,76 @@ pub const MAX_LABEL: usize = 200;
 /// 36, a UUID.
 pub const MAX_SESSION_ID: usize = 128;
 
+/// Which cell of its fleet's grid a peer takes, written `"free"` or as the
+/// cell's number from 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cell {
+    /// The first one that is free.
+    Free,
+    /// This one, or the first one free when it is taken or past the grid,
+    /// as after the fleet's count was lowered.
+    At(u32),
+}
+
+impl Cell {
+    /// The cell this one names, counted from 1, if any.
+    #[must_use]
+    pub const fn number(self) -> Option<u32> {
+        match self {
+            Self::Free => None,
+            Self::At(n) => Some(n),
+        }
+    }
+}
+
+impl std::str::FromStr for Cell {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("free") {
+            return Ok(Self::Free);
+        }
+        match s.parse::<u32>() {
+            Ok(n) if n >= 1 => Ok(Self::At(n)),
+            _ => Err(format!("`{s}` is not a cell: free, or a number from 1")),
+        }
+    }
+}
+
+impl std::fmt::Display for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Free => f.write_str("free"),
+            Self::At(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+impl Serialize for Cell {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Free => s.serialize_str("free"),
+            Self::At(n) => s.serialize_u32(*n),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Cell {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            Number(u32),
+            Word(String),
+        }
+        match Written::deserialize(d)? {
+            Written::Number(n) if n >= 1 => Ok(Self::At(n)),
+            Written::Number(n) => n.to_string().parse().map_err(serde::de::Error::custom),
+            Written::Word(w) => w.parse().map_err(serde::de::Error::custom),
+        }
+    }
+}
+
 /// What `daifuku spawn` asks for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spawn {
@@ -47,6 +117,11 @@ pub struct Spawn {
     /// The priority its group runs at, instead of its fleet's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
+    /// A cell of its fleet's grid to take, so it becomes one of the fleet's
+    /// terminals: placed, snapped and closed with them. Kept as the cell it
+    /// took, so `daifuku restore` puts it back there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<Cell>,
 }
 
 impl Spawn {
@@ -67,6 +142,12 @@ impl Spawn {
             && !session_id_ok(id)
         {
             return Some(format!("`{id}` is not a session id"));
+        }
+        if self.cell.is_some() && self.placed() {
+            return Some(
+                "a peer in a cell goes where its fleet's grid puts it: leave out the monitor and the area"
+                    .to_owned(),
+            );
         }
         None
     }
@@ -366,6 +447,61 @@ mod tests {
             ..ok
         };
         assert_eq!(id.problem().unwrap(), "`a;b` is not a session id");
+    }
+
+    #[test]
+    fn a_cell_is_free_or_a_number_from_one() {
+        assert_eq!("free".parse::<Cell>(), Ok(Cell::Free));
+        assert_eq!("Free".parse::<Cell>(), Ok(Cell::Free));
+        assert_eq!("3".parse::<Cell>(), Ok(Cell::At(3)));
+        for bad in ["0", "-1", "", "first", "1.5"] {
+            assert!(bad.parse::<Cell>().is_err(), "{bad}");
+        }
+        assert_eq!(serde_json::to_string(&Cell::Free).unwrap(), r#""free""#);
+        assert_eq!(serde_json::to_string(&Cell::At(2)).unwrap(), "2");
+        assert_eq!(serde_json::from_str::<Cell>("2").unwrap(), Cell::At(2));
+        assert_eq!(
+            serde_json::from_str::<Cell>(r#""free""#).unwrap(),
+            Cell::Free
+        );
+        assert!(serde_json::from_str::<Cell>("0").is_err());
+        assert!(serde_json::from_str::<Cell>(r#""2""#).is_ok());
+        assert_eq!((Cell::At(2).number(), Cell::Free.number()), (Some(2), None));
+        assert_eq!(
+            (Cell::At(2).to_string(), Cell::Free.to_string()),
+            ("2".into(), "free".into())
+        );
+    }
+
+    #[test]
+    fn a_peer_in_a_cell_takes_no_monitor_or_area_of_its_own() {
+        let in_cell = Spawn {
+            directory: r"C:\src".into(),
+            cell: Some(Cell::Free),
+            ..Spawn::default()
+        };
+        assert_eq!(in_cell.problem(), None);
+        for placed in [
+            Spawn {
+                area: Some(Area::Right),
+                ..in_cell.clone()
+            },
+            Spawn {
+                monitor: Some(MonitorPick::Portrait),
+                ..in_cell.clone()
+            },
+        ] {
+            assert!(placed.problem().unwrap().contains("cell"), "{placed:?}");
+        }
+        // Peers kept before cells existed still read.
+        let old: Spawn = serde_json::from_str(r#"{"directory":"C:\\src"}"#).unwrap();
+        assert_eq!(old.cell, None);
+        let text = serde_json::to_string(&Spawn {
+            cell: Some(Cell::At(2)),
+            ..in_cell
+        })
+        .unwrap();
+        assert_eq!(text, r#"{"directory":"C:\\src","cell":2}"#);
     }
 
     #[test]

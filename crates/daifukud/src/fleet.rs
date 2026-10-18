@@ -9,7 +9,7 @@ use daifuku_core::Rect;
 use daifuku_core::config::{Config, Fleet, MonitorPick};
 use daifuku_core::grid::Grid;
 use daifuku_core::monitor::{MonitorInfo, pick};
-use daifuku_core::peer::{Spawn, resume_command};
+use daifuku_core::peer::{Cell, Spawn, resume_command};
 use daifuku_win::terminal::{self, Launch, WINDOW_CLASS};
 use daifuku_win::{monitor, window};
 
@@ -248,13 +248,17 @@ fn start_one(
 
 /// Opens one peer as `spawn` asks, from the fleet `base`: its command,
 /// profile and administrator setting. `taken` are the terminals Daifuku
-/// already knows, none of which can be the new one. Returns its window.
+/// already knows, none of which can be the new one. `cell` is the slot of
+/// `base`'s grid it goes in and where that is, as [`cell_for`] found it,
+/// when it asked for one: it is then numbered as that cell's terminal of
+/// the fleet. Returns its window.
 pub fn spawn(
     base: &Fleet,
     config: &Config,
     spawn: &Spawn,
     elevated: bool,
     taken: &[u64],
+    cell: Option<(usize, Rect)>,
 ) -> anyhow::Result<u64> {
     if base.admin && !elevated {
         return Err(anyhow!(
@@ -262,7 +266,11 @@ pub fn spawn(
             base.name
         ));
     }
-    let command = base.command.as_ref().map(|c| c.replace("{n}", "1"));
+    let n = cell.map_or(1, |(slot, _)| slot + 1);
+    let command = base
+        .command
+        .as_ref()
+        .map(|c| c.replace("{n}", &n.to_string()));
     let command = match (command, &spawn.resume) {
         (Some(c), Some(id)) => Some(resume_command(&c, id)),
         (None, Some(_)) => {
@@ -277,7 +285,10 @@ pub fn spawn(
         directory: Some(spawn.directory.clone()),
         profile: base.profile.clone(),
         command,
-        title: spawn.label.clone(),
+        title: spawn
+            .label
+            .clone()
+            .or_else(|| cell.map(|_| format!("{} {n}", base.name))),
         clean: base.no_profile,
         group: group_for(spawn.priority.or(base.priority))?,
     };
@@ -287,14 +298,79 @@ pub fn spawn(
     let w = start_one(&wt, &launch, base.admin, elevated, &known)?.ok_or_else(|| {
         anyhow!("Windows Terminal did not show the terminal in time; close it if it shows up late")
     })?;
-    if let Some(fleet) = placement(base, spawn)
+    if let Some((_, rect)) = cell {
+        window::place(w, rect);
+    } else if let Some(fleet) = placement(base, spawn)
         && let Ok((_, cells)) = cells(&fleet, config, None)
-        && let Some(&cell) = cells.first()
+        && let Some(&first) = cells.first()
     {
-        window::place(w, cell);
+        window::place(w, first);
     }
     window::focus(w);
     Ok(w)
+}
+
+/// The slot of `slots` a peer that asks for `cell` takes: the one it names
+/// when that is free, else the first one free; `None` when all are taken.
+fn free_slot(slots: &[Option<u64>], cell: Cell) -> Option<usize> {
+    let named = cell
+        .number()
+        .and_then(|n| usize::try_from(n).ok())
+        .and_then(|n| n.checked_sub(1))
+        .filter(|&i| slots.get(i).is_some_and(Option::is_none));
+    named.or_else(|| slots.iter().position(Option::is_none))
+}
+
+/// A cell of `fleet`'s grid for a peer that asks for `cell`, in `record`,
+/// the fleet's record, empty when the fleet is not open: its slot and where
+/// it is. The record is brought in line with the fleet's terminals, count
+/// and monitor first, as opening the fleet would.
+///
+/// # Errors
+///
+/// When there is no monitor, or every cell has a terminal in it.
+pub fn cell_for(
+    fleet: &Fleet,
+    config: &Config,
+    record: &mut OpenFleet,
+    cell: Cell,
+) -> anyhow::Result<(usize, Rect)> {
+    record.prune();
+    plan_cell(
+        fleet,
+        config,
+        record,
+        cell,
+        &monitor::monitors(),
+        monitor::cursor(),
+    )
+}
+
+/// [`cell_for`] on `monitors` with the cursor at `cursor`, for a record
+/// whose closed terminals are pruned already.
+fn plan_cell(
+    fleet: &Fleet,
+    config: &Config,
+    record: &mut OpenFleet,
+    cell: Cell,
+    monitors: &[MonitorInfo],
+    cursor: (i32, i32),
+) -> anyhow::Result<(usize, Rect)> {
+    record
+        .slots
+        .truncate(usize::try_from(fleet.count).unwrap_or(usize::MAX));
+    let stay_on = record.windows().next().map(|_| record.monitor.clone());
+    let (m, cells) = plan(fleet, config, stay_on.as_deref(), monitors, cursor)
+        .ok_or_else(|| anyhow!("no monitor"))?;
+    settle(fleet, record, &m, cells.len());
+    let slot = free_slot(&record.slots, cell).ok_or_else(|| {
+        anyhow!(
+            "every cell of fleet `{}` has a terminal in it ({}); close one, or spawn without --cell",
+            fleet.name,
+            terminals_count(cells.len())
+        )
+    })?;
+    Ok((slot, cells[slot]))
 }
 
 /// The `daifuku.exe` a terminal at `priority` runs its shell in, next to
@@ -862,6 +938,66 @@ mod tests {
             (whole.monitor, whole.area),
             (MonitorPick::Primary, Area::Full)
         );
+    }
+
+    #[test]
+    fn a_peer_takes_the_cell_it_names_when_free_else_the_first_free_one() {
+        let slots = [Some(1), None, Some(3), None];
+        assert_eq!(free_slot(&slots, Cell::Free), Some(1));
+        assert_eq!(free_slot(&slots, Cell::At(4)), Some(3));
+        assert_eq!(free_slot(&slots, Cell::At(2)), Some(1));
+        // Taken, or past the grid: the first free one.
+        assert_eq!(free_slot(&slots, Cell::At(3)), Some(1));
+        assert_eq!(free_slot(&slots, Cell::At(9)), Some(1));
+        assert_eq!(free_slot(&[Some(1), Some(2)], Cell::Free), None);
+        assert_eq!(free_slot(&[Some(1), Some(2)], Cell::At(1)), None);
+        assert_eq!(free_slot(&[], Cell::Free), None);
+    }
+
+    #[test]
+    fn a_crew_of_three_on_the_right_half_takes_its_cells_one_peer_at_a_time() {
+        let config = Config::from_json(
+            r#"{"fleets":[{"name":"crew","count":3,"monitor":"landscape","area":"right",
+                "shape":{"columns":1,"rows":3}}]}"#,
+        )
+        .unwrap();
+        let crew = config.fleet("crew").unwrap();
+        let monitors = [MonitorInfo {
+            device: r"\\.\DISPLAY1".into(),
+            bounds: Rect::new(0, 0, 3840, 2160),
+            work: Rect::new(0, 0, 3840, 2112),
+            dpi: 144,
+            primary: true,
+        }];
+        let (_, all) = plan(crew, &config, None, &monitors, (0, 0)).unwrap();
+        let mut record = OpenFleet::new("crew");
+        let take = |record: &mut OpenFleet, cell| {
+            let got = plan_cell(crew, &config, record, cell, &monitors, (0, 0));
+            if let Ok((slot, _)) = &got {
+                record.slots[*slot] = Some(100 + u64::try_from(*slot).unwrap());
+            }
+            got
+        };
+        for (i, &rect) in all.iter().enumerate() {
+            assert_eq!(take(&mut record, Cell::Free).unwrap(), (i, rect));
+        }
+        assert_eq!(record.monitor, r"\\.\DISPLAY1");
+        let full = take(&mut record, Cell::Free).unwrap_err().to_string();
+        assert_eq!(
+            full,
+            "every cell of fleet `crew` has a terminal in it (3 terminals); close one, or spawn without --cell"
+        );
+        // The middle one closed: the next peer goes there, as one restored
+        // into its own cell does.
+        record.slots[1] = None;
+        assert_eq!(take(&mut record, Cell::At(2)).unwrap(), (1, all[1]));
+        record.slots[2] = None;
+        assert_eq!(take(&mut record, Cell::At(1)).unwrap(), (2, all[2]));
+        // A record from a larger count is cut down to the grid first.
+        let mut wide = OpenFleet::new("crew");
+        wide.slots = vec![None, None, None, Some(7)];
+        assert_eq!(take(&mut wide, Cell::At(4)).unwrap(), (0, all[0]));
+        assert_eq!(wide.slots.len(), 3);
     }
 
     #[test]

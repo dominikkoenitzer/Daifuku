@@ -107,6 +107,12 @@ pub enum Response {
         /// Its label, when it was given one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// The fleet whose grid it took a cell of, when it asked for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fleet: Option<String>,
+        /// That cell, counted from 1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<u32>,
     },
     /// It did not work.
     Error {
@@ -292,6 +298,12 @@ mod tests {
                 resume: Some("abc-1".into()),
                 ..Spawn::default()
             }),
+            Request::Spawn(Spawn {
+                directory: r"C:\src\site".into(),
+                fleet: Some("crew".into()),
+                cell: Some(crate::peer::Cell::Free),
+                ..Spawn::default()
+            }),
             Request::Restore {
                 dry_run: true,
                 forget: false,
@@ -349,10 +361,14 @@ mod tests {
             Response::Spawned {
                 window: 7,
                 label: Some("site".into()),
+                fleet: Some("crew".into()),
+                cell: Some(2),
             },
             Response::Spawned {
                 window: 7,
                 label: None,
+                fleet: None,
+                cell: None,
             },
             Response::Restored {
                 peers: vec![RestoredPeer {
@@ -382,7 +398,9 @@ mod tests {
         assert_eq!(
             to_line(&Response::Spawned {
                 window: 9,
-                label: None
+                label: None,
+                fleet: None,
+                cell: None,
             })
             .unwrap(),
             "{\"result\":\"spawned\",\"window\":9}\n"

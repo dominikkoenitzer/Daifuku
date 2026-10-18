@@ -1106,13 +1106,19 @@ impl Daemon {
     }
 
     /// What to call terminal `w`: the label `daifuku label` or `spawn` gave
-    /// it, else its fleet's name and its number in the fleet.
+    /// it, else its fleet's name and its number in the fleet, a peer in a
+    /// fleet's cell included.
     fn label_of(&self, w: u64) -> Option<String> {
         if let Some(label) = self.labels.get(&w) {
             return Some(label.clone());
         }
-        if let Some(p) = self.peers.iter().find(|p| p.window == w) {
-            return p.spawn.label.clone();
+        if let Some(label) = self
+            .peers
+            .iter()
+            .find(|p| p.window == w)
+            .and_then(|p| p.spawn.label.clone())
+        {
+            return Some(label);
         }
         self.fleets.iter().find_map(|f| {
             f.slots
@@ -1334,21 +1340,63 @@ impl Daemon {
             .flat_map(OpenFleet::windows)
             .chain(self.peers.iter().map(|p| p.window))
             .collect();
-        match fleet::spawn(&base, &self.config, spawn, self.elevated, &taken) {
+        // A peer in a cell joins its fleet's record, open or not yet, and
+        // takes a slot of it: placed, snapped and closed with the fleet.
+        let mut joined = None;
+        if let Some(cell) = spawn.cell {
+            let mut record = self
+                .fleets
+                .iter()
+                .position(|f| f.name.eq_ignore_ascii_case(&base.name))
+                .map_or_else(|| OpenFleet::new(&base.name), |i| self.fleets.remove(i));
+            let planned = fleet::cell_for(&base, &self.config, &mut record, cell);
+            match planned {
+                Ok(slot) => joined = Some((record, slot)),
+                Err(e) => {
+                    self.keep_fleet(record);
+                    return Response::error(format!("{e:#}"));
+                }
+            }
+        }
+        let cell = joined.as_ref().map(|(_, slot)| *slot);
+        let opened = fleet::spawn(&base, &self.config, spawn, self.elevated, &taken, cell);
+        let mut kept = spawn.clone();
+        let mut in_fleet = None;
+        if let Some((mut record, (slot, _))) = joined {
+            if let Ok(window) = opened {
+                record.slots[slot] = Some(window);
+                let number = u32::try_from(slot + 1).unwrap_or(u32::MAX);
+                kept.cell = Some(peer::Cell::At(number));
+                in_fleet = Some((record.name.clone(), number));
+            }
+            self.keep_fleet(record);
+        }
+        match opened {
             Ok(window) => {
-                tracing::info!(window = format!("{window:#x}"), label = ?spawn.label, "spawned a peer");
+                tracing::info!(window = format!("{window:#x}"), label = ?spawn.label, fleet = ?in_fleet, "spawned a peer");
                 self.peers.push(Peer {
                     window,
-                    spawn: spawn.clone(),
+                    spawn: kept,
                 });
                 self.save_peers();
                 self.refresh_borders();
+                let (fleet, cell) = in_fleet.unzip();
                 Response::Spawned {
                     window,
                     label: spawn.label.clone(),
+                    fleet,
+                    cell,
                 }
             }
             Err(e) => Response::error(format!("{e:#}")),
+        }
+    }
+
+    /// Puts a fleet's record back among the open fleets, when it has a
+    /// terminal open.
+    fn keep_fleet(&mut self, record: OpenFleet) {
+        if record.windows().next().is_some() {
+            self.fleets.push(record);
         }
     }
 
