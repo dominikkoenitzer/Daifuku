@@ -143,7 +143,7 @@
     "code": "{\n  \"fleets\": [\n    { \"name\": \"agents\", \"count\": 6, \"monitor\": \"portrait\" },\n    {\n      \"name\": \"site\",\n      \"count\": 4,\n      \"monitor\": \"primary\",\n      \"directory\": \"C:\\\\src\\\\site\",\n      \"hotkey\": \"ctrl + alt + w\"\n    }\n  ]\n}"
   },
   "new": {
-    "version": "0.1.3",
+    "version": "0.2.0",
     "items": [
       "Double-clicking daifuku.exe installs it, one file instead of a zip.",
       "Daifuku is listed in Settings, Apps, and its Uninstall button removes it.",
