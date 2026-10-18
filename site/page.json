@@ -145,11 +145,11 @@
   "new": {
     "version": "0.2.0",
     "items": [
-      "Double-clicking daifuku.exe installs it, one file instead of a zip.",
-      "Daifuku is listed in Settings, Apps, and its Uninstall button removes it.",
-      "Install adds Daifuku to the PATH, so <code>daifuku</code> works by name.",
-      "Fleets and agent states survive a restart of the daemon.",
-      "<code>daifuku status</code> works from a normal terminal."
+      "A fleet can fill half its monitor, or any part of it, with the <code>area</code> key.",
+      "The <code>with</code> key opens a second fleet together with the first.",
+      "<code>daifuku spawn</code> opens a single agent terminal, and <code>daifuku restore</code> brings those back after Windows restarts.",
+      "<code>daifuku wait</code> waits until an agent finishes its turn.",
+      "The <code>priority</code> key runs a fleet's agents at a lower priority, and nothing they start outlives the terminal."
     ]
   },
   "requirements": [
