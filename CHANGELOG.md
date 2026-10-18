@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- `daifuku spawn --cell` puts the terminal in a cell of its fleet's grid,
+  the first free one, or with `--cell 2` that one while it is free, and
+  makes it one of the fleet's terminals: `snap` puts it back there,
+  `close <fleet>` closes it, it is numbered as that cell, `{n}` included,
+  and `status` calls it by the fleet's name and number until it has a
+  label. A lead on the left half can fill a crew of three on the right half
+  one task at a time. The answer names the `fleet` and `cell`; with every
+  cell taken it fails and opens nothing. `restore` puts it back in the same
+  cell.
+- `daifuku close --terminal <window or label>` closes one terminal Daifuku
+  knows, a fleet's, a peer or one an agent reports from, and nothing else.
+  A label two terminals share is refused with both windows named.
+- A resumed session goes right after the agent's program in its command, so
+  a command of several statements resumes the agent and not the last
+  statement, and a Codex command resumes as `codex resume <id>`.
+- `daifuku spawn` looks for the folder of a terminal without administrator
+  rights as the user, as fleets do, so a `subst` or mapped drive of the
+  user's works there too.
+
 ## 0.2.0, 2026-10-17
 
 - A fleet can fill part of its monitor with the new `area` key: `"left"`,
