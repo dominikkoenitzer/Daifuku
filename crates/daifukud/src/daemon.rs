@@ -1308,9 +1308,6 @@ impl Daemon {
         if let Some(problem) = spawn.problem() {
             return Response::error(problem);
         }
-        if !spawn.directory.is_absolute() || !spawn.directory.is_dir() {
-            return Response::error(format!("there is no folder {}", spawn.directory.display()));
-        }
         let base = match &spawn.fleet {
             Some(name) => match self.config.fleet(name).cloned() {
                 Some(f) => f,
@@ -1323,6 +1320,13 @@ impl Daemon {
             },
             None => self.config.fleets.first().cloned().unwrap_or_default(),
         };
+        // Looked for as whoever the terminal runs as: a drive letter of the
+        // user's, as `subst` makes, does not exist for an elevated daemon.
+        if !spawn.directory.is_absolute()
+            || !fleet::folder_exists(&spawn.directory, fleet::as_user(&base, self.elevated))
+        {
+            return Response::error(format!("there is no folder {}", spawn.directory.display()));
+        }
         self.drop_closed_fleets();
         let taken: Vec<u64> = self
             .fleets
@@ -1806,6 +1810,28 @@ mod tests {
         d.fleets.push(record);
         d.sweep();
         assert!(d.status().fleets.is_empty());
+    }
+
+    #[test]
+    fn a_peer_in_a_folder_that_is_not_there_is_refused_before_anything_starts() {
+        let missing = std::env::current_dir().unwrap().join("no-such-folder-here");
+        for (elevated, admin) in [(false, false), (true, false), (true, true)] {
+            let mut d = daemon();
+            d.elevated = elevated;
+            d.config.fleets[0].admin = admin;
+            for directory in [missing.clone(), PathBuf::from("relative")] {
+                let said = d.spawn(&Spawn {
+                    directory: directory.clone(),
+                    ..Spawn::default()
+                });
+                assert_eq!(
+                    said,
+                    Response::error(format!("there is no folder {}", directory.display())),
+                    "elevated {elevated}, admin {admin}"
+                );
+            }
+            assert!(d.peers.is_empty());
+        }
     }
 
     #[test]

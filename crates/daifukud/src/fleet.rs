@@ -185,7 +185,7 @@ pub fn open(
         for &slot in &empty {
             let n = slot + 1;
             let launch = Launch {
-                directory: Some(directory(fleet, n, elevated && !fleet.admin)),
+                directory: Some(directory(fleet, n, as_user(fleet, elevated))),
                 profile: fleet.profile.clone(),
                 command: fleet
                     .command
@@ -476,20 +476,31 @@ pub fn terminals_count(n: usize) -> String {
 /// terminal sees may not exist for the daemon: the folder is looked for as
 /// the user.
 fn directory(fleet: &Fleet, n: usize, as_user: bool) -> PathBuf {
-    let exists = |d: &PathBuf| {
-        if as_user {
-            daifuku_win::process::as_shell_user(|| d.is_dir()).unwrap_or_else(|_| d.is_dir())
-        } else {
-            d.is_dir()
-        }
-    };
     fleet
         .directory
         .as_ref()
         .map(|d| numbered(d, n))
-        .filter(exists)
+        .filter(|d| folder_exists(d, as_user))
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
         .unwrap_or_else(|| Path::new(r"C:\").to_path_buf())
+}
+
+/// Whether folder `dir` exists, looked for as the desktop user when
+/// `as_user` is set, as for a terminal started as the user from an elevated
+/// daemon: see [`directory`].
+pub fn folder_exists(dir: &Path, as_user: bool) -> bool {
+    if as_user {
+        daifuku_win::process::as_shell_user(|| dir.is_dir()).unwrap_or_else(|_| dir.is_dir())
+    } else {
+        dir.is_dir()
+    }
+}
+
+/// Whether a terminal of `fleet` starts as the desktop user from a daemon
+/// that is `elevated`, and so sees the user's drive letters, not the
+/// daemon's.
+pub const fn as_user(fleet: &Fleet, elevated: bool) -> bool {
+    elevated && !fleet.admin
 }
 
 /// A path with `{n}` replaced by `n`.
@@ -569,6 +580,32 @@ mod tests {
         };
         assert!(directory(&fleet, 1, false).is_dir());
         assert!(directory(&fleet, 1, true).is_dir());
+    }
+
+    #[test]
+    fn only_a_terminal_without_administrator_rights_from_an_elevated_daemon_is_the_user_s() {
+        let admin = Fleet {
+            admin: true,
+            ..Fleet::default()
+        };
+        let user = Fleet {
+            admin: false,
+            ..Fleet::default()
+        };
+        assert!(as_user(&user, true));
+        assert!(!as_user(&admin, true));
+        assert!(!as_user(&user, false));
+        assert!(!as_user(&admin, false));
+    }
+
+    #[test]
+    fn a_folder_is_looked_for_as_the_user_or_as_this_process() {
+        let here = std::env::current_dir().unwrap();
+        let missing = here.join("no-such-folder-here");
+        for as_user in [false, true] {
+            assert!(folder_exists(&here, as_user));
+            assert!(!folder_exists(&missing, as_user));
+        }
     }
 
     #[test]
