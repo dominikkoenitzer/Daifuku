@@ -149,24 +149,30 @@ pub struct Turn(HANDLE);
 ///
 /// # Errors
 ///
-/// When Windows refuses the lock, as it does to a process that is not
-/// elevated when an elevated one made it.
+/// When Windows refuses the lock.
 pub fn wait_turn(waiting: impl FnOnce()) -> io::Result<Turn> {
     let name = std::env::var("DAIFUKU_HEAVY_QUEUE").unwrap_or_else(|_| HEAVY.to_owned());
-    let name = to_wide(&name);
-    // SAFETY: the name is NUL terminated; the handle is owned by the Turn.
-    let lock =
-        unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) }.map_err(io::Error::other)?;
-    let turn = Turn(lock);
+    let turn = Turn(queue(&name)?);
     // SAFETY: a valid handle. An abandoned lock, left by a job that was
     // killed, is ours as well.
     unsafe {
-        if WaitForSingleObject(lock, 0) == WAIT_TIMEOUT {
+        if WaitForSingleObject(turn.0, 0) == WAIT_TIMEOUT {
             waiting();
-            let _ = WaitForSingleObject(lock, INFINITE);
+            let _ = WaitForSingleObject(turn.0, INFINITE);
         }
     }
     Ok(turn)
+}
+
+/// The lock of the heavy-job queue called `name`, made or opened.
+///
+/// Elevated and ordinary terminals of one user share it with the defaults:
+/// an elevated maker's lock admits the sign-in's logon SID, which the
+/// user's ordinary processes carry too.
+fn queue(name: &str) -> io::Result<HANDLE> {
+    let name = to_wide(name);
+    // SAFETY: the name is NUL terminated; the caller owns the handle.
+    unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) }.map_err(io::Error::other)
 }
 
 impl Drop for Turn {
@@ -182,6 +188,40 @@ impl Drop for Turn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ordinary_terminal_waits_at_a_queue_an_elevated_one_made() {
+        // Only an elevated run beside an ordinary desktop shell shows it, as
+        // in an administrator terminal; CI's shell runs elevated.
+        if !crate::process::current_is_elevated()
+            || crate::process::shell_is_elevated() != Some(false)
+        {
+            return;
+        }
+        let name = format!(r"Local\Daifuku.Heavy.ordinary-{}", std::process::id());
+        let held = queue(&name).unwrap();
+        // SAFETY: a valid handle.
+        assert_ne!(unsafe { WaitForSingleObject(held, 0) }, WAIT_TIMEOUT);
+        // With the desktop shell's own rights, on another thread, as an
+        // ordinary terminal's heavy job would.
+        let other = {
+            let name = name.clone();
+            std::thread::spawn(move || {
+                crate::process::as_shell_user(|| queue(&name))
+                    .unwrap()
+                    .map(|h| h.0 as usize)
+            })
+        };
+        let theirs = HANDLE(other.join().unwrap().expect("refused the queue") as *mut _);
+        // SAFETY: valid handles, each closed once.
+        unsafe {
+            let _ = ReleaseMutex(held);
+            let _ = CloseHandle(held);
+            assert_ne!(WaitForSingleObject(theirs, 1000), WAIT_TIMEOUT);
+            let _ = ReleaseMutex(theirs);
+            let _ = CloseHandle(theirs);
+        }
+    }
 
     #[test]
     fn a_job_takes_every_priority() {
