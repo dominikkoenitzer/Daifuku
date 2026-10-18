@@ -685,6 +685,13 @@ mod tests {
             assert!(folder_exists(&here, as_user));
             assert!(!folder_exists(&missing, as_user));
         }
+        // A drive only the user's sign-in has, as `subst` makes in an
+        // ordinary terminal: there for the user, not for this elevated
+        // process. Only where both exist, as in an administrator terminal.
+        if let Some(drive) = crate::test_support::UserDrive::new(&here) {
+            assert!(folder_exists(drive.root(), true), "the user's drive");
+            assert!(!folder_exists(drive.root(), false), "seen elevated");
+        }
     }
 
     #[test]

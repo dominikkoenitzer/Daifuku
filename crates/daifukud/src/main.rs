@@ -26,6 +26,8 @@ mod hotkeys;
 mod ipc;
 #[cfg(windows)]
 mod logging;
+#[cfg(all(windows, test))]
+mod test_support;
 
 fn main() {
     if std::env::args()
