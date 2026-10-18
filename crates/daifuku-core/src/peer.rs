@@ -346,6 +346,11 @@ pub struct Kept {
     /// When Windows started, in seconds since 1970 by the wall clock, for
     /// the start of Windows the window belongs to.
     pub boot: u64,
+    /// Closed with its fleet, by `daifuku close` or the close key, in that
+    /// start of Windows: `daifuku restore` opens it again as it would one
+    /// that was open when Windows stopped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed_with_fleet: bool,
 }
 
 impl Kept {
@@ -452,6 +457,7 @@ mod tests {
             },
             window,
             boot,
+            closed_with_fleet: false,
         }
     }
 

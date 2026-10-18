@@ -80,6 +80,9 @@ struct Daemon {
     dormant: Vec<Spawn>,
     /// The start of Windows the dormant peers were open in.
     dormant_boot: u64,
+    /// Peers closed with their fleet in this start of Windows, which
+    /// `daifuku restore` opens again with the dormant ones.
+    closed: Vec<Spawn>,
     /// Where the peers are kept across a restart of Windows, `None` when
     /// they are not: only the installed daemon keeps them, as with
     /// [`Daemon::state_file`].
@@ -238,6 +241,7 @@ impl Daemon {
             labels: std::collections::HashMap::new(),
             dormant: Vec::new(),
             dormant_boot: 0,
+            closed: Vec::new(),
             peers_file: None,
             borders: None,
             hotkeys: Hotkeys::default(),
@@ -694,6 +698,7 @@ impl Daemon {
             open += record.windows().count();
         }
         let closed = asked.iter().filter(|&&w| !window::exists(w)).count();
+        self.keep_closed_peers(&asked);
         self.drop_closed_fleets();
         (closed, open)
     }
@@ -1247,11 +1252,19 @@ impl Daemon {
                     spawn: p.spawn.clone(),
                     window: p.window,
                     boot,
+                    closed_with_fleet: false,
                 })
                 .chain(self.dormant.iter().map(|spawn| Kept {
                     spawn: spawn.clone(),
                     window: 0,
                     boot: self.dormant_boot,
+                    closed_with_fleet: false,
+                }))
+                .chain(self.closed.iter().map(|spawn| Kept {
+                    spawn: spawn.clone(),
+                    window: 0,
+                    boot,
+                    closed_with_fleet: true,
                 }))
                 .collect(),
         };
@@ -1277,7 +1290,12 @@ impl Daemon {
             return;
         };
         let boot = saved::boot(wall_seconds(), clock::ticks());
-        let (open, dormant, dormant_boot) = sort_kept(peer::read_kept(&text), boot, |w| {
+        let Sorted {
+            open,
+            dormant,
+            closed,
+            from: dormant_boot,
+        } = sort_kept(peer::read_kept(&text), boot, |w| {
             window::exists(w) && window::class(w) == WINDOW_CLASS
         });
         self.peers = open
@@ -1286,6 +1304,7 @@ impl Daemon {
             .collect();
         self.dormant = dormant;
         self.dormant_boot = dormant_boot;
+        self.closed = closed;
         self.save_peers();
         tracing::info!(
             open = self.peers.len(),
@@ -1306,9 +1325,15 @@ impl Daemon {
             error,
         };
         if dry_run || forget {
-            let peers = self.dormant.iter().map(|s| listed(s, None, None)).collect();
+            let peers = self
+                .dormant
+                .iter()
+                .chain(&self.closed)
+                .map(|s| listed(s, None, None))
+                .collect();
             if forget && !dry_run {
                 self.dormant.clear();
+                self.closed.clear();
                 self.save_peers();
             }
             return Response::Restored { peers };
@@ -1316,18 +1341,17 @@ impl Daemon {
         // Each stays dormant until it is open, so a daemon that stops part
         // way loses none of the rest.
         let mut peers = Vec::new();
-        for spawn in self.dormant.clone() {
+        let waiting: Vec<Spawn> = self.dormant.iter().chain(&self.closed).cloned().collect();
+        for spawn in waiting {
             if let Some(running) = self.running(&spawn) {
                 peers.push(listed(&spawn, None, Some(running)));
-                self.dormant.retain(|d| *d != spawn);
+                self.forget_waiting(&spawn);
                 continue;
             }
             match self.spawn(&spawn) {
                 Response::Spawned { window, .. } => {
                     peers.push(listed(&spawn, Some(window), None));
-                    if let Some(i) = self.dormant.iter().position(|d| *d == spawn) {
-                        self.dormant.remove(i);
-                    }
+                    self.forget_waiting(&spawn);
                 }
                 Response::Error { message } => peers.push(listed(&spawn, None, Some(message))),
                 _ => {}
@@ -1335,6 +1359,44 @@ impl Daemon {
         }
         self.save_peers();
         Response::Restored { peers }
+    }
+
+    /// Lets go of one peer waiting to be restored, dormant or closed with
+    /// its fleet.
+    fn forget_waiting(&mut self, spawn: &Spawn) {
+        if let Some(i) = self.dormant.iter().position(|d| d == spawn) {
+            self.dormant.remove(i);
+        } else if let Some(i) = self.closed.iter().position(|d| d == spawn) {
+            self.closed.remove(i);
+        }
+    }
+
+    /// Keeps the peers among `asked`, terminals a fleet close asked to go,
+    /// whose terminals went, for `daifuku restore`: closed with their fleet,
+    /// not by hand. Only those with a session to resume, as a new session
+    /// in their folder would not be theirs.
+    fn keep_closed_peers(&mut self, asked: &[u64]) {
+        let before = self.closed.len();
+        let mut i = 0;
+        while i < self.peers.len() {
+            let w = self.peers[i].window;
+            if asked.contains(&w) && !window::exists(w) {
+                let peer = self.peers.remove(i);
+                if peer
+                    .spawn
+                    .resume
+                    .as_deref()
+                    .is_some_and(peer::session_id_ok)
+                {
+                    self.closed.push(peer.spawn);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        if self.closed.len() != before {
+            self.save_peers();
+        }
     }
 
     /// Why a dormant peer must not be opened again, when its session runs
@@ -1763,20 +1825,19 @@ fn shown_session(agents: &Agents<u64>, w: u64, state: AgentState) -> Option<Stri
 }
 
 /// Sorts the peers read from `file` into the ones still open, by their
-/// window, and the dormant ones, with the start of Windows those are from.
+/// window, the dormant ones, the ones closed with their fleet in this start
+/// of Windows, and the start of Windows the dormant ones are from.
 ///
 /// A peer is open when it was saved in this start of Windows, by the clock
 /// `boot` worked out now, and its window passes `alive`. Dormant are the
 /// peers of one start of Windows only: the one the file was written in when
 /// that was an earlier one, as after a restart; else, as after a daemon
-/// restart, the one its dormant peers were already from. Of those, only the
-/// ones with a session to resume. Everything else is dropped: older peers,
-/// and peers of this start of Windows whose terminal closed.
-fn sort_kept(
-    file: KeptFile,
-    boot: u64,
-    alive: impl Fn(u64) -> bool,
-) -> (Vec<(u64, Spawn)>, Vec<Spawn>, u64) {
+/// restart, the one its dormant peers were already from. A peer closed with
+/// its fleet in this start of Windows stays closed with it, one from the
+/// start before is dormant. Of all these, only the ones with a session to
+/// resume. Everything else is dropped: older peers, and peers of this start
+/// of Windows whose terminal closed otherwise.
+fn sort_kept(file: KeptFile, boot: u64, alive: impl Fn(u64) -> bool) -> Sorted {
     let now = |b: u64| b.abs_diff(boot) <= 10;
     let from = if now(file.boot) {
         file.dormant_boot
@@ -1785,14 +1846,34 @@ fn sort_kept(
     };
     let mut open = Vec::new();
     let mut dormant = Vec::new();
+    let mut closed = Vec::new();
     for k in file.peers {
         if k.window != 0 && k.same_boot(boot) && alive(k.window) {
             open.push((k.window, k.spawn));
-        } else if from != 0 && !now(k.boot) && k.same_boot(from) && k.resumable() {
+        } else if k.resumable() && k.closed_with_fleet && now(k.boot) {
+            closed.push(k.spawn);
+        } else if k.resumable() && from != 0 && !now(k.boot) && k.same_boot(from) {
             dormant.push(k.spawn);
         }
     }
-    (open, dormant, from)
+    Sorted {
+        open,
+        dormant,
+        closed,
+        from,
+    }
+}
+
+/// The peers of a peers file, as [`sort_kept`] sorts them.
+struct Sorted {
+    /// The ones still open, by their window.
+    open: Vec<(u64, Spawn)>,
+    /// The ones open when Windows last stopped.
+    dormant: Vec<Spawn>,
+    /// The ones closed with their fleet in this start of Windows.
+    closed: Vec<Spawn>,
+    /// The start of Windows the dormant ones are from.
+    from: u64,
 }
 
 /// Where one user's daemon keeps what it saves.
@@ -2201,6 +2282,7 @@ mod tests {
             },
             window,
             boot,
+            closed_with_fleet: false,
         }
     }
 
@@ -2226,7 +2308,12 @@ mod tests {
             ],
         };
         // A window of the same number exists now, but in another start.
-        let (open, dormant, from) = sort_kept(file, 1_000, |w| w == 2);
+        let Sorted {
+            open,
+            dormant,
+            from,
+            ..
+        } = sort_kept(file, 1_000, |w| w == 2);
         assert!(open.is_empty());
         assert_eq!(sessions(&dormant), ["a"]);
         assert_eq!(from, 500);
@@ -2247,13 +2334,18 @@ mod tests {
                 kept(Some("older"), 0, 300),
             ],
         };
-        let (open, dormant, from) = sort_kept(file, 1_005, |w| w == 1 || w == 2);
+        let Sorted {
+            open,
+            dormant,
+            from,
+            ..
+        } = sort_kept(file, 1_005, |w| w == 1 || w == 2);
         let windows: Vec<_> = open.iter().map(|(w, _)| *w).collect();
         assert_eq!(windows, [1, 2]);
         assert_eq!(sessions(&dormant), ["b"]);
         assert_eq!(from, 500);
         // A file of nothing but open peers has nothing dormant.
-        let (_, dormant, _) = sort_kept(
+        let Sorted { dormant, .. } = sort_kept(
             KeptFile {
                 boot: 1_000,
                 dormant_boot: 0,
@@ -2394,6 +2486,67 @@ mod tests {
         assert!(d.running(&spawn("in-a-peer")).is_some());
         assert!(d.running(&spawn("elsewhere")).is_some());
         assert_eq!(d.running(&spawn("free")), None);
+    }
+
+    #[test]
+    fn peers_closed_with_their_fleet_stay_restorable_until_the_next_restart() {
+        let closed = |resume, boot| Kept {
+            closed_with_fleet: true,
+            ..kept(resume, 0, boot)
+        };
+        let file = KeptFile {
+            boot: 1_000,
+            dormant_boot: 500,
+            peers: vec![
+                closed(Some("crew"), 1_000),
+                closed(None, 1_000),
+                kept(Some("b"), 0, 500),
+            ],
+        };
+        // A daemon restart in the same start of Windows keeps them closed
+        // with their fleet, beside the dormant ones.
+        let Sorted {
+            dormant,
+            closed: kept_closed,
+            ..
+        } = sort_kept(file.clone(), 1_005, |_| false);
+        assert_eq!(sessions(&dormant), ["b"]);
+        assert_eq!(sessions(&kept_closed), ["crew"]);
+        // After a restart they are dormant, the older ones gone.
+        let Sorted {
+            dormant,
+            closed: kept_closed,
+            from,
+            ..
+        } = sort_kept(file, 2_000, |_| false);
+        assert_eq!(sessions(&dormant), ["crew"]);
+        assert!(kept_closed.is_empty());
+        assert_eq!(from, 1_000);
+    }
+
+    #[test]
+    fn a_fleet_close_keeps_its_peers_with_a_session_for_restore() {
+        let mut d = daemon();
+        // Handles no window has: as terminals that went.
+        let (gone, no_session, other) = (0x7fff_fff1, 0x7fff_fff2, 0x7fff_fff3);
+        for (window, resume) in [(gone, Some("s1")), (no_session, None), (other, Some("s3"))] {
+            d.peers.push(Peer {
+                window,
+                spawn: kept(resume, window, 0).spawn,
+            });
+        }
+        d.keep_closed_peers(&[gone, no_session]);
+        assert_eq!(sessions(&d.closed), ["s1"]);
+        let left: Vec<u64> = d.peers.iter().map(|p| p.window).collect();
+        assert_eq!(left, [other], "only the fleet's peers leave");
+        // A dry run lists them with the dormant ones, and forget drops both.
+        let Response::Restored { peers } = d.restore_peers(true, false) else {
+            panic!("not a restore answer");
+        };
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].session_id, "s1");
+        d.restore_peers(false, true);
+        assert!(d.closed.is_empty() && d.dormant.is_empty());
     }
 
     #[test]
