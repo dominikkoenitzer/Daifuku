@@ -107,6 +107,10 @@ is left out when none was given. `fleet` and `cell` say which fleet's grid
 it took a cell of, counted from 1, with `--cell`, and are left out without.
 With `--cell` and every cell taken, it fails and opens nothing.
 
+`daifuku close --terminal` fails with code `daemon` when no terminal goes by
+that label or window, when a label names two, and when the terminal is
+still open after the wait.
+
 ### `wait`
 
 ```json
