@@ -1060,6 +1060,40 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_goes_back_only_to_its_own_cell_while_it_is_free() {
+        let config = Config::from_json(
+            r#"{"fleets":[{"name":"crew","count":3,"monitor":"landscape","area":"right",
+                "shape":{"columns":1,"rows":3}}]}"#,
+        )
+        .unwrap();
+        let crew = config.fleet("crew").unwrap();
+        let monitors = [MonitorInfo {
+            device: r"\\.\DISPLAY1".into(),
+            bounds: Rect::new(0, 0, 3840, 2160),
+            work: Rect::new(0, 0, 3840, 2112),
+            dpi: 144,
+            primary: true,
+        }];
+        let back = |record: &mut OpenFleet, w, cell| {
+            rejoin_on(crew, &config, record, w, cell, &monitors, (0, 0)).unwrap()
+        };
+        // A fleet the daemon did not take back gets a record with the peer
+        // in its own cell, on the fleet's monitor.
+        let mut record = OpenFleet::new("crew");
+        assert!(back(&mut record, 7, 2));
+        assert_eq!(record.slots, vec![None, Some(7), None]);
+        assert_eq!(record.monitor, r"\\.\DISPLAY1");
+        assert!(back(&mut record, 8, 3));
+        assert_eq!(record.slots, vec![None, Some(7), Some(8)]);
+        // Its cell taken, or past a lowered count: it stays outside, and
+        // takes no other cell.
+        assert!(!back(&mut record, 9, 2));
+        assert!(!back(&mut record, 9, 4));
+        assert!(!back(&mut record, 9, 0));
+        assert_eq!(record.slots, vec![None, Some(7), Some(8)]);
+    }
+
+    #[test]
     fn settling_fits_the_slots_to_the_count() {
         let fleet = fleet_on(MonitorPick::Portrait);
         let mut r = record("", vec![Some(1), None, Some(3)]);
