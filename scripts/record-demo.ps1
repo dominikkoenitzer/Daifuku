@@ -26,7 +26,9 @@ How long to record. Forty seconds show every state: the first round of tasks
 ends at about eight seconds, the second at about thirty.
 
 .PARAMETER Fps
-Frames per second, of the recording and of the GIFs.
+Frames per second, of the recording and of the GIFs, as a number or a
+fraction. A GIF times its frames in hundredths of a second, so 25/2, that
+is 12.5, gives every frame the same 80 ms; 12 would alternate 80 and 90.
 
 .PARAMETER Target
 The folder holding daifuku.exe and daifukud.exe.
@@ -39,13 +41,16 @@ param(
     [int]$Width = 1600,
     [int]$Height = 900,
     [int]$Seconds = 40,
-    [int]$Fps = 12,
+    [string]$Fps = '25/2',
     [string]$Target = 'target/release',
     [string]$Out = 'dist/demo'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($Fps -notmatch '^\d+(\.\d+)?(/\d+)?$') { throw "Fps must be a number or a fraction, not '$Fps'" }
+$fpsValue = if ($Fps -match '^(\d+)/(\d+)$') { [double]$Matches[1] / [double]$Matches[2] } else { [double]$Fps }
 
 Add-Type -TypeDefinition @'
 using System;
@@ -368,7 +373,7 @@ foreach ($gifWidth in 1200, 960) {
     ffmpeg -y -hide_banner -loglevel error -i $raw -vf $filters -loop 0 $gif
     if ($LASTEXITCODE -ne 0) { throw "the GIF at $gifWidth failed" }
     $frames = ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 $gif
-    Say ("{0}: {1:N2} MB, {2} frames at {3} fps" -f (Split-Path -Leaf $gif), ((Get-Item $gif).Length / 1MB), $frames, $Fps)
+    Say ("{0}: {1:N2} MB, {2} frames at {3} fps" -f (Split-Path -Leaf $gif), ((Get-Item $gif).Length / 1MB), $frames, $fpsValue)
 }
 $review = Join-Path $Out 'demo.mp4'
 ffmpeg -y -hide_banner -loglevel error -i $raw -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 22 $review
