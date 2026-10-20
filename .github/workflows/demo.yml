@@ -1,0 +1,50 @@
+name: Demo recording
+
+# The README's GIF, recorded on a hosted runner: a screen nobody uses, at a
+# fixed size, with the demo's six agents on it. Nothing here publishes; the
+# recording is a workflow artifact to look at and, when it is right, commit.
+on:
+  push:
+    branches: [gif]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  record:
+    name: record the demo
+    timeout-minutes: 45
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: demo
+      - run: cargo build --locked --release --workspace
+      # The runner's desktop is the real one the end-to-end tests use: a
+      # daemon of its own, Windows Terminal, the demo agents in it.
+      - name: Record
+        shell: pwsh
+        run: ./scripts/record-demo.ps1 -Out dist/demo
+      - name: The daemon's log
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem "$env:ProgramData\Daifuku\logs", "$env:LOCALAPPDATA\Daifuku\logs" -Filter *.log -ErrorAction SilentlyContinue | Get-Content -Tail 80
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: demo
+          path: dist/demo
+          if-no-files-found: warn
+          retention-days: 14
