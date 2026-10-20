@@ -367,6 +367,55 @@ fn plan_cell(
     Ok(free_slot(&record.slots, cell).map(|slot| (slot, cells[slot])))
 }
 
+/// Puts terminal `w`, a peer that was in cell `cell` of `fleet`, counted
+/// from 1, back in that cell of `record`, the fleet's record, empty when the
+/// daemon did not take the fleet back. Only while the cell is still in the
+/// grid and free: the terminal is there already, so a snap or a close then
+/// treats it as one of the fleet's. Says whether it went back.
+///
+/// # Errors
+///
+/// When there is no monitor.
+pub fn rejoin(
+    fleet: &Fleet,
+    config: &Config,
+    record: &mut OpenFleet,
+    w: u64,
+    cell: u32,
+) -> anyhow::Result<bool> {
+    record.prune();
+    rejoin_on(
+        fleet,
+        config,
+        record,
+        w,
+        cell,
+        &monitor::monitors(),
+        monitor::cursor(),
+    )
+}
+
+/// [`rejoin`] on `monitors` with the cursor at `cursor`, for a record whose
+/// closed terminals are pruned already.
+fn rejoin_on(
+    fleet: &Fleet,
+    config: &Config,
+    record: &mut OpenFleet,
+    w: u64,
+    cell: u32,
+    monitors: &[MonitorInfo],
+    cursor: (i32, i32),
+) -> anyhow::Result<bool> {
+    let own = usize::try_from(cell).ok().and_then(|n| n.checked_sub(1));
+    match plan_cell(fleet, config, record, Cell::At(cell), monitors, cursor)? {
+        Some((slot, _)) if Some(slot) == own => {
+            record.slots[slot] = Some(w);
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// What a peer that asked for a cell of fleet `name`, whose `cells` all have
 /// a terminal in them, is told.
 pub fn no_free_cell(name: &str, cells: usize) -> String {

@@ -1291,11 +1291,12 @@ impl Daemon {
     }
 
     /// Reads [`Daemon::peers_file`]: a peer whose terminal is still open,
-    /// as after an install, is open again; one that was open when Windows
-    /// last stopped is dormant, when it has a session to resume. Peers from
-    /// any start of Windows before that are dropped, as is one closed in this
-    /// start of Windows while no daemon ran. Written back at once, so the
-    /// file says which start of Windows its dormant peers are from.
+    /// as after an install, is open again, and back in the cell of its
+    /// fleet it was in; one that was open when Windows last stopped is
+    /// dormant, when it has a session to resume. Peers from any start of
+    /// Windows before that are dropped, as is one closed in this start of
+    /// Windows while no daemon ran. Written back at once, so the file says
+    /// which start of Windows its dormant peers are from.
     fn load_peers(&mut self) {
         let Some(file) = &self.peers_file else {
             return;
@@ -1312,19 +1313,62 @@ impl Daemon {
         } = sort_kept(peer::read_kept(&text), boot, |w| {
             window::exists(w) && window::class(w) == WINDOW_CLASS
         });
+        let mut seats = Vec::new();
         self.peers = open
             .into_iter()
-            .map(|(window, spawn)| Peer { window, spawn })
+            .map(|(window, spawn, in_cell)| {
+                seats.extend(in_cell.map(|c| (window, c)));
+                Peer { window, spawn }
+            })
             .collect();
         self.dormant = dormant;
         self.dormant_boot = dormant_boot;
         self.closed = closed;
+        self.rejoin_fleets(seats);
         self.save_peers();
         tracing::info!(
             open = self.peers.len(),
             dormant = self.dormant.len(),
             "read the peers"
         );
+    }
+
+    /// Puts each peer read back open that was in a cell of a fleet back in
+    /// that cell, when the fleets taken back do not hold it already. A save
+    /// of the fleets is taken back only while it is a few minutes old, the
+    /// peers whenever their terminal is still open: outside its fleet, a
+    /// peer would get a terminal opened over it by the fleet's key, and stay
+    /// open when the fleet closes.
+    fn rejoin_fleets(&mut self, seats: Vec<(u64, FleetCell)>) {
+        for (w, seat) in seats {
+            if self.fleets.iter().any(|f| f.slots.contains(&Some(w))) {
+                continue;
+            }
+            let Some(definition) = self.definition(&seat.fleet) else {
+                continue;
+            };
+            let mut record = self
+                .fleets
+                .iter()
+                .position(|f| f.name.eq_ignore_ascii_case(&definition.name))
+                .map_or_else(
+                    || OpenFleet::new(&definition.name),
+                    |i| self.fleets.remove(i),
+                );
+            let window = format!("{w:#x}");
+            match fleet::rejoin(&definition, &self.config, &mut record, w, seat.cell) {
+                Ok(true) => {
+                    tracing::info!(%window, fleet = %definition.name, cell = seat.cell, "a peer is back in its cell");
+                }
+                Ok(false) => {
+                    tracing::info!(%window, fleet = %definition.name, cell = seat.cell, "a peer's cell is taken, it stays beside its fleet");
+                }
+                Err(e) => {
+                    tracing::warn!(%window, error = %e, "could not put a peer back in its fleet");
+                }
+            }
+            self.keep_fleet(record);
+        }
     }
 
     /// Opens the dormant peers again, each resuming its session in its own
@@ -1877,7 +1921,7 @@ fn sort_kept(file: KeptFile, boot: u64, alive: impl Fn(u64) -> bool) -> Sorted {
     let mut closed = Vec::new();
     for k in file.peers {
         if k.window != 0 && k.same_boot(boot) && alive(k.window) {
-            open.push((k.window, k.spawn));
+            open.push((k.window, k.spawn, k.in_cell));
         } else if k.resumable() && k.closed_with_fleet && now(k.boot) {
             closed.push(k.spawn);
         } else if k.resumable() && from != 0 && !now(k.boot) && k.same_boot(from) {
@@ -1894,8 +1938,9 @@ fn sort_kept(file: KeptFile, boot: u64, alive: impl Fn(u64) -> bool) -> Sorted {
 
 /// The peers of a peers file, as [`sort_kept`] sorts them.
 struct Sorted {
-    /// The ones still open, by their window.
-    open: Vec<(u64, Spawn)>,
+    /// The ones still open, by their window, with the cell of a fleet each
+    /// was in.
+    open: Vec<(u64, Spawn, Option<FleetCell>)>,
     /// The ones open when Windows last stopped.
     dormant: Vec<Spawn>,
     /// The ones closed with their fleet in this start of Windows.
@@ -2407,7 +2452,7 @@ mod tests {
             from,
             ..
         } = sort_kept(file, 1_005, |w| w == 1 || w == 2);
-        let windows: Vec<_> = open.iter().map(|(w, _)| *w).collect();
+        let windows: Vec<_> = open.iter().map(|(w, _, _)| *w).collect();
         assert_eq!(windows, [1, 2]);
         assert_eq!(sessions(&dormant), ["b"]);
         assert_eq!(from, 500);
