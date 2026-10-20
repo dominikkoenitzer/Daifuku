@@ -2541,6 +2541,44 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_in_a_cell_is_kept_with_its_fleet_and_cell_and_read_back_so() {
+        let dir = std::env::temp_dir().join(format!("daifuku-cells-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("peers.json");
+        let mut d = daemon();
+        d.peers_file = Some(file.clone());
+        let (inside, beside) = (0x7fff_ffe0, 0x7fff_ffe4);
+        let mut crew = OpenFleet::new("crew");
+        crew.slots = vec![None, Some(inside)];
+        d.fleets.push(crew);
+        for window in [inside, beside] {
+            d.peers.push(Peer {
+                window,
+                spawn: Spawn {
+                    directory: r"C:\src".into(),
+                    resume: Some(format!("s{window:x}")),
+                    cell: Some(peer::Cell::At(2)),
+                    ..Spawn::default()
+                },
+            });
+        }
+        d.save_peers();
+        let read = peer::read_kept(&std::fs::read_to_string(&file).unwrap());
+        let cells: Vec<_> = read.peers.iter().map(|k| k.in_cell.clone()).collect();
+        let seat = FleetCell {
+            fleet: "crew".into(),
+            cell: 2,
+        };
+        // Only the one the fleet holds; the other asked for the cell too,
+        // but opened beside the fleet.
+        assert_eq!(cells, [Some(seat.clone()), None]);
+        let Sorted { open, .. } = sort_kept(read.clone(), read.boot, |_| true);
+        let seats: Vec<_> = open.into_iter().map(|(w, _, c)| (w, c)).collect();
+        assert_eq!(seats, [(inside, Some(seat)), (beside, None)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_peer_closed_while_the_daemon_runs_leaves_the_peers_file() {
         let dir = std::env::temp_dir().join(format!("daifuku-peers-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

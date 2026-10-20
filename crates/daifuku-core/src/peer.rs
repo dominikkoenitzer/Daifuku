@@ -487,6 +487,28 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_peer_keeps_the_cell_of_the_fleet_it_was_in() {
+        let k = Kept {
+            in_cell: Some(FleetCell {
+                fleet: "crew".into(),
+                cell: 2,
+            }),
+            ..kept(Some("abc"), 7, 1_000)
+        };
+        let text = serde_json::to_string(&k).unwrap();
+        assert!(
+            text.contains(r#""in_cell":{"fleet":"crew","cell":2}"#),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<Kept>(&text).unwrap(), k);
+        // One outside a fleet writes none, and peers kept before read as
+        // outside one.
+        let plain = serde_json::to_string(&kept(Some("abc"), 7, 1_000)).unwrap();
+        assert!(!plain.contains("in_cell"), "{plain}");
+        assert_eq!(serde_json::from_str::<Kept>(&plain).unwrap().in_cell, None);
+    }
+
+    #[test]
     fn the_kept_file_reads_leniently_and_drops_ids_that_are_not_ids() {
         let file = KeptFile {
             boot: 1_000,
