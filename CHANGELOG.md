@@ -7,9 +7,10 @@
   makes it one of the fleet's terminals: `snap` puts it back there,
   `close <fleet>` and the close key close it, it is numbered as that cell,
   `{n}` included, and `status` calls it by the fleet's name and number
-  until it has a label. A lead on the left half can fill a crew of three on
-  the right half one task at a time. The answer names the `fleet` and
-  `cell`; with every cell taken it fails and opens nothing.
+  until it has a label. It stays one of them when the daemon restarts,
+  however long the daemon was stopped. A lead on the left half can fill a
+  crew of three on the right half one task at a time. The answer names the
+  `fleet` and `cell`; with every cell taken it fails and opens nothing.
 - `daifuku restore` puts such a terminal back in its cell. When every cell
   has a terminal in it by then, as after the fleet was opened afresh, it
   opens the terminal beside the fleet instead.
