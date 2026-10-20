@@ -143,7 +143,7 @@
     "code": "{\n  \"fleets\": [\n    { \"name\": \"agents\", \"count\": 6, \"monitor\": \"portrait\" },\n    {\n      \"name\": \"site\",\n      \"count\": 4,\n      \"monitor\": \"primary\",\n      \"directory\": \"C:\\\\src\\\\site\",\n      \"hotkey\": \"ctrl + alt + w\"\n    }\n  ]\n}"
   },
   "new": {
-    "version": "0.2.0",
+    "version": "0.3.0",
     "items": [
       "A fleet can fill half its monitor, or any part of it, with the <code>area</code> key.",
       "The <code>with</code> key opens a second fleet together with the first.",
