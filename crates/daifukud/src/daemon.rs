@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use daifuku_core::config::{Border, Config};
-use daifuku_core::peer::{self, Kept, KeptFile, Spawn};
+use daifuku_core::peer::{self, FleetCell, Kept, KeptFile, Spawn};
 use daifuku_core::protocol::{
     AgentWindow, FleetStatus, HookMessage, PeerStatus, Request, Response, RestoredPeer, Status,
 };
@@ -1253,18 +1253,21 @@ impl Daemon {
                     window: p.window,
                     boot,
                     closed_with_fleet: false,
+                    in_cell: self.cell_of(p.window),
                 })
                 .chain(self.dormant.iter().map(|spawn| Kept {
                     spawn: spawn.clone(),
                     window: 0,
                     boot: self.dormant_boot,
                     closed_with_fleet: false,
+                    in_cell: None,
                 }))
                 .chain(self.closed.iter().map(|spawn| Kept {
                     spawn: spawn.clone(),
                     window: 0,
                     boot,
                     closed_with_fleet: true,
+                    in_cell: None,
                 }))
                 .collect(),
         };
@@ -1274,6 +1277,17 @@ impl Daemon {
         if let Err(e) = written {
             tracing::warn!(path = %file.display(), error = %e, "could not save the peers");
         }
+    }
+
+    /// The fleet and the cell terminal `w` is in, if it is in one.
+    fn cell_of(&self, w: u64) -> Option<FleetCell> {
+        self.fleets.iter().find_map(|f| {
+            let i = f.slots.iter().position(|s| *s == Some(w))?;
+            Some(FleetCell {
+                fleet: f.name.clone(),
+                cell: u32::try_from(i + 1).ok()?,
+            })
+        })
     }
 
     /// Reads [`Daemon::peers_file`]: a peer whose terminal is still open,
@@ -2335,6 +2349,7 @@ mod tests {
             window,
             boot,
             closed_with_fleet: false,
+            in_cell: None,
         }
     }
 

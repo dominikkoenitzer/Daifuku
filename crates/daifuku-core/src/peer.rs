@@ -351,6 +351,21 @@ pub struct Kept {
     /// that was open when Windows stopped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closed_with_fleet: bool,
+    /// The fleet and the cell it was in while it was open, so a daemon that
+    /// finds it open puts it back there. The daemon's saved fleets go stale
+    /// after a few minutes; the peer would then be outside its fleet, and
+    /// opening the fleet would start a terminal over it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_cell: Option<FleetCell>,
+}
+
+/// A cell of an open fleet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FleetCell {
+    /// The config's name for the fleet.
+    pub fleet: String,
+    /// The cell, counted from 1.
+    pub cell: u32,
 }
 
 impl Kept {
@@ -458,6 +473,7 @@ mod tests {
             window,
             boot,
             closed_with_fleet: false,
+            in_cell: None,
         }
     }
 
