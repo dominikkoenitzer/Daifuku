@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0, 2026-10-20
 
 - `daifuku spawn --cell` puts the terminal in a cell of its fleet's grid,
   the first free one, or with `--cell 2` that one while it is free, and
