@@ -873,6 +873,16 @@ fn alive(pid: u32) -> bool {
 
 /// The peers file a daemon keeps in `state`, one per user.
 fn peers_file(state: &Path) -> PathBuf {
+    kept_file(state, "peers")
+}
+
+/// The file of fleets and agents a daemon saves in `state`, one per user.
+fn state_file(state: &Path) -> PathBuf {
+    kept_file(state, "state")
+}
+
+/// The file `what` a daemon keeps in `state`.
+fn kept_file(state: &Path, what: &str) -> PathBuf {
     std::fs::read_dir(state)
         .unwrap()
         .flatten()
@@ -880,9 +890,9 @@ fn peers_file(state: &Path) -> PathBuf {
         .find(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("peers") && n.ends_with(".json"))
+                .is_some_and(|n| n.starts_with(what) && n.ends_with(".json"))
         })
-        .expect("a peers file")
+        .unwrap_or_else(|| panic!("a {what} file"))
 }
 
 /// A border shown around `w`'s frame, if there is one.
@@ -1741,6 +1751,154 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
     });
     steps += 1;
 
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
+
+#[test]
+fn a_peer_in_a_cell_stays_in_its_fleet_when_the_daemon_was_gone_for_long() {
+    use daifuku_core::config::Area;
+    use daifuku_core::grid::{Gaps, Grid, Shape};
+    use daifuku_core::saved::FRESH_SECONDS;
+
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    daifuku_win::dpi::per_monitor_v2();
+    let dir = scratch().join("rejoin");
+    let work = dir.join("work");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    // A crew of two stacked on the right half, each terminal with a session
+    // of its own, as in the crew test above.
+    let config = dir.join("daifuku.json");
+    let command = format!("& '{}' {{n}}", peer_script(&dir).display());
+    let fleets = serde_json::json!({
+        "fleets": [{
+            "name": "crew", "count": 2, "monitor": "primary", "area": "right",
+            "shape": { "columns": 1, "rows": 2 },
+            "command": command, "admin": true, "no_profile": true, "hotkey": null
+        }],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, fleets.to_string()).unwrap();
+    for n in 1..=2 {
+        let event = format!(r#"{{"session_id":"e2e-rejoin-{n}","hook_event_name":"Stop"}}"#);
+        std::fs::write(dir.join(format!("peer-event-{n}.json")), event).unwrap();
+    }
+    let monitors = daifuku_win::monitor::monitors();
+    let primary = monitors.iter().find(|m| m.primary).unwrap();
+    let cells = Grid::plan(
+        2,
+        Area::Right.within(primary.work),
+        Gaps::default(),
+        Some(Shape {
+            columns: 1,
+            rows: 2,
+        }),
+    );
+    let terminals = || {
+        window::top_level()
+            .into_iter()
+            .filter(|&w| window::class(w) == daifuku_win::terminal::WINDOW_CLASS)
+            .count()
+    };
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
+
+    // A peer takes the crew's first cell and the crew's own terminal the
+    // second; the peers file says which cell of which fleet the peer is in.
+    let dir_arg = work.display().to_string();
+    let (a, fleet, cell) = spawned(&["--dir", &dir_arg, "--fleet", "crew", "--cell"]);
+    assert_eq!((fleet.as_deref(), cell), (Some("crew"), Some(1)));
+    ran_full(&dir, "1");
+    wait_for("the peer's session", Duration::from_secs(20), || {
+        status()?
+            .peers
+            .into_iter()
+            .find(|p| p.window == a && p.session_id.as_deref() == Some("e2e-rejoin-1"))
+    });
+    run(&["open", "crew"]);
+    let own = wait_for("the crew's own terminal", Duration::from_secs(30), || {
+        let crew = fleet_windows("crew");
+        (crew.len() == 2 && crew[0] == a).then(|| crew[1])
+    });
+    let kept = json(&std::fs::read_to_string(peers_file(&state)).unwrap());
+    assert_eq!(
+        kept["peers"][0]["in_cell"],
+        serde_json::json!({ "fleet": "crew", "cell": 1 }),
+        "{kept}"
+    );
+    steps += 1;
+
+    // The daemon stops for longer than its save of the fleets stays fresh.
+    // A runner cannot be made to wait that long, so the save is moved back
+    // that far instead, once Windows has been up for longer than that.
+    stop(&mut cleanup);
+    let ticks_per_second = 10_000_000;
+    let stale = (FRESH_SECONDS + 60) * ticks_per_second;
+    wait_for(
+        "Windows to be up for longer than a save stays fresh",
+        Duration::from_secs(FRESH_SECONDS + 120),
+        || (daifuku_win::clock::ticks() > stale).then_some(()),
+    );
+    let file = state_file(&state);
+    let mut saved = json(&std::fs::read_to_string(&file).unwrap());
+    saved["at"] = saved["at"].as_u64().unwrap().saturating_sub(stale).into();
+    std::fs::write(&file, saved.to_string()).unwrap();
+    let (mut cleanup, back) = start_with(&config, Some(&state), &[]);
+    // The save is not taken back, so the crew's own terminal is let go; the
+    // peer is open again, and in its cell of the crew.
+    assert!(back.peers.iter().any(|p| p.window == a), "{:?}", back.peers);
+    let crew: Vec<u64> = back
+        .fleets
+        .iter()
+        .find(|f| f.name == "crew")
+        .map(|f| f.windows.clone())
+        .unwrap_or_default();
+    assert_eq!(crew, vec![a], "{:?}", back.fleets);
+    assert!(window::exists(own), "the crew's own terminal closed");
+    steps += 1;
+
+    // The crew's key opens its free cell only, no terminal over the peer.
+    let before = terminals();
+    run(&["open", "crew"]);
+    let crew = wait_for(
+        "the crew to fill its cells",
+        Duration::from_secs(30),
+        || {
+            let crew = fleet_windows("crew");
+            (crew.len() == 2).then_some(crew)
+        },
+    );
+    assert_eq!(crew[0], a, "{crew:?}");
+    assert!(!crew.contains(&own), "{crew:?}");
+    assert_eq!(terminals(), before + 1, "a terminal opened over the peer");
+    assert_in_cell(a, cells[0], "the peer after its crew opened");
+    steps += 1;
+
+    // Closing the crew closes the peer with it, kept for restore.
+    run(&["close", "crew"]);
+    wait_for("the crew to close", Duration::from_secs(15), || {
+        (!window::exists(a) && !window::exists(crew[1])).then_some(())
+    });
+    let listed = json(&run(&["restore", "--dry-run", "--json"]));
+    assert_eq!(listed["peers"][0]["session_id"], "e2e-rejoin-1", "{listed}");
+    steps += 1;
+
+    let _ = window::close(own);
+    wait_for(
+        "the terminal let go to close",
+        Duration::from_secs(15),
+        || (!window::exists(own)).then_some(()),
+    );
     stop(&mut cleanup);
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
