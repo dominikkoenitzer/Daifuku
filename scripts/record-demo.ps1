@@ -209,8 +209,8 @@ if (Status) {
     throw 'a daifukud already runs in this session; this script records on a machine of its own'
 }
 
-# ffmpeg grabs the screen and encodes the results. Hosted runners carry it;
-# anywhere else it is fetched.
+# ffmpeg grabs the screen and encodes the results. The runner image comes
+# without it, so it is fetched.
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Say 'ffmpeg is not installed, installing it'
     choco install ffmpeg -y --no-progress | Out-Null
@@ -257,12 +257,37 @@ New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 $config = Join-Path $scratch 'daifuku.json'
 '{"fleets":[],"hotkeys":{"next_waiting":null,"snap":null,"close":null}}' | Set-Content -Encoding utf8 $config
 
+# A plain window the size of the work area, under the terminals: the gaps
+# between them then show nothing of the desktop, no icons, no window left
+# behind by the runner, no build number in the corner. A process of its own,
+# because a window needs a message loop.
+$backdropScript = Join-Path $scratch 'backdrop.ps1'
+@'
+param([int]$Left, [int]$Top, [int]$Width, [int]$Height)
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$form = [System.Windows.Forms.Form]::new()
+$form.FormBorderStyle = 'None'
+$form.StartPosition = 'Manual'
+$form.ShowInTaskbar = $false
+$form.Location = [System.Drawing.Point]::new($Left, $Top)
+$form.Size = [System.Drawing.Size]::new($Width, $Height)
+$form.BackColor = [System.Drawing.Color]::FromArgb(17, 17, 27)
+$form.Text = 'backdrop'
+[System.Windows.Forms.Application]::Run($form)
+'@ | Set-Content -Encoding utf8 $backdropScript
+
 $raw = Join-Path $Out 'raw.mkv'
 $statusLog = Join-Path $Out 'status.log'
 $ffmpegLog = Join-Path $Out 'ffmpeg.log'
 $daemon = $null
 $grab = $null
+$backdrop = $null
 try {
+    $backdrop = Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-NoLogo', '-File', "`"$backdropScript`"", "$($work.Left)", "$($work.Top)", "$grabW", "$grabH" -PassThru
+    Start-Sleep -Seconds 2
+    if ($backdrop.HasExited) { throw 'the backdrop window did not open' }
+
     $daemon = Start-Process -FilePath $daemonExe -ArgumentList '--config', "`"$config`"" -PassThru
     $deadline = (Get-Date).AddSeconds(15)
     while (-not (Status)) {
@@ -330,6 +355,7 @@ finally {
         }
         if (-not $daemon.WaitForExit(10000)) { $daemon.Kill() }
     }
+    if ($backdrop -and -not $backdrop.HasExited) { $backdrop.Kill() }
     if ($changed) { [Desk]::Apply($original) | Out-Null }
     Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 }
