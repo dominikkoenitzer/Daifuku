@@ -438,7 +438,7 @@ footer p { margin: 0.3rem 0; }
 <div class="card">
 <div class="num">Version 0.3.0</div>
 <h3>What's new</h3>
-<ul><li>A fleet can fill half its monitor, or any part of it, with the <code>area</code> key.</li><li>The <code>with</code> key opens a second fleet together with the first.</li><li><code>daifuku spawn</code> opens a single agent terminal, and <code>daifuku restore</code> brings those back after Windows restarts.</li><li><code>daifuku wait</code> waits until an agent finishes its turn.</li><li>The <code>priority</code> key runs a fleet's agents at a lower priority, and nothing they start outlives the terminal.</li></ul>
+<ul><li><code>daifuku spawn --cell</code> puts an agent terminal in a free cell of a fleet, where it snaps and closes with the rest of the fleet.</li><li><code>daifuku close --terminal</code> closes one terminal by its label or its window.</li><li><code>daifuku restore</code> also brings back the terminals closed with their fleet, each in its own cell.</li><li>A resumed session keeps the fleet's command as it is around the agent, and Codex resumes with <code>codex resume</code>.</li></ul>
 </div>
 <div class="card">
 <div class="num">Requirements</div>

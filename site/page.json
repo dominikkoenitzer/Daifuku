@@ -145,11 +145,10 @@
   "new": {
     "version": "0.3.0",
     "items": [
-      "A fleet can fill half its monitor, or any part of it, with the <code>area</code> key.",
-      "The <code>with</code> key opens a second fleet together with the first.",
-      "<code>daifuku spawn</code> opens a single agent terminal, and <code>daifuku restore</code> brings those back after Windows restarts.",
-      "<code>daifuku wait</code> waits until an agent finishes its turn.",
-      "The <code>priority</code> key runs a fleet's agents at a lower priority, and nothing they start outlives the terminal."
+      "<code>daifuku spawn --cell</code> puts an agent terminal in a free cell of a fleet, where it snaps and closes with the rest of the fleet.",
+      "<code>daifuku close --terminal</code> closes one terminal by its label or its window.",
+      "<code>daifuku restore</code> also brings back the terminals closed with their fleet, each in its own cell.",
+      "A resumed session keeps the fleet's command as it is around the agent, and Codex resumes with <code>codex resume</code>."
     ]
   },
   "requirements": [
