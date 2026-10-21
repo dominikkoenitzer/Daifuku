@@ -1,7 +1,7 @@
 //! Finding Windows Terminal and opening windows in it.
 //!
-//! The daemon runs elevated, so where it finds its programs matters: anything
-//! it starts, starts as administrator. It therefore never searches `PATH`,
+//! The daemon may run elevated, so where it finds its programs matters:
+//! anything it starts may start as administrator. It therefore never searches `PATH`,
 //! which has folders an ordinary process can write to. Windows Terminal is
 //! looked up through its package, and only a package the system installed
 //! from a signed source counts: one registered from loose files in developer

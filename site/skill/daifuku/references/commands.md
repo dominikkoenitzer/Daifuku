@@ -4,10 +4,10 @@ After install, `daifuku` is on the machine `PATH` (`C:\Program Files\Daifuku`) i
 
 ## Daemon commands
 
-These talk to the daemon over a named pipe that only elevated processes may open. Run them from an administrator terminal. Exit code 0 on success, 1 on failure. `daifuku status` is the exception: from a terminal that is not elevated it does not open the pipe and prints the local status below, with exit code 0. The two common errors:
+These talk to the daemon over a named pipe. A daemon with the user's own rights, the default, lets in the user's own terminals. An elevated one (`"elevated": true` in the config) lets in only elevated processes, so then run them from an administrator terminal. Exit code 0 on success, 1 on failure. `daifuku status` never fails for that reason: when an elevated daemon turns away a terminal that is not elevated, it prints the local status below, with exit code 0. The two common errors:
 
 ```text
-daifuku: the daemon answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku open
+daifuku: the daemon runs elevated and answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku open
 daifuku: Daifuku is not running; `daifuku doctor` says why
 ```
 
@@ -53,7 +53,7 @@ Prints one JSON object. Every character past ASCII is written as a `\u` escape, 
 
 Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`, and when known `label`, `fleet`, `session_id`), `peers` (each `window`, `label`, `directory`, `session_id`: the terminals `spawn` opened). An error reply is `{"result":"error","message":"..."}`.
 
-### `daifuku status` from a terminal that is not elevated
+### `daifuku status` from a terminal that is not elevated, against an elevated daemon
 
 One line, for example:
 
@@ -82,8 +82,8 @@ The program is an executable found on `PATH`, not a PowerShell line; for one, ru
 | `daifuku install --no-hooks` | Install without touching Claude Code's or Codex's settings. | administrator terminal |
 | `daifuku install --no-start` | Stop a running daemon and do not start it again; it starts at the next sign-in. | administrator terminal |
 | `daifuku uninstall` | Remove the program, the `PATH` entry, the logon task and Daifuku's hooks. Keeps config, logs and saved state. | administrator terminal |
-| `daifuku uninstall --purge` | Also delete `C:\ProgramData\Daifuku`: config, logs and saved state. | administrator terminal |
-| `daifuku doctor` | Check the setup and print a fix for each problem. Exit code 0 when every check passes, 1 otherwise. | any terminal; elevation and hotkey checks only from an administrator terminal |
+| `daifuku uninstall --purge` | Also delete `C:\ProgramData\Daifuku` (config, logs and saved state) and `%LocalAppData%\Daifuku` (the logs and saved state of a daemon with the user's own rights). | administrator terminal |
+| `daifuku doctor` | Check the setup and print a fix for each problem. Exit code 0 when every check passes, 1 otherwise. | any terminal; for an elevated daemon, its rights and hotkey checks only from an administrator terminal |
 | `daifuku config` | Open the config file in the editor for `.json` files, or Notepad. Asks Windows for permission first when the terminal is not elevated. Fails when no config file exists yet (`daifuku install` writes one). | any terminal |
 | `daifuku config --path` | Print the config file's path. | any terminal |
 | `daifuku schema` | Print the config file's JSON schema. | any terminal |

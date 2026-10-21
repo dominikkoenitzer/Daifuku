@@ -172,10 +172,7 @@ pub fn open(
 
     if !empty.is_empty() {
         if fleet.admin && !elevated {
-            return Err(anyhow!(
-                "fleet `{}` opens administrator terminals, and this daemon is not elevated. Install Daifuku, or set \"admin\": false",
-                fleet.name
-            ));
+            return Err(needs_elevation(fleet));
         }
         let wt = terminal::find().context("Windows Terminal is not installed")?;
         // One terminal at a time, each waited for and put in its own cell:
@@ -215,6 +212,15 @@ pub fn open(
         cells.len(),
         !empty.is_empty(),
         record.windows().count(),
+    )
+}
+
+/// Why administrator fleet `fleet` cannot open from a daemon with the user's
+/// own rights, and the two ways out.
+fn needs_elevation(fleet: &Fleet) -> anyhow::Error {
+    anyhow!(
+        "fleet `{}` opens administrator terminals, and this daemon runs with your own rights. Set \"elevated\": true in the config and run `daifuku install` again, or set \"admin\": false for the fleet",
+        fleet.name
     )
 }
 
@@ -261,10 +267,7 @@ pub fn spawn(
     cell: Option<(usize, Rect)>,
 ) -> anyhow::Result<u64> {
     if base.admin && !elevated {
-        return Err(anyhow!(
-            "fleet `{}` opens administrator terminals, and this daemon is not elevated. Install Daifuku, or set \"admin\": false",
-            base.name
-        ));
+        return Err(needs_elevation(base));
     }
     let n = cell.map_or(1, |(slot, _)| slot + 1);
     let command = base

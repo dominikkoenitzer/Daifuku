@@ -1,8 +1,10 @@
-//! What `daifuku status` says from a terminal that is not elevated.
+//! What `daifuku status` says from a terminal that is not elevated, when the
+//! daemon does not answer it.
 //!
-//! The daemon answers only elevated processes, as a request on its control
-//! pipe can open administrator terminals, and that stays so. From any other
-//! terminal `status` leaves the pipe alone and reports what needs no daemon:
+//! An elevated daemon answers only elevated processes, as a request on its
+//! control pipe can open administrator terminals, and that stays so. A daemon
+//! with the user's own rights answers the user's terminals, and `status`
+//! prints its reply. Otherwise `status` reports what needs no daemon:
 //! whether Daifuku is installed and which version, whether the daemon process
 //! runs, whether the logon task is there, and where the config is and
 //! whether it loads. Fleets, agents and hotkeys need an administrator
