@@ -7,14 +7,18 @@
 //! prints its reply. Otherwise `status` reports what needs no daemon:
 //! whether Daifuku is installed and which version, whether the daemon process
 //! runs, whether the logon task is there, and where the config is and
-//! whether it loads. Fleets, agents and hotkeys need an administrator
-//! terminal, and the report says so in a field of its own.
+//! whether it loads. Fleets, agents and hotkeys need the daemon, and the
+//! report says, in a field of its own, how to reach it: an administrator
+//! terminal, or for an ordinary daemon that does not run, the next command
+//! that starts it.
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+
+use daifuku_core::config::{self, Config};
 
 use crate::{output, validate};
 
@@ -24,6 +28,10 @@ pub const DAEMON: &str = "daifukud.exe";
 /// What `live_state` says: fleets, agents and hotkeys need an administrator
 /// terminal.
 pub const NEEDS_ADMINISTRATOR: &str = "needs_administrator_terminal";
+
+/// What `live_state` says when the daemon an installed ordinary config asks
+/// for does not run: the next command or hook starts it.
+pub const NOT_RUNNING: &str = "not_running";
 
 /// Where the facts come from: Windows in the program, fakes in the tests.
 /// Nothing here may open the daemon's pipes.
@@ -67,10 +75,12 @@ pub struct LocalStatus {
     pub config_valid: bool,
     /// What is wrong with the config, null when it is valid.
     pub config_error: Option<String>,
-    /// Always [`NEEDS_ADMINISTRATOR`]: fleets, agents and hotkeys come only
-    /// from the daemon, which answers only an administrator terminal.
+    /// Fleets, agents and hotkeys come only from the daemon:
+    /// [`NOT_RUNNING`] when an installed ordinary daemon does not run, else
+    /// [`NEEDS_ADMINISTRATOR`], as the daemon answers only an administrator
+    /// terminal.
     pub live_state: &'static str,
-    /// The same for a person, ending in the command to run there.
+    /// The same for a person, ending in the command to run.
     pub message: String,
 }
 
@@ -79,35 +89,62 @@ pub struct LocalStatus {
 pub fn gather(probe: &impl Probe, command: &str) -> LocalStatus {
     let installed = probe.installed();
     let file = probe.config_file();
-    let (config_exists, config_error) = match &file {
-        None => (false, Some("no ProgramData folder".to_owned())),
+    // Whether the config asks for an elevated daemon: one that does not
+    // read asks for nothing, as the daemon then runs on its defaults.
+    let asks_elevated = |bytes: &[u8]| {
+        config::decode(bytes)
+            .ok()
+            .and_then(|t| Config::from_json(&t).ok())
+            .is_some_and(|c| c.elevated)
+    };
+    let (config_exists, config_error, elevated) = match &file {
+        None => (false, Some("no ProgramData folder".to_owned()), false),
         Some(f) => match probe.read(f) {
             Ok(bytes) => (
                 true,
                 validate::bytes_of(&bytes)
                     .err()
                     .map(|p| one_line(&p.message)),
+                asks_elevated(&bytes),
             ),
             // No file is the default config, as the daemon takes it.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (false, None),
-            Err(e) => (true, Some(one_line(&format!("could not read it: {e}")))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (false, None, false),
+            Err(e) => (
+                true,
+                Some(one_line(&format!("could not read it: {e}"))),
+                false,
+            ),
         },
+    };
+    let daemon_running = probe.daemon_running();
+    // An ordinary daemon that does not run needs no administrator terminal,
+    // only a command that starts it.
+    let (live_state, message) = if installed && !elevated && !daemon_running {
+        (
+            NOT_RUNNING,
+            "the daemon is not running: the first daifuku command or agent hook starts it, or run `daifuku reload`".to_owned(),
+        )
+    } else {
+        (
+            NEEDS_ADMINISTRATOR,
+            format!(
+                "fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: {command}"
+            ),
+        )
     };
     LocalStatus {
         result: "local_status",
         version: env!("CARGO_PKG_VERSION"),
         installed,
         installed_version: installed.then(|| probe.installed_version()).flatten(),
-        daemon_running: probe.daemon_running(),
+        daemon_running,
         logon_task: probe.logon_task(),
         config: file.map(|f| f.display().to_string()),
         config_exists,
         config_valid: config_error.is_none(),
         config_error,
-        live_state: NEEDS_ADMINISTRATOR,
-        message: format!(
-            "fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: {command}"
-        ),
+        live_state,
+        message,
     }
 }
 
@@ -305,6 +342,39 @@ mod tests {
         assert_eq!(
             status.line(),
             "daifuku not installed, daemon not running, no logon task, no ProgramData folder; fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_daemon_that_does_not_run_is_started_by_the_next_command() {
+        let stopped = Fake {
+            daemon: false,
+            task: false,
+            ..Fake::all_there()
+        };
+        let status = gather(&stopped, COMMAND);
+        assert_eq!(status.live_state, NOT_RUNNING);
+        assert!(
+            status.message.ends_with("run `daifuku reload`"),
+            "{}",
+            status.message
+        );
+        assert!(
+            !status.message.contains("administrator"),
+            "{}",
+            status.message
+        );
+        // An elevated one keeps its logon task and needs an administrator
+        // terminal, running or not.
+        let elevated = Fake {
+            daemon: false,
+            config: Ok("{\"elevated\": true}"),
+            ..Fake::all_there()
+        };
+        assert_eq!(gather(&elevated, COMMAND).live_state, NEEDS_ADMINISTRATOR);
+        assert_eq!(
+            gather(&Fake::all_there(), COMMAND).live_state,
+            NEEDS_ADMINISTRATOR
         );
     }
 
