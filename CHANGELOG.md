@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `daifuku status` lists, for each agent, the folder its session works in,
+  the tool it ran last, the text of its last notification (what it asks
+  permission for) and its transcript file, so a coordinating agent can see
+  what each peer is doing without reading its terminal. In `--json` these
+  are `cwd`, `last_tool`, `last_message` and `transcript_path`, each left
+  out until a hook of the session names it.
+
 ## 0.3.0, 2026-10-20
 
 - `daifuku spawn --cell` puts the terminal in a cell of its fleet's grid,

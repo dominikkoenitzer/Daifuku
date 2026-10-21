@@ -241,6 +241,19 @@ pub struct AgentWindow {
     /// The session whose state it shows, as the agent names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The folder that session works in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The tool it ran last, or is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<String>,
+    /// The text of its last notification, such as what it asks permission
+    /// for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<String>,
+    /// Its transcript file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
 }
 
 /// Encodes one message as a line.
@@ -354,6 +367,10 @@ mod tests {
                 label: Some("agents 1".into()),
                 fleet: Some("agents".into()),
                 session_id: Some("abc".into()),
+                cwd: Some(r"C:\src\site".into()),
+                last_tool: Some("Bash".into()),
+                last_message: Some("Claude needs your permission to use Bash".into()),
+                transcript_path: Some(r"C:\t\abc.jsonl".into()),
             }],
             peers: vec![PeerStatus {
                 window: 3,
