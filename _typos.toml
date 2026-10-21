@@ -5,6 +5,8 @@ colour = "colour"
 colours = "colours"
 centre = "centre"
 licence = "licence"
+organisation = "organisation"
+organisations = "organisations"
 # Misspelt on purpose: a test checks that a wrong monitor name fails.
 portait = "portait"
 

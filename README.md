@@ -324,4 +324,6 @@ vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-[GPL-3.0-only](LICENSE).
+[GPL-3.0-only](LICENSE). Using Daifuku at work is free. To ship it, or a
+changed version, inside a product without the GPL's source obligations, there
+is a [commercial licence](COMMERCIAL-LICENSE.md).
