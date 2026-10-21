@@ -186,10 +186,9 @@ pub enum Step {
     RemoveLegacyTask { sid: String },
     /// Start the logon task now.
     StartTask { name: String },
-    /// Start the daemon now, with the user's own rights, by running
-    /// `daemon` directly. The default install has no logon task, so this is
-    /// how the first fleet's daemon comes up until the CLI starts one on
-    /// demand.
+    /// Start `daemon` now with the user's own rights, not the install's. The
+    /// default install has no logon task: in later sessions the first
+    /// command or hook starts it.
     StartDaemon { daemon: PathBuf },
     /// Add or update Daifuku's hooks in one agent's settings.
     Hooks {
@@ -794,9 +793,12 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
         "install from an administrator terminal of the account that runs the agents",
     )?;
     let facts = Facts::gather()?;
+    // Until the new binaries are in place, no hook starts the old daemon.
+    let installing = setup::installing();
     for step in install_plan(&facts, options) {
         run(&step)?;
     }
+    drop(installing);
 
     if terminal::find().is_none() {
         println!(
@@ -908,10 +910,14 @@ fn run(step: &Step) -> anyhow::Result<()> {
             setup::run_task(name).context("could not start the daemon")?;
             println!("started      daifukud");
         }
-        Step::StartDaemon { daemon } => {
-            start_daemon_process(daemon).context("could not start the daemon")?;
-            println!("started      daifukud");
-        }
+        // Nothing is lost when this fails: the first command or hook starts
+        // it, so the install carries on.
+        Step::StartDaemon { daemon } => match process::start_detached(daemon) {
+            Ok(()) => println!("started      daifukud"),
+            Err(e) => println!(
+                "not started  daifukud ({e}); the first daifuku command or agent hook starts it"
+            ),
+        },
         Step::Hooks {
             agent,
             file,
@@ -1018,9 +1024,12 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
     }
     refuse_another_account("remove Daifuku signed in as the account that installed it")?;
     let facts = Facts::gather()?;
+    // No hook starts the daemon again from the folder being removed.
+    let installing = setup::installing();
     for step in uninstall_plan(&facts, purge) {
         run(&step)?;
     }
+    drop(installing);
     // This program, moved aside because it runs, goes once it has exited.
     let moved = std::env::temp_dir().join(aside_name("daifuku.exe"));
     if moved.is_file()
@@ -1242,7 +1251,7 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
     let start_fix = if wants_elevated {
         format!("sign out and in, or `schtasks /Run /TN {task}`")
     } else {
-        "run `daifuku open`, which starts it".to_owned()
+        "run `daifuku reload`, which starts it".to_owned()
     };
     doctor.check(running, "daemon running", &start_fix);
 
@@ -1394,7 +1403,7 @@ fn start_again(wants_elevated: bool, task: &str) -> String {
     if wants_elevated {
         format!("`schtasks /Run /TN {task}`")
     } else {
-        "`daifuku open`".to_owned()
+        "`daifuku reload`".to_owned()
     }
 }
 
@@ -1422,7 +1431,7 @@ fn stuck_fix(session: u32, wants_elevated: bool, task: &str) -> String {
 fn rights_fix(elevated: bool, task: &str) -> String {
     if elevated {
         format!(
-            "it runs elevated, which the config does not ask for: run `daifuku install` again, which removes the logon task {task}, then `daifuku stop` the elevated daemon so an ordinary one starts on demand; or set \"elevated\": true to keep it"
+            "it runs elevated, which the config does not ask for: run `daifuku install` again, which stops it, removes the logon task {task} if there is one and starts it with your own rights; or set \"elevated\": true to keep it"
         )
     } else {
         format!(
@@ -1476,27 +1485,6 @@ fn refused_hotkeys(hotkeys: &[String]) -> Vec<&str> {
 /// Removes the one task per machine that earlier installs registered, when
 /// it runs for this user, and says so. Another user's stays: it is their
 /// autostart until they install again.
-/// Runs `daemon` as a background process with this process's own rights, so
-/// it keeps running after the command that started it exits. No console
-/// window: the daemon is a windowed subsystem program with none of its own.
-///
-/// # Errors
-///
-/// When the process cannot be started.
-pub fn start_daemon_process(daemon: &Path) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    /// `DETACHED_PROCESS | CREATE_NO_WINDOW`: no console, and not tied to the
-    /// console of whatever started it.
-    const DETACHED: u32 = 0x0000_0008 | 0x0800_0000;
-    std::process::Command::new(daemon)
-        .creation_flags(DETACHED)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
-}
-
 fn remove_legacy_task(sid: &str) {
     let Some(definition) = setup::task_xml(LEGACY_TASK_NAME) else {
         return;
@@ -2631,7 +2619,7 @@ mod tests {
             "{fix}"
         );
         let ordinary = stuck_fix(2, false, task);
-        assert!(ordinary.ends_with("`daifuku open`"), "{ordinary}");
+        assert!(ordinary.ends_with("`daifuku reload`"), "{ordinary}");
         assert!(!ordinary.contains("schtasks"), "{ordinary}");
     }
 
