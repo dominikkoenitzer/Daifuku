@@ -53,7 +53,7 @@ Prints one JSON object. Every character past ASCII is written as a `\u` escape, 
 
 Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`, and when known `label`, `fleet`, `session_id`), `peers` (each `window`, `label`, `directory`, `session_id`: the terminals `spawn` opened). An error reply is `{"result":"error","message":"..."}`.
 
-### `daifuku status` from a terminal that is not elevated, against an elevated daemon
+### `daifuku status` from a terminal that is not elevated, when the daemon does not answer it
 
 One line, for example:
 
@@ -61,7 +61,7 @@ One line, for example:
 daifuku 0.4.0 installed, daemon running, logon task registered, config valid (C:\ProgramData\Daifuku\daifuku.json); fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status
 ```
 
-With `--json`, one object: `result` (`"local_status"`), `version` (this `daifuku`), `installed`, `installed_version` (null when not known), `daemon_running` (a `daifukud.exe` process in this session), `logon_task`, `config` (the path), `config_exists`, `config_valid` (true when there is no file: the defaults apply), `config_error` (null when valid), `live_state` (always `"needs_administrator_terminal"`) and `message`. Exit code 0 whatever it says. For fleets, agents and hotkeys, give the user the command to run in an administrator terminal.
+With `--json`, one object: `result` (`"local_status"`), `version` (this `daifuku`), `installed`, `installed_version` (null when not known), `daemon_running` (a `daifukud.exe` process in this session), `logon_task`, `config` (the path), `config_exists`, `config_valid` (true when there is no file: the defaults apply), `config_error` (null when valid), `live_state` and `message`. Exit code 0 whatever it says. `live_state` is `"not_running"` when an ordinary daemon is installed but not running: the next agent hook or daemon command other than `status` and `stop` starts it, and `daifuku reload` does so without opening anything. Otherwise it is `"needs_administrator_terminal"`: for fleets, agents and hotkeys, give the user the command to run in an administrator terminal.
 
 ## Process groups
 
