@@ -20,10 +20,12 @@
 //!    as the binaries, and write a starter config there if there is none. A
 //!    folder there that an earlier install did not lock is removed first,
 //!    config and all.
-//! 5. Register this user's logon task that starts the daemon, with the
-//!    user's own rights unless the config says `"elevated": true`, and start
-//!    it. The one task per machine earlier installs registered goes when it
-//!    is this user's.
+//! 5. Start the daemon. By default it runs with the user's own rights and is
+//!    started on demand by the CLI or a hook, so no logon task is written and
+//!    one an earlier install left is removed. When the config says
+//!    `"elevated": true` the daemon needs rights a prompt-free start can only
+//!    get at logon, so that install keeps a logon task and starts it. The one
+//!    task per machine earlier installs registered goes when it is this user's.
 //! 6. Add the hooks to Claude Code's settings and, if Codex is installed,
 //!    to Codex's, leaving everything else in each file as it was.
 
@@ -184,6 +186,10 @@ pub enum Step {
     RemoveLegacyTask { sid: String },
     /// Start the logon task now.
     StartTask { name: String },
+    /// Start `daemon` now with the user's own rights, not the install's. The
+    /// default install has no logon task: in later sessions the first
+    /// command or hook starts it.
+    StartDaemon { daemon: PathBuf },
     /// Add or update Daifuku's hooks in one agent's settings.
     Hooks {
         agent: &'static Agent,
@@ -409,22 +415,37 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
         // A folder that is not locked goes, config and all.
         write: !(facts.config_exists && facts.data_locked == Some(true)),
     });
+    // A config that does not read asks for nothing.
+    let elevated = facts.config.as_ref().is_some_and(|c| c.elevated);
     let name = task_name(&facts.sid);
-    steps.push(Step::RegisterTask {
-        name: name.clone(),
-        daemon: facts.to.join("daifukud.exe"),
-        sid: facts.sid.clone(),
-        data: facts.data.clone(),
-        // A config that does not read asks for nothing.
-        elevated: facts.config.as_ref().is_some_and(|c| c.elevated),
-    });
+    if elevated {
+        // An elevated daemon can only be started without a prompt at logon,
+        // so it keeps its logon task.
+        steps.push(Step::RegisterTask {
+            name: name.clone(),
+            daemon: facts.to.join("daifukud.exe"),
+            sid: facts.sid.clone(),
+            data: facts.data.clone(),
+            elevated,
+        });
+        if !options.no_start {
+            steps.push(Step::StartTask { name });
+        }
+    } else {
+        // The default daemon runs with the user's own rights and the CLI
+        // starts it on demand, so no logon task is written. Remove one an
+        // earlier install left (`delete_task` ignores a task that is gone).
+        steps.push(Step::RemoveTask { name });
+        if !options.no_start {
+            steps.push(Step::StartDaemon {
+                daemon: facts.to.join("daifukud.exe"),
+            });
+        }
+    }
     if facts.legacy_task_ours {
         steps.push(Step::RemoveLegacyTask {
             sid: facts.sid.clone(),
         });
-    }
-    if !options.no_start {
-        steps.push(Step::StartTask { name });
     }
     if !options.no_hooks {
         let exe = facts.to.join("daifuku.exe").to_string_lossy().into_owned();
@@ -599,6 +620,11 @@ impl Step {
                 Some("of an earlier install".into()),
             )],
             Self::StartTask { name } => vec![named("start_task", name, None)],
+            Self::StartDaemon { daemon } => vec![at(
+                "start_daemon",
+                daemon,
+                Some("with your own rights, no logon task".into()),
+            )],
             Self::Hooks {
                 agent,
                 file,
@@ -767,9 +793,12 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
         "install from an administrator terminal of the account that runs the agents",
     )?;
     let facts = Facts::gather()?;
+    // Until the new binaries are in place, no hook starts the old daemon.
+    let installing = setup::installing();
     for step in install_plan(&facts, options) {
         run(&step)?;
     }
+    drop(installing);
 
     if terminal::find().is_none() {
         println!(
@@ -782,9 +811,15 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     if let Some(note) = kept.as_ref().ok().and_then(admin_without_elevation) {
         println!("\nNote: {note}.");
     }
-    match kept.map(|c| how_to_open(&c)) {
-        Ok(Some(how)) if options.no_start => {
+    let elevated_kept = matches!(&kept, Ok(c) if c.elevated);
+    match kept.as_ref().map(how_to_open) {
+        // An elevated daemon waits for the logon task at the next sign-in;
+        // an ordinary one is started on demand by `daifuku open` or a hook.
+        Ok(Some(how)) if options.no_start && elevated_kept => {
             println!("\nAfter your next sign-in, {how} to open your first fleet.");
+        }
+        Ok(Some(_)) if options.no_start => {
+            println!("\nRun `daifuku open` to start the daemon and your first fleet.");
         }
         Ok(Some(how)) => println!("\nTo open your first fleet, {how}."),
         Ok(None) => {}
@@ -875,6 +910,14 @@ fn run(step: &Step) -> anyhow::Result<()> {
             setup::run_task(name).context("could not start the daemon")?;
             println!("started      daifukud");
         }
+        // Nothing is lost when this fails: the first command or hook starts
+        // it, so the install carries on.
+        Step::StartDaemon { daemon } => match process::start_detached(daemon) {
+            Ok(()) => println!("started      daifukud"),
+            Err(e) => println!(
+                "not started  daifukud ({e}); the first daifuku command or agent hook starts it"
+            ),
+        },
         Step::Hooks {
             agent,
             file,
@@ -910,8 +953,11 @@ fn run(step: &Step) -> anyhow::Result<()> {
             }
         }
         Step::RemoveTask { name } => {
+            let was_there = setup::task_exists(name);
             setup::delete_task(name).context("could not remove the logon task")?;
-            println!("removed      logon task");
+            if was_there {
+                println!("removed      logon task");
+            }
         }
         Step::RemoveHooks { agent, file, .. } => {
             if file.is_file() {
@@ -978,9 +1024,12 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
     }
     refuse_another_account("remove Daifuku signed in as the account that installed it")?;
     let facts = Facts::gather()?;
+    // No hook starts the daemon again from the folder being removed.
+    let installing = setup::installing();
     for step in uninstall_plan(&facts, purge) {
         run(&step)?;
     }
+    drop(installing);
     // This program, moved aside because it runs, goes once it has exited.
     let moved = std::env::temp_dir().join(aside_name("daifuku.exe"));
     if moved.is_file()
@@ -1125,19 +1174,6 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
         "Program Files folder on the machine PATH",
         "run `daifuku install` again",
     );
-    let task = setup::user_sid().map(|sid| task_name(&sid));
-    doctor.check(
-        task.as_deref().is_some_and(setup::task_exists),
-        "logon task registered",
-        "run `daifuku install`",
-    );
-    let task = task.unwrap_or_else(|| task_name("<your SID>"));
-    doctor.check(
-        terminal::find().is_some(),
-        "Windows Terminal found",
-        "winget install Microsoft.WindowsTerminal",
-    );
-
     // No file is the default config; a file that cannot be read is not.
     let config =
         paths::config_file().map(
@@ -1147,9 +1183,25 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                 Err(e) => Err(format!("{}: {e}", p.display())),
             },
         );
-    // Whether the config asks for an elevated daemon: what the logon task
-    // was registered with, if install ran since the config last changed.
+    // Whether the config asks for an elevated daemon. Only an elevated daemon
+    // keeps a logon task; the ordinary one starts on demand, so a missing
+    // task is no fault there.
     let wants_elevated = matches!(&config, Some(Ok(c)) if c.elevated);
+    let task = setup::user_sid().map(|sid| task_name(&sid));
+    if wants_elevated {
+        doctor.check(
+            task.as_deref().is_some_and(setup::task_exists),
+            "logon task registered",
+            "run `daifuku install`",
+        );
+    }
+    let task = task.unwrap_or_else(|| task_name("<your SID>"));
+    doctor.check(
+        terminal::find().is_some(),
+        "Windows Terminal found",
+        "winget install Microsoft.WindowsTerminal",
+    );
+
     match &config {
         Some(Ok(c)) => {
             doctor.check(true, "config valid", "");
@@ -1196,11 +1248,12 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
     }
 
     let running = send(Pipe::Hook, "{}\n", Duration::from_millis(200)).is_ok();
-    doctor.check(
-        running,
-        "daemon running",
-        &format!("sign out and in, or `schtasks /Run /TN {task}`"),
-    );
+    let start_fix = if wants_elevated {
+        format!("sign out and in, or `schtasks /Run /TN {task}`")
+    } else {
+        "run `daifuku reload`, which starts it".to_owned()
+    };
+    doctor.check(running, "daemon running", &start_fix);
 
     let elevated = process::current_is_elevated();
     if running {
@@ -1247,7 +1300,7 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
             StatusReply::Busy | StatusReply::Stuck => doctor.check(
                 false,
                 "daemon answers",
-                &stuck_fix(process::session(), &task),
+                &stuck_fix(process::session(), wants_elevated, &task),
             ),
             // An elevated daemon answers only an administrator terminal.
             StatusReply::Refused if !elevated => doctor.note(
@@ -1257,14 +1310,18 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                 false,
                 "daemon answers",
                 &format!(
-                    "{}: sign out and in, or end it and run `schtasks /Run /TN {task}`",
-                    daifuku_win::pipe::NOT_THE_DAEMON
+                    "{}: end it, then {}",
+                    daifuku_win::pipe::NOT_THE_DAEMON,
+                    start_again(wants_elevated, &task),
                 ),
             ),
             StatusReply::Silent => doctor.check(
                 false,
                 "daemon answers",
-                &format!("restart it: `daifuku stop`, then `schtasks /Run /TN {task}`"),
+                &format!(
+                    "restart it: `daifuku stop`, then {}",
+                    start_again(wants_elevated, &task)
+                ),
             ),
         }
     }
@@ -1340,8 +1397,19 @@ enum StatusReply {
 /// opening a fleet takes a few.
 const BUSY_TRIES: usize = 10;
 
+/// The command that starts the daemon again after it is ended: an ordinary
+/// one on demand, an elevated one through its logon task `task`.
+fn start_again(wants_elevated: bool, task: &str) -> String {
+    if wants_elevated {
+        format!("`schtasks /Run /TN {task}`")
+    } else {
+        "`daifuku reload`".to_owned()
+    }
+}
+
 /// What to do about a daemon stuck in one command, in Remote Desktop session
-/// `session`, whose logon task is `task`.
+/// `session`. An ordinary daemon is started again on demand, an elevated one
+/// through its logon task `task`.
 ///
 /// It ends only the daemon of this session. The pipes are per session, so
 /// each session holds at most one daemon, the signed-in user's, while another
@@ -1350,10 +1418,11 @@ const BUSY_TRIES: usize = 10;
 /// PowerShell does not expand and which would also reach the same user's
 /// daemon in another session, nor by process id: the stuck daemon does not
 /// answer to say its own.
-fn stuck_fix(session: u32, task: &str) -> String {
+fn stuck_fix(session: u32, wants_elevated: bool, task: &str) -> String {
     format!(
-        "it has been busy with one command for over {} seconds, far longer than opening a fleet takes: restart it with `taskkill /F /FI \"SESSION eq {session}\" /IM daifukud.exe`, then `schtasks /Run /TN {task}`",
-        BUSY_TRIES * 2
+        "it has been busy with one command for over {} seconds, far longer than opening a fleet takes: restart it with `taskkill /F /FI \"SESSION eq {session}\" /IM daifukud.exe`, then {}",
+        BUSY_TRIES * 2,
+        start_again(wants_elevated, task),
     )
 }
 
@@ -1362,7 +1431,7 @@ fn stuck_fix(session: u32, task: &str) -> String {
 fn rights_fix(elevated: bool, task: &str) -> String {
     if elevated {
         format!(
-            "it runs elevated, which the config does not ask for: run `daifuku install` again, which registers {task} to start it with your own rights, or set \"elevated\": true"
+            "it runs elevated, which the config does not ask for: run `daifuku install` again, which stops it, removes the logon task {task} if there is one and starts it with your own rights; or set \"elevated\": true to keep it"
         )
     } else {
         format!(
@@ -1834,58 +1903,66 @@ mod tests {
                     "write_config",
                     r"C:\ProgramData\Daifuku\daifuku.json".to_owned()
                 ),
-                ("register_task", task.clone()),
-                ("start_task", task),
+                ("remove_task", task),
+                (
+                    "start_daemon",
+                    r"C:\Program Files\Daifuku\daifukud.exe".to_owned()
+                ),
                 ("add_hooks", r"C:\Users\u\.claude\settings.json".to_owned()),
                 ("add_hooks", r"C:\Users\u\.codex\hooks.json".to_owned()),
             ]
         );
     }
 
-    /// Whether the plan's logon task starts the daemon elevated, and what
-    /// the dry run says of it.
-    fn task_of(facts: &Facts) -> (bool, String) {
-        let steps = install_plan(facts, &ALL);
-        let task = steps
-            .iter()
-            .find(|s| matches!(s, Step::RegisterTask { .. }))
-            .unwrap();
-        let Step::RegisterTask { elevated, .. } = task else {
-            unreachable!()
-        };
-        (*elevated, task.describe()[0].detail.clone().unwrap())
+    /// If the plan registers a logon task, whether it starts the daemon
+    /// elevated and what the dry run says of it; `None` when it writes none.
+    fn task_of(facts: &Facts) -> Option<(bool, String)> {
+        install_plan(facts, &ALL).into_iter().find_map(|s| {
+            if let Step::RegisterTask { elevated, .. } = &s {
+                Some((*elevated, s.describe()[0].detail.clone().unwrap()))
+            } else {
+                None
+            }
+        })
     }
 
     #[test]
-    fn the_logon_task_runs_with_the_users_own_rights_by_default() {
-        let (elevated, detail) = task_of(&fresh());
-        assert!(!elevated);
-        assert_eq!(
-            detail,
-            r"starts C:\Program Files\Daifuku\daifukud.exe at sign-in with your own rights"
-        );
-        // A kept config without the key, and one that does not read.
+    fn the_default_install_writes_no_logon_task_and_starts_on_demand() {
+        // The ordinary daemon runs with the user's own rights and the CLI
+        // starts it on demand, so nothing is written to auto-start at logon.
+        assert_eq!(task_of(&fresh()), None);
+        let steps = names(&install_plan(&fresh(), &ALL));
+        assert!(steps.contains(&"remove_task"), "{steps:?}");
+        assert!(steps.contains(&"start_daemon"), "{steps:?}");
+        assert!(!steps.contains(&"register_task"), "{steps:?}");
+        assert!(!steps.contains(&"start_task"), "{steps:?}");
+        // A kept config without the key, and one that does not read: still
+        // no task.
         let mut kept = installed();
-        assert!(!task_of(&kept).0);
+        assert_eq!(task_of(&kept), None);
         kept.config = None;
-        assert!(!task_of(&kept).0);
+        assert_eq!(task_of(&kept), None);
     }
 
     #[test]
     fn the_logon_task_runs_elevated_only_when_the_config_asks() {
         let mut f = installed();
         f.config = Some(Config::from_json(r#"{"elevated": true}"#).unwrap());
-        let (elevated, detail) = task_of(&f);
+        let (elevated, detail) = task_of(&f).expect("an elevated config keeps its logon task");
         assert!(elevated);
         assert_eq!(
             detail,
             r"starts C:\Program Files\Daifuku\daifukud.exe elevated at sign-in, as the config asks"
         );
+        let steps = names(&install_plan(&f, &ALL));
+        assert!(steps.contains(&"register_task"), "{steps:?}");
+        assert!(steps.contains(&"start_task"), "{steps:?}");
+        assert!(!steps.contains(&"start_daemon"), "{steps:?}");
         // A folder that is not locked goes, and its config with it: the
-        // starter config asks for nothing.
+        // starter config asks for nothing, so no task.
         f.data_locked = Some(false);
         f.config = Some(Config::default());
-        assert!(!task_of(&f).0);
+        assert_eq!(task_of(&f), None);
     }
 
     #[test]
@@ -1923,8 +2000,8 @@ mod tests {
                 "keep_path",
                 "keep_folder",
                 "keep_config",
-                "register_task",
-                "start_task",
+                "remove_task",
+                "start_daemon",
                 "keep_hooks",
                 "keep_hooks",
             ]
@@ -1942,8 +2019,12 @@ mod tests {
         );
         let names = names(&plan);
         assert!(!names.contains(&"start_task"), "{names:?}");
+        assert!(!names.contains(&"start_daemon"), "{names:?}");
         assert!(!names.iter().any(|a| a.ends_with("_hooks")), "{names:?}");
-        assert!(names.contains(&"register_task"));
+        // The default plan writes no task; it clears any an earlier install
+        // left, with no start step when `--no-start` is given.
+        assert!(names.contains(&"remove_task"), "{names:?}");
+        assert!(!names.contains(&"register_task"), "{names:?}");
     }
 
     #[test]
@@ -1988,6 +2069,9 @@ mod tests {
     #[test]
     fn an_earlier_shared_task_of_this_user_goes_after_the_new_one_is_registered() {
         let mut f = installed();
+        // Only an elevated config still registers a task, so the ordering
+        // of the new task against the earlier shared one is checked there.
+        f.config = Some(Config::from_json(r#"{"elevated": true}"#).unwrap());
         f.legacy_task_ours = true;
         let plan = actions(&install_plan(&f, &ALL));
         let at = |name: &str, target: &str| {
@@ -2113,8 +2197,11 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             )
         );
-        assert_eq!(json["steps"][8]["action"], "start_task");
-        assert_eq!(json["steps"][8]["detail"], serde_json::Value::Null);
+        assert_eq!(json["steps"][8]["action"], "start_daemon");
+        assert_eq!(
+            json["steps"][8]["detail"],
+            "with your own rights, no logon task"
+        );
         assert_eq!(json["notes"].as_array().map(Vec::len), Some(1));
     }
 
@@ -2518,16 +2605,22 @@ mod tests {
 
     #[test]
     fn a_stuck_daemon_is_ended_only_in_this_session() {
-        let fix = stuck_fix(2, r"\Daifuku\Daemon-S-1-5-21-1-2-3-1001");
+        let task = r"\Daifuku\Daemon-S-1-5-21-1-2-3-1001";
+        let fix = stuck_fix(2, true, task);
         assert!(
             fix.contains(r#"`taskkill /F /FI "SESSION eq 2" /IM daifukud.exe`"#),
             "{fix}"
         );
         assert!(!fix.contains('%'), "nothing a shell must expand: {fix}");
+        // An elevated daemon is started again through its logon task; an
+        // ordinary one on demand, with no task to run.
         assert!(
             fix.ends_with(r"`schtasks /Run /TN \Daifuku\Daemon-S-1-5-21-1-2-3-1001`"),
             "{fix}"
         );
+        let ordinary = stuck_fix(2, false, task);
+        assert!(ordinary.ends_with("`daifuku reload`"), "{ordinary}");
+        assert!(!ordinary.contains("schtasks"), "{ordinary}");
     }
 
     #[test]

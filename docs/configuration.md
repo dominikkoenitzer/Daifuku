@@ -16,13 +16,15 @@ daemon with your own rights.
 
 ## `elevated`
 
-`false` by default: the logon task starts the daemon with your own rights,
-and it opens terminals as you. Set `"elevated": true` for fleets with
-`"admin": true`, whose administrator terminals only an elevated daemon can
-start, move and frame: Windows keeps an ordinary process away from an
+`false` by default: no logon task is written. The daemon runs with your own
+rights, started on demand by the first command line or hook event of a
+session, and it opens terminals as you. Set `"elevated": true` for fleets
+with `"admin": true`, whose administrator terminals only an elevated daemon
+can start, move and frame: Windows keeps an ordinary process away from an
 administrator's windows. The key takes effect at the next `daifuku install`,
-which registers the logon task to start the daemon elevated, and from then
-on the daemon commands need an administrator terminal. Without it, a fleet
+which registers a logon task to start the daemon elevated at sign-in, since
+an elevated daemon needs a start without a prompt, and from then on the
+daemon commands need an administrator terminal. Without it, a fleet
 with `"admin": true` does not open and says why; `daifuku install` and
 `daifuku doctor` name the fleets that need the key.
 

@@ -133,8 +133,9 @@ jobs:
 
   # The installer, for real, on a machine where it may do everything it does
   # on a user's: Program Files, the machine PATH, the locked ProgramData
-  # folder, the logon task, the hooks in Claude Code's settings. Then
-  # uninstall, and prove every piece is gone again.
+  # folder, the hooks in Claude Code's settings, and a logon task only when
+  # the config asks for an elevated daemon. Then uninstall, and prove every
+  # piece is gone again.
   install:
     name: install and uninstall
     timeout-minutes: 30
@@ -167,6 +168,37 @@ jobs:
           cargo build --locked --release -p daifuku
           if ($LASTEXITCODE -ne 0) { throw "the build of daifuku.exe with the daemon inside failed" }
           Copy-Item target/release/daifuku.exe $alone
+      # The behaviour scanner on a user's machine condemns the carrier and,
+      # once it has, the file on any later read. A custom scan of the built
+      # binaries before they are installed shows whether the files
+      # themselves match a signature; it uses the signatures whether or not
+      # real-time protection is on, and it cannot say what the behaviour
+      # scanner will make of the install. Exit 2 means a threat was found;
+      # 0 means clean. The engine's state is printed with the result.
+      - name: Defender scans the built binaries
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AMServiceEnabled, AntivirusSignatureVersion | Format-List
+          $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+          if (-not (Test-Path $mp)) { throw "MpCmdRun.exe is not at $mp" }
+          # Both downloads: the zip's two programs and the one with the
+          # daemon inside, which target/release now holds as well.
+          $files = @(
+              (Resolve-Path (Join-Path $env:RUNNER_TEMP 'zip/daifuku.exe')).Path,
+              (Resolve-Path (Join-Path $env:RUNNER_TEMP 'zip/daifukud.exe')).Path,
+              (Resolve-Path (Join-Path $env:RUNNER_TEMP 'alone/daifuku.exe')).Path
+          )
+          foreach ($f in $files) {
+              Write-Output "scanning $f"
+              & $mp -Scan -ScanType 3 -File $f
+              $code = $LASTEXITCODE
+              Write-Output "MpCmdRun exit $code for $f"
+              if ($code -eq 2) { throw "Defender found a threat in $f" }
+              if ($code -ne 0) { throw "the scan of $f did not finish cleanly (exit $code)" }
+          }
+          Write-Output 'Defender scan: the built binaries carry no verdict'
       # Only a double click from Explorer, alone in its own console, offers to
       # install. Started bare from a shell it prints the help and exits; were
       # it to wait for Enter there, a script would hang on a prompt nobody sees.
@@ -239,14 +271,12 @@ jobs:
           if ($userWrite) { throw 'ordinary users can write ProgramData\Daifuku' }
           $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           $task = "\Daifuku\Daemon-$sid"
-          $xml = schtasks /Query /TN $task /XML | Out-String
-          if ($LASTEXITCODE -ne 0) { throw 'the logon task was not registered' }
-          # The starter config asks for no elevation, so the task runs with
-          # the user's own rights. Task Scheduler leaves the default run level
-          # out of its export, so what proves it is that the highest one is
-          # not there, in an export that holds the task.
-          if ($xml -notmatch '<Principal ') { throw "the logon task's export holds no principal: $xml" }
-          if ($xml -match 'HighestAvailable') { throw "the logon task asks for more than the user's rights: $xml" }
+          # The ordinary install writes no logon task: the daemon runs with
+          # the user's own rights and the CLI starts it on demand. An auto-
+          # start at logon is what the behaviour scanner reads as persistence,
+          # so the default must leave none here.
+          schtasks /Query /TN $task 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "the default install wrote a logon task $task" }
           # The entry Settings > Apps lists it by, whose Uninstall runs the
           # installed copy.
           $entry = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku'
@@ -259,10 +289,10 @@ jobs:
               $json = Get-Content -Raw $settings | ConvertFrom-Json
               if ($json.theme -ne 'dark') { throw 'the install lost a setting' }
               if (@($json.hooks.Stop).Count -ne 2) { throw 'Stop should hold the user hook and Daifuku''s' }
-              Write-Output 'installed: binaries, Settings entry, machine PATH, locked folder, task, hooks next to the user''s own'
+              Write-Output 'installed: binaries, Settings entry, machine PATH, locked folder, no logon task, hooks next to the user''s own'
           } else {
               if ((Get-Content -Raw $settings) -ne $original) { throw 'install changed the settings without a desktop shell' }
-              Write-Output 'installed: binaries, Settings entry, machine PATH, locked folder, task; no desktop shell, so the settings were left alone'
+              Write-Output 'installed: binaries, Settings entry, machine PATH, locked folder, no logon task; no desktop shell, so the settings were left alone'
           }
 
           # Installing twice changes nothing, the second time from the zip.
@@ -280,7 +310,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "the install with elevation exited with $LASTEXITCODE" }
           $xml = schtasks /Query /TN $task /XML | Out-String
           if ($xml -notmatch '<RunLevel>HighestAvailable</RunLevel>') { throw "the config asked for elevation and the logon task does not: $xml" }
-          Write-Output 'logon task: the user''s rights by default, highest only when the config asks'
+          Write-Output 'logon task: none by default, registered with the highest run level only when the config asks for an elevated daemon'
 
           & (Join-Path $dir 'daifuku.exe') uninstall --purge
           if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }

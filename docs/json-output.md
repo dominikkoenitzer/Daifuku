@@ -188,8 +188,8 @@ Fleets, agents and hotkeys come only from the daemon, so they are not in it;
 | `config_exists` | boolean | Whether the config file exists. Without one the defaults apply. |
 | `config_valid` | boolean | Whether the daemon would load it, read the way `config validate` reads it; `true` when there is no file. |
 | `config_error` | string or null | What is wrong with the config, on one line; `null` when it is valid. |
-| `live_state` | string | Always `"needs_administrator_terminal"`: fleets, agents and hotkeys need an administrator terminal. |
-| `message` | string | The same for a person, ending in the command to run in an administrator terminal. |
+| `live_state` | string | `"not_running"` when Daifuku is installed, the config asks for an ordinary daemon and none runs: the next `daifuku` command or agent hook starts it. Otherwise `"needs_administrator_terminal"`: fleets, agents and hotkeys need an administrator terminal. |
+| `message` | string | The same for a person, ending in the command to run. |
 
 The exit code is 0 whatever the fields say. Without `--json` it prints the
 same on one line, such as `daifuku 0.4.0 installed, daemon running, logon
@@ -219,7 +219,7 @@ error, the line and column. Without `--json` it prints `ok    <file>` or
   "ok": false,
   "checks": [
     { "name": "installed in Program Files", "status": "ok", "fix": null },
-    { "name": "daemon running", "status": "fail", "fix": "sign out and in, or `schtasks /Run /TN ...`" }
+    { "name": "daemon running", "status": "fail", "fix": "run `daifuku reload`, which starts it" }
   ],
   "notes": ["the daemon runs elevated and answers only an administrator terminal: run doctor from one to check its rights and hotkeys too"],
   "logs": "C:\\ProgramData\\Daifuku\\logs"

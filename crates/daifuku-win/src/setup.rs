@@ -5,7 +5,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
+};
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
     SDDL_REVISION_1, SE_FILE_OBJECT,
@@ -20,7 +22,9 @@ use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
     MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW, READ_CONTROL,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Threading::{
+    CreateMutexW, GetCurrentProcess, OpenMutexW, OpenProcessToken, SYNCHRONIZATION_SYNCHRONIZE,
+};
 use windows::core::{PCSTR, PCWSTR, PWSTR};
 
 use crate::wide::{from_wide, to_wide};
@@ -262,6 +266,54 @@ pub fn delete_at_restart(path: &Path) -> std::io::Result<()> {
     .map_err(std::io::Error::from)
 }
 
+/// The name of the lock install and uninstall hold while they change the
+/// installed binaries. One for the machine: the daemon of every session runs
+/// from the same folder.
+const INSTALLING: &str = r"Global\Daifuku.Install";
+
+/// The install lock, held until it is dropped.
+pub struct Installing(HANDLE);
+
+impl Drop for Installing {
+    fn drop(&mut self) {
+        // SAFETY: the handle is owned and closed once.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+/// Takes the install lock, so that no command or hook starts the daemon
+/// from the folder while it is changed: with no logon task, the next hook
+/// after the daemon stopped would start it again from the old binaries.
+/// `None` when Windows cannot make it, as for a process that is not
+/// elevated; nothing then waits for it either.
+#[must_use]
+pub fn installing() -> Option<Installing> {
+    let name = to_wide(INSTALLING);
+    // SAFETY: the name is NUL terminated; the handle is owned by the value
+    // returned.
+    unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) }
+        .ok()
+        .map(Installing)
+}
+
+/// Whether an install or uninstall holds the lock now, in any session. One
+/// that this process may not open is held all the same.
+#[must_use]
+pub fn install_running() -> bool {
+    let name = to_wide(INSTALLING);
+    // SAFETY: the name is NUL terminated; the handle is closed at once.
+    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) } {
+        Ok(h) => {
+            // SAFETY: just opened, not used again.
+            let _ = unsafe { CloseHandle(h) };
+            true
+        }
+        Err(e) => WIN32_ERROR::from_error(&e) == Some(ERROR_ACCESS_DENIED),
+    }
+}
+
 /// Registers the task from its XML, replacing any older version.
 ///
 /// `schtasks` reads the XML from a file, and that file is written into `dir`,
@@ -415,6 +467,18 @@ mod tests {
     fn this_user_has_a_sid() {
         let sid = user_sid().unwrap();
         assert!(sid.starts_with("S-1-"), "{sid}");
+    }
+
+    #[test]
+    fn the_install_lock_is_seen_while_it_is_held() {
+        // Only an elevated process may make it, as on CI and as install is.
+        let Some(lock) = installing() else {
+            assert!(!crate::process::current_is_elevated());
+            return;
+        };
+        assert!(install_running());
+        drop(lock);
+        assert!(!install_running());
     }
 
     /// What `schtasks /Query /XML` wrote for the task an earlier install

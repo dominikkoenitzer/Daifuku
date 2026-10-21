@@ -1,24 +1,35 @@
 //! Processes: who started whom, and who runs elevated.
 
 use std::collections::HashMap;
+use std::iter::once;
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::path::Path;
 
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, FILETIME, HANDLE, WAIT_OBJECT_0, WIN32_ERROR,
+};
 use windows::Win32::Security::{
     DuplicateTokenEx, EqualSid, GetTokenInformation, RevertToSelf, SecurityImpersonation,
-    TOKEN_ACCESS_MASK, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_IMPERSONATE, TOKEN_QUERY,
-    TOKEN_USER, TokenElevation, TokenImpersonation, TokenUser,
+    TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY,
+    TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_IMPERSONATE, TOKEN_QUERY, TOKEN_USER, TokenElevation,
+    TokenImpersonation, TokenPrimary, TokenUser,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, SetThreadToken, WaitForSingleObject,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
+    CreateProcessW, CreateProcessWithTokenW, DETACHED_PROCESS, GetCurrentProcess,
+    GetCurrentProcessId, GetProcessTimes, LOGON_WITH_PROFILE, NORMAL_PRIORITY_CLASS, OpenProcess,
+    OpenProcessToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    STARTUPINFOW, SetThreadToken, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetShellWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_SHUTTINGDOWN,
 };
+use windows::core::{PCWSTR, PWSTR};
 
 use crate::wide::from_wide;
 
@@ -276,7 +287,7 @@ pub fn session_of(pid: u32) -> Option<u32> {
 /// process, as it does when an administrator's password was typed into a
 /// standard user's prompt. `f` does not run then.
 pub fn as_shell_user<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
-    use std::io::{Error, ErrorKind};
+    use std::io::Error;
 
     /// Goes back to the process's own rights, also when `f` panics.
     struct Revert(HANDLE);
@@ -290,8 +301,43 @@ pub fn as_shell_user<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
         }
     }
 
-    // SAFETY: every handle is closed on every path; the SID buffers outlive
-    // the comparison.
+    let token = shell_token()?;
+    // SAFETY: the duplicate is closed by `Revert`, or here when it cannot be
+    // put on the thread.
+    unsafe {
+        let mut user = HANDLE::default();
+        DuplicateTokenEx(
+            HANDLE(token.as_raw_handle()),
+            TOKEN_ACCESS_MASK(TOKEN_IMPERSONATE.0 | TOKEN_QUERY.0),
+            None,
+            SecurityImpersonation,
+            TokenImpersonation,
+            &raw mut user,
+        )
+        .map_err(Error::other)?;
+        drop(token);
+        if let Err(e) = SetThreadToken(None, Some(user)) {
+            let _ = CloseHandle(user);
+            return Err(Error::other(e));
+        }
+        let _revert = Revert(user);
+        Ok(f())
+    }
+}
+
+/// The desktop shell's token, open to be duplicated and queried, when the
+/// shell runs as the same account as this process.
+///
+/// # Errors
+///
+/// `NotFound` when there is no desktop shell, and `PermissionDenied` when it
+/// runs as another account.
+fn shell_token() -> std::io::Result<OwnedHandle> {
+    use std::io::{Error, ErrorKind};
+
+    // SAFETY: the process handle and this process's token are closed on
+    // every path, the shell's token is owned by the value returned, and the
+    // SID buffers outlive the comparison.
     unsafe {
         let shell = GetShellWindow();
         if shell.is_invalid() {
@@ -309,37 +355,144 @@ pub fn as_shell_user<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
         );
         let _ = CloseHandle(process);
         opened.map_err(Error::other)?;
+        let token = OwnedHandle::from_raw_handle(token.0);
         let mut own = HANDLE::default();
         let same = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut own).is_ok() && {
-            let same = same_user(token, own);
+            let same = same_user(HANDLE(token.as_raw_handle()), own);
             let _ = CloseHandle(own);
             same
         };
         if !same {
-            let _ = CloseHandle(token);
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "the desktop belongs to another account than this process",
             ));
         }
-        let mut user = HANDLE::default();
-        let duplicated = DuplicateTokenEx(
-            token,
-            TOKEN_ACCESS_MASK(TOKEN_IMPERSONATE.0 | TOKEN_QUERY.0),
-            None,
-            SecurityImpersonation,
-            TokenImpersonation,
-            &raw mut user,
-        );
-        let _ = CloseHandle(token);
-        duplicated.map_err(Error::other)?;
-        if let Err(e) = SetThreadToken(None, Some(user)) {
-            let _ = CloseHandle(user);
-            return Err(Error::other(e));
-        }
-        let _revert = Revert(user);
-        Ok(f())
+        Ok(token)
     }
+}
+
+/// Starts `exe`, with no arguments, as a background program of this
+/// process's user with the user's own rights, one that runs on after
+/// whatever started it has ended.
+///
+/// It takes nothing over from this process. No handles: an agent that reads
+/// this program's output through a pipe would otherwise wait for the new
+/// program to end as well. No working folder, which it would keep from being
+/// deleted: it starts in its own. No environment: it gets the one Windows
+/// builds for the user, without the agents' variables. And no low priority:
+/// it runs at the normal one. From an elevated process it starts with the
+/// desktop shell's token, so it never runs elevated only because the command
+/// that started it did.
+///
+/// # Errors
+///
+/// When it cannot be started. From an elevated process also `NotFound` when
+/// there is no desktop shell and `PermissionDenied` when the shell runs as
+/// another account.
+pub fn start_detached(exe: &Path) -> std::io::Result<()> {
+    use std::io::Error;
+
+    let app: Vec<u16> = exe.as_os_str().encode_wide().chain(once(0)).collect();
+    // CreateProcess may write to the command line, so it gets a copy of its
+    // own: the program's path in quotes.
+    let mut line: Vec<u16> = once(u16::from(b'"'))
+        .chain(exe.as_os_str().encode_wide())
+        .chain([u16::from(b'"'), 0])
+        .collect();
+    let folder: Option<Vec<u16>> = exe
+        .parent()
+        .map(|d| d.as_os_str().encode_wide().chain(once(0)).collect());
+    let folder = folder
+        .as_ref()
+        .map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr()));
+    let si = STARTUPINFOW {
+        cb: u32::try_from(size_of::<STARTUPINFOW>()).unwrap_or(0),
+        ..Default::default()
+    };
+    let mut pi = PROCESS_INFORMATION::default();
+    if current_is_elevated() {
+        let token = shell_token()?;
+        // SAFETY: the duplicate is owned and closed on every path; the
+        // strings and the environment are NUL terminated and outlive the
+        // calls.
+        unsafe {
+            let mut primary = HANDLE::default();
+            DuplicateTokenEx(
+                HANDLE(token.as_raw_handle()),
+                TOKEN_ACCESS_MASK(
+                    TOKEN_QUERY.0
+                        | TOKEN_ASSIGN_PRIMARY.0
+                        | TOKEN_DUPLICATE.0
+                        | TOKEN_IMPERSONATE.0
+                        | TOKEN_ADJUST_DEFAULT.0
+                        | TOKEN_ADJUST_SESSIONID.0,
+                ),
+                None,
+                SecurityImpersonation,
+                TokenPrimary,
+                &raw mut primary,
+            )
+            .map_err(Error::other)?;
+            let primary = OwnedHandle::from_raw_handle(primary.0);
+            let environment = crate::user_env::block_for(HANDLE(primary.as_raw_handle()));
+            // The Secondary Logon service starts it, so it is in none of this
+            // process's jobs and holds none of its handles.
+            CreateProcessWithTokenW(
+                HANDLE(primary.as_raw_handle()),
+                LOGON_WITH_PROFILE,
+                PCWSTR(app.as_ptr()),
+                Some(PWSTR(line.as_mut_ptr())),
+                CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
+                environment.as_ref().map(|b| b.as_ptr().cast()),
+                folder,
+                &raw const si,
+                &raw mut pi,
+            )
+            .map_err(Error::other)?;
+        }
+    } else {
+        let environment = crate::user_env::block(&crate::user_env::for_terminal());
+        // No console, and no share in the Ctrl+C of the console it came from.
+        let flags = DETACHED_PROCESS
+            | CREATE_NEW_PROCESS_GROUP
+            | CREATE_UNICODE_ENVIRONMENT
+            | NORMAL_PRIORITY_CLASS;
+        let mut start = |how| {
+            // SAFETY: the strings and the environment are NUL terminated and
+            // outlive the call; `false` passes none of this process's
+            // handles on.
+            unsafe {
+                CreateProcessW(
+                    PCWSTR(app.as_ptr()),
+                    Some(PWSTR(line.as_mut_ptr())),
+                    None,
+                    None,
+                    false,
+                    how,
+                    Some(environment.as_ptr().cast()),
+                    folder,
+                    &raw const si,
+                    &raw mut pi,
+                )
+            }
+        };
+        // Out of any job the starter runs in, which may end its processes
+        // with it. A job that allows no breaking away refuses that, and then
+        // it starts inside the job.
+        match start(flags | CREATE_BREAKAWAY_FROM_JOB) {
+            Err(e) if WIN32_ERROR::from_error(&e) == Some(ERROR_ACCESS_DENIED) => start(flags),
+            started => started,
+        }
+        .map_err(Error::other)?;
+    }
+    // SAFETY: both handles were just returned by the start and are not used
+    // again.
+    unsafe {
+        let _ = CloseHandle(pi.hThread);
+        let _ = CloseHandle(pi.hProcess);
+    }
+    Ok(())
 }
 
 /// Whether two tokens belong to the same account.
