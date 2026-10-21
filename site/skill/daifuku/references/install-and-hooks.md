@@ -7,7 +7,7 @@
 
 ## Install
 
-1. Download `daifuku.exe` (https://get-daifuku.vercel.app/download/windows), or `daifuku-arm64.exe` (https://get-daifuku.vercel.app/download/windows-arm64) on an ARM PC (Settings > System > About, System type). It carries the daemon, `daifukud.exe`, inside it, so it is the only file needed.
+1. Download `daifuku.exe` (https://daifuku.punds.ch/download/windows), or `daifuku-arm64.exe` (https://daifuku.punds.ch/download/windows-arm64) on an ARM PC (Settings > System > About, System type). It carries the daemon, `daifukud.exe`, inside it, so it is the only file needed.
 2. Double-click it, press Enter, approve the Windows prompt. A second window shows what install did; Enter closes it.
 
 From an administrator terminal in the download folder, `.\daifuku.exe install` does the same. The release also has zips, `daifuku-windows-x64.zip` and `daifuku-windows-arm64.zip`, with `daifuku.exe` and `daifukud.exe` as two files; extract one before running `daifuku.exe` from it, which otherwise says to extract it first. The exes are self-contained; no runtime to install.
