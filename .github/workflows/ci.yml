@@ -182,11 +182,12 @@ jobs:
           Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AMServiceEnabled, AntivirusSignatureVersion | Format-List
           $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
           if (-not (Test-Path $mp)) { throw "MpCmdRun.exe is not at $mp" }
-          $alone = Join-Path $env:RUNNER_TEMP 'alone/daifuku.exe'
+          # Both downloads: the zip's two programs and the one with the
+          # daemon inside, which target/release now holds as well.
           $files = @(
-              (Resolve-Path target/release/daifuku.exe).Path,
-              (Resolve-Path target/release/daifukud.exe).Path,
-              (Resolve-Path $alone).Path
+              (Resolve-Path (Join-Path $env:RUNNER_TEMP 'zip/daifuku.exe')).Path,
+              (Resolve-Path (Join-Path $env:RUNNER_TEMP 'zip/daifukud.exe')).Path,
+              (Resolve-Path (Join-Path $env:RUNNER_TEMP 'alone/daifuku.exe')).Path
           )
           foreach ($f in $files) {
               Write-Output "scanning $f"

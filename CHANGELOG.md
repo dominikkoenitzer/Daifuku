@@ -2,16 +2,25 @@
 
 ## Unreleased
 
-- The ordinary install writes no logon task. The daemon runs with the
-  user's own rights and the command line starts it on demand: the first
-  `daifuku` command or hook event of a session that finds nothing listening
-  starts `daifukud` with the caller's own rights and asks again, and later
-  ones find it running. A logon task is written only when the config sets
-  `"elevated": true`, which needs a prompt-free start at sign-in. An install
-  removes a logon task an earlier version wrote for an ordinary daemon.
+- The ordinary install writes no logon task, and one an earlier version
+  wrote for an ordinary daemon is removed. The daemon starts on demand
+  instead: the first `daifuku` command or agent hook of a session that
+  finds none listening starts `daifukud` and asks again. Until then the
+  hotkeys do nothing, so after signing in they work once an agent has
+  started or a command has run. `daifuku status` and `daifuku stop` never
+  start it. A logon task is written only when the config sets
+  `"elevated": true`, which needs a start at sign-in to run elevated without
+  a prompt.
+- The daemon started on demand runs with the user's own rights, also when
+  the command that starts it runs as administrator, as install does. It
+  keeps none of that command's handles, so an agent that reads a hook's
+  output is not left waiting, and it starts in its own folder with the
+  user's environment, without the agents' variables.
+- While install or uninstall changes the binaries, no hook starts the
+  daemon from the old ones.
 - `daifuku doctor` checks for a logon task only when the config asks for an
-  elevated daemon; for an ordinary one it reports the daemon as started on
-  demand and, when it is not running, says to run `daifuku open`.
+  elevated daemon. When an ordinary one is not running, it says to run
+  `daifuku reload`, which starts it.
 
 ## 0.4.0, 2026-10-21
 
