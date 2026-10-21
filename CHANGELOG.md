@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- The daemon runs with the user's own rights by default. The logon task
+  asks for highest privileges only when the config sets `"elevated": true`,
+  a new top-level key that `daifuku install` reads when it registers the
+  task; change it, then run install again. Fleets therefore no longer open
+  as administrator by default: `admin` defaults to `false`, and a fleet or
+  `spawn` with `"admin": true` is refused by a daemon without elevation,
+  with a message that names both ways out. Install notes such fleets too.
+  To keep administrator fleets after updating, set `"elevated": true` and
+  install again.
+- A daemon with the user's own rights answers the user's own terminals: its
+  control pipe lets in the signed-in user by their SID at medium integrity,
+  and nobody else but SYSTEM and Administrators. The command line checks
+  that the daemon it reaches runs elevated or as the same user before it
+  sends anything. `daifuku status` from an ordinary terminal shows fleets,
+  agents and hotkeys of such a daemon; against an elevated one it still
+  prints the local status.
+- Such a daemon keeps its saved state, peers and logs in
+  `%LocalAppData%\Daifuku`; an elevated one keeps them in
+  `C:\ProgramData\Daifuku` as before and never reads the other folder, so
+  state is not carried across a switch. `daifuku uninstall --purge` removes
+  both.
+- `daifuku doctor` checks that administrator fleets have an elevated daemon
+  and that the daemon runs with the rights the config asks for, and reads
+  the logs of the daemon the config describes.
+
 ## 0.3.0, 2026-10-20
 
 - `daifuku spawn --cell` puts the terminal in a cell of its fleet's grid,

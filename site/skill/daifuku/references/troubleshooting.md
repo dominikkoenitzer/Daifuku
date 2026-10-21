@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start every diagnosis with `daifuku doctor`, from an administrator terminal when you can. From an ordinary terminal it skips the daemon checks that need elevation and says so.
+Start every diagnosis with `daifuku doctor`. When the daemon runs elevated (`"elevated": true` in the config), run it from an administrator terminal when you can: from an ordinary one it skips the checks that need the daemon's answer and says so.
 
 ## Reading `daifuku doctor`
 
@@ -20,10 +20,11 @@ Exit code 0 when every check passed, 1 otherwise. There is no JSON output.
 | `logon task registered` | run `daifuku install` |
 | `Windows Terminal found` | `winget install Microsoft.WindowsTerminal` |
 | `config valid` | the parse error, or the file that cannot be read |
+| `administrator fleets have an elevated daemon` | set `"elevated": true` and run `daifuku install` again, or set `"admin": false` on the named fleets |
 | `Claude Code hooks present and current` | run `daifuku install`; or repair the named file first; or make a linked file a real file in the profile; or copy the hooks into the file `CLAUDE_CONFIG_DIR` points to |
 | `Codex hooks present and current` | the same, with `CODEX_HOME`; skipped when Codex's folder does not exist |
 | `daemon running` | sign out and in, or `schtasks /Run /TN \Daifuku\Daemon-<SID>` |
-| `daemon elevated` | start it through the logon task, not by hand |
+| `daemon rights as the config asks` | run `daifuku install` again, which registers the logon task with the rights `elevated` asks for, and start the daemon through that task, not by hand |
 | `daemon up to date` | run `daifuku install` from the newer download; it restarts the daemon |
 | `hotkeys registered` | another program holds the named keys; pick others in the config |
 | `daemon answers` | a restart command, see "The daemon does not answer" |
@@ -38,11 +39,12 @@ The fixes name the user's real task name. `whoami /user` shows the SID.
 4. Codex: the user must trust Daifuku's hooks in Codex's `/hooks` menu.
 5. A maximised terminal never gets a border.
 6. `"border": { "enabled": false }` in the config turns every border off.
-7. `daifuku status` (administrator terminal): when the agent is missing under `agents`, no hook has reported from that window.
+7. `daifuku status` (an administrator terminal for an elevated daemon): when the agent is missing under `agents`, no hook has reported from that window.
 
 ## Daemon commands fail
 
-- `daemon commands need an administrator terminal`: open an administrator terminal. The daemon runs elevated, and its control pipe accepts only elevated callers.
+- `the daemon runs elevated and answers only an administrator terminal`: open an administrator terminal. The config sets `"elevated": true`, and an elevated daemon's control pipe accepts only elevated callers.
+- `fleet ... opens administrator terminals, and this daemon runs with your own rights`: the fleet has `"admin": true` but the config does not set `"elevated": true`. Ask the user which they want: the key and `daifuku install` again from an administrator terminal, or `"admin": false` on the fleet.
 - `Daifuku is not running`: see below.
 
 ## The daemon is not running
@@ -53,7 +55,7 @@ Sign out and back in, or start the logon task:
 schtasks /Run /TN "\Daifuku\Daemon-<SID>"
 ```
 
-Start the daemon through the logon task, not by running `daifukud.exe` yourself. The task starts it elevated; `daifuku doctor` reports a daemon that is not.
+Start the daemon through the logon task, not by running `daifukud.exe` yourself. The task starts it with the rights the config's `elevated` asked for at the last install; `daifuku doctor` reports a daemon whose rights differ.
 
 ## The daemon does not answer
 
@@ -85,8 +87,9 @@ When it answers nothing at all: `daifuku stop`, then the `schtasks` line.
 |---|---|
 | `C:\Program Files\Daifuku\` | `daifuku.exe`, `daifukud.exe` |
 | `C:\ProgramData\Daifuku\daifuku.json` | the config |
-| `C:\ProgramData\Daifuku\state.json` | open fleets and agent states, saved by the daemon; a daemon restarted within five minutes, in the same Windows start, picks them up |
-| `C:\ProgramData\Daifuku\logs\` | the daemon's log, one file a day (`daifukud.<date>.log`), the last seven kept, at level `info` |
+| `C:\ProgramData\Daifuku\state.json` | open fleets and agent states, saved by an elevated daemon; a daemon restarted within five minutes, in the same Windows start, picks them up |
+| `C:\ProgramData\Daifuku\logs\` | an elevated daemon's log, one file a day (`daifukud.<date>.log`), the last seven kept, at level `info` |
+| `%LocalAppData%\Daifuku\` | the saved state and `logs\` of a daemon with the user's own rights, the default |
 
 The pipes are `\\.\pipe\daifuku-<session>-hook` and `\\.\pipe\daifuku-<session>-control`, one pair per signed-in session.
 
