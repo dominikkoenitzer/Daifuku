@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0, 2026-10-21
 
 - The daemon runs with the user's own rights by default. The logon task
   asks for highest privileges only when the config sets `"elevated": true`,
