@@ -5,12 +5,15 @@
 - The daemon runs with the user's own rights by default. The logon task
   asks for highest privileges only when the config sets `"elevated": true`,
   a new top-level key that `daifuku install` reads when it registers the
-  task; change it, then run install again. Fleets therefore no longer open
-  as administrator by default: `admin` defaults to `false`, and a fleet or
-  `spawn` with `"admin": true` is refused by a daemon without elevation,
-  with a message that names both ways out. Install notes such fleets too.
-  To keep administrator fleets after updating, set `"elevated": true` and
-  install again.
+  task; change it, then run install again.
+- `admin` defaults to `false`: a fleet that does not name the key now
+  opens its terminals with the user's own rights, where it opened them as
+  administrator before. A fleet with `"admin": true` needs
+  `"elevated": true` in `daifuku.json`; without it, a daemon refuses to
+  open or `spawn` from that fleet, with a message that names both ways
+  out, and install and `daifuku doctor` name such fleets too. To keep
+  administrator fleets after updating, set `"admin": true` on them and
+  `"elevated": true` at the top, then run install again.
 - A daemon with the user's own rights answers the user's own terminals: its
   control pipe lets in the signed-in user by their SID at medium integrity,
   and nobody else but SYSTEM and Administrators. The command line checks
