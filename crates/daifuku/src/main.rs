@@ -258,14 +258,15 @@ enum Command {
         #[command(flatten)]
         format: Format,
     },
-    /// Install for this user: Program Files, the logon task, the hooks for
-    /// Claude Code and Codex. Needs an administrator terminal.
+    /// Install for this user: Program Files, the hooks for Claude Code and
+    /// Codex, and a logon task only for an elevated daemon. Needs an
+    /// administrator terminal.
     Install {
         /// Leave Claude Code's and Codex's settings alone.
         #[arg(long)]
         no_hooks: bool,
-        /// Stop a running daemon and do not start it again; it starts at the
-        /// next logon.
+        /// Stop a running daemon and do not start it again; the next
+        /// `daifuku` command or agent hook starts it.
         #[arg(long)]
         no_start: bool,
         /// Wait for Enter at the end, so the window the offer to install
@@ -280,7 +281,7 @@ enum Command {
         #[arg(long, requires = "dry_run")]
         json: bool,
     },
-    /// Remove the program, the logon task and Daifuku's hooks. Keeps the
+    /// Remove the program, any logon task and Daifuku's hooks. Keeps the
     /// config, the logs and the saved state unless --purge. Needs an
     /// administrator terminal.
     Uninstall {
@@ -542,7 +543,7 @@ fn bare(own_console: bool, typed_input: bool, elevated: bool) -> Bare {
 
 /// The last word of an install started by a double click.
 #[cfg_attr(not(windows), allow(dead_code))]
-const INSTALLED: &str = "\nDaifuku is installed and starts at every sign-in. In a new terminal, `daifuku doctor` checks the setup and `daifuku config` opens the settings.";
+const INSTALLED: &str = "\nDaifuku is installed. In a new terminal, `daifuku doctor` checks the setup and `daifuku config` opens the settings.";
 
 /// The offer to install, when Explorer started this with no command.
 /// `None` when this is not that case and the help should print instead.
@@ -572,7 +573,7 @@ fn from_explorer() -> Option<ExitCode> {
         return Some(ExitCode::FAILURE);
     }
     println!(
-        "This installs Daifuku: it copies it to Program Files, starts it at every sign-in and adds its hooks to Claude Code and Codex."
+        "This installs Daifuku: it copies it to Program Files, starts it and adds its hooks to Claude Code and Codex."
     );
     println!(
         "Windows asks for permission next. Press Enter to install, or close this window to stop."
@@ -867,12 +868,17 @@ fn config_wants_elevated() -> bool {
         .is_some_and(|c| c.elevated)
 }
 
-/// Starts the daemon with this process's own rights when none is listening,
-/// for the default install that has no logon task. `daifukud.exe` sits next
-/// to this program. Returns whether the daemon answers afterwards.
+/// Starts the daemon with the user's own rights when none is listening, for
+/// the default install that has no logon task. `daifukud.exe` sits next to
+/// this program. Returns whether the daemon answers afterwards.
+///
+/// It runs with the user's own rights also when this command runs as
+/// administrator, and holds nothing of this process: not its output, which
+/// an agent reads to its end, nor its folder or its environment.
 ///
 /// An elevated daemon is never started here: it would need a prompt, and the
-/// config that asks for it keeps a logon task for exactly that reason.
+/// config that asks for it keeps a logon task for exactly that reason. Nor
+/// one while install or uninstall is changing the binaries.
 #[cfg(windows)]
 fn start_daemon() -> bool {
     use daifuku_win::pipe::{Pipe, send};
@@ -886,7 +892,9 @@ fn start_daemon() -> bool {
     else {
         return false;
     };
-    if install::start_daemon_process(&daemon).is_err() {
+    if daifuku_win::setup::install_running()
+        || daifuku_win::process::start_detached(&daemon).is_err()
+    {
         return false;
     }
     // Wait, but not for long, for it to begin listening.
@@ -1055,8 +1063,13 @@ fn control(request: &Request, json: bool) -> ExitCode {
     };
     let mut result = send(Pipe::Control, &line, std::time::Duration::from_secs(2));
     // No logon task on the default install: the first command of a session
-    // starts the daemon, then asks again.
-    if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::NotFound) && start_daemon() {
+    // starts the daemon, then asks again. Not one that only asks whether it
+    // runs or tells it to stop.
+    let starts = !matches!(request, Request::Status | Request::Stop);
+    if starts
+        && matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        && start_daemon()
+    {
         result = send(Pipe::Control, &line, std::time::Duration::from_secs(2));
     }
     match result {
