@@ -20,7 +20,7 @@ Install, in order:
 4. Locks `C:\ProgramData\Daifuku` to administrators. A folder there that is not locked that way is deleted, with any config in it, and made anew.
 5. Writes `C:\ProgramData\Daifuku\daifuku.json` with the defaults spelled out, unless a config is already there (`kept config`).
 6. Writes no logon task for an ordinary daemon, and removes one an earlier version wrote for this user; the daemon runs with the user's own rights, started on demand (step 7). Only when the config sets `"elevated": true` does it register the logon task `\Daifuku\Daemon-<user SID>`, which starts `daifukud.exe` elevated at this user's sign-in, at normal priority, with no time limit, since an elevated daemon needs a start without a prompt. It also removes the task `\Daifuku\Daemon` of earlier versions when that one runs for this user.
-7. Starts the daemon, unless `--no-start`: an ordinary one directly, with the installer's own rights; an elevated one through its logon task. After that the first command line or hook event of any later session starts an ordinary daemon on demand when none is listening.
+7. Starts the daemon, unless `--no-start`: an ordinary one directly, with the signed-in user's own rights even though the install runs elevated; an elevated one through its logon task. When the start fails the install still succeeds and says so. After that the first command line or hook event of any later session starts an ordinary daemon on demand when none is listening.
 8. Adds the hooks, unless `--no-hooks` (below).
 9. Prints how to open the first fleet, for example `To open your first fleet, press ctrl + alt + return.`
 
@@ -71,6 +71,6 @@ Settings > Apps > Installed apps > Daifuku > Uninstall does the same as the comm
 daifuku uninstall
 ```
 
-It stops the daemon, removes the logon task, removes Daifuku's hooks from `%USERPROFILE%\.claude\settings.json` and `%USERPROFILE%\.codex\hooks.json`, removes `C:\Program Files\Daifuku` from the machine `PATH`, deletes that folder and removes the Settings > Apps entry. It keeps `C:\ProgramData\Daifuku` (config, logs, saved state) and `%LocalAppData%\Daifuku` (the logs and saved state of a daemon with the user's own rights). `daifuku uninstall --purge` deletes both folders too.
+It stops the daemon, removes any logon task, removes Daifuku's hooks from `%USERPROFILE%\.claude\settings.json` and `%USERPROFILE%\.codex\hooks.json`, removes `C:\Program Files\Daifuku` from the machine `PATH`, deletes that folder and removes the Settings > Apps entry. It keeps `C:\ProgramData\Daifuku` (config, logs, saved state) and `%LocalAppData%\Daifuku` (the logs and saved state of a daemon with the user's own rights). `daifuku uninstall --purge` deletes both folders too.
 
 A file it cannot remove is listed with `left`. Hooks in a file that `CLAUDE_CONFIG_DIR` or `CODEX_HOME` points to stay; remove those by hand.
