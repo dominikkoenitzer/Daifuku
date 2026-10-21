@@ -9,9 +9,9 @@
 //! repainted, and each frame sits directly above its window in the z-order
 //! instead of on top of everything.
 //!
-//! Daifuku runs elevated, which is what lets it draw around administrator
-//! terminals at all: Windows refuses to stack a frame from an ordinary process
-//! against an elevated window.
+//! Only an elevated daemon can draw around administrator terminals: Windows
+//! refuses to stack a frame from an ordinary process against an elevated
+//! window.
 
 #![warn(missing_docs)]
 

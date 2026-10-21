@@ -7,10 +7,11 @@
 //!    the daemon next to it: the one this program carries inside, as the
 //!    `daifuku.exe` a release publishes on its own does, or else the
 //!    `daifukud.exe` next to this program, as in the zip. Only
-//!    administrators can change them there. The daemon runs elevated, so a
-//!    binary an ordinary process could swap would hand that process
-//!    administrator rights at the next logon. Then list it in Settings >
-//!    Apps > Installed apps, whose Uninstall runs `daifuku uninstall`.
+//!    administrators can change them there. The daemon runs elevated when
+//!    the config asks for it, so a binary an ordinary process could swap
+//!    would hand that process administrator rights at the next logon. Then
+//!    list it in Settings > Apps > Installed apps, whose Uninstall runs
+//!    `daifuku uninstall`.
 //! 3. Add that folder to the machine `PATH`, so `daifuku` runs in any new
 //!    terminal, and tell running programs the variable changed. A `PATH`
 //!    that cannot be changed is reported and the install goes on: the
@@ -19,9 +20,10 @@
 //!    as the binaries, and write a starter config there if there is none. A
 //!    folder there that an earlier install did not lock is removed first,
 //!    config and all.
-//! 5. Register this user's logon task that starts the daemon elevated, and
-//!    start it. The one task per machine earlier installs registered goes
-//!    when it is this user's.
+//! 5. Register this user's logon task that starts the daemon, with the
+//!    user's own rights unless the config says `"elevated": true`, and start
+//!    it. The one task per machine earlier installs registered goes when it
+//!    is this user's.
 //! 6. Add the hooks to Claude Code's settings and, if Codex is installed,
 //!    to Codex's, leaving everything else in each file as it was.
 
@@ -99,6 +101,9 @@ pub struct Facts {
     pub to: PathBuf,
     /// `%ProgramData%\Daifuku`.
     pub data: PathBuf,
+    /// `%LocalAppData%\Daifuku`, where a daemon with the user's own rights
+    /// keeps its logs and state; `None` when it is not there.
+    pub user_data: Option<PathBuf>,
     /// Where the daemon comes from; `None` when this program carries none
     /// and there is no `daifukud.exe` next to it.
     pub daemon: Option<Daemon>,
@@ -111,6 +116,9 @@ pub struct Facts {
     pub data_locked: Option<bool>,
     /// Whether the data folder holds a config.
     pub config_exists: bool,
+    /// The config the daemon runs on after the install: the one kept, or
+    /// the starter one. `None` when the one kept does not read.
+    pub config: Option<Config>,
     /// This user's SID.
     pub sid: String,
     /// Whether the task earlier installs shared runs for this user.
@@ -163,12 +171,14 @@ pub enum Step {
     DataFolder { dir: PathBuf, found: Option<bool> },
     /// Keep the config, or write the starter one when there is none.
     Config { file: PathBuf, write: bool },
-    /// Register this user's logon task.
+    /// Register this user's logon task, which starts the daemon with
+    /// administrator rights only when `elevated`.
     RegisterTask {
         name: String,
         daemon: PathBuf,
         sid: String,
         data: PathBuf,
+        elevated: bool,
     },
     /// Remove the task earlier installs shared, which runs for this user.
     RemoveLegacyTask { sid: String },
@@ -196,11 +206,16 @@ pub enum Step {
     RemoveBinaries { dir: PathBuf, present: bool },
     /// Take Daifuku out of Settings > Apps; `present` when it is listed.
     RemoveAppEntry { present: bool },
-    /// Delete the data folder: the config, the logs, the saved state.
-    RemoveData { dir: PathBuf },
-    /// Keep the data folder.
-    KeepData { dir: PathBuf },
+    /// Delete a data folder, which holds `what`.
+    RemoveData { dir: PathBuf, what: &'static str },
+    /// Keep a data folder, which holds `what`.
+    KeepData { dir: PathBuf, what: &'static str },
 }
+
+/// What the data folder in ProgramData holds.
+const DATA: &str = "config, logs and saved state";
+/// What the one in the user's local app data holds.
+const USER_DATA: &str = "logs and saved state";
 
 impl Facts {
     /// Finds everything install and uninstall decide on, changing nothing.
@@ -262,6 +277,13 @@ impl Facts {
                 }
             })
             .collect();
+        let config_exists = data.join("daifuku.json").is_file();
+        // A folder that is not locked goes, config and all.
+        let config = if config_exists && data_locked == Some(true) {
+            read_config(&data.join("daifuku.json")).ok()
+        } else {
+            Some(Config::default())
+        };
         let daemon = daemon_for(&this);
         let size = std::fs::metadata(&this).map_or(0, |m| m.len())
             + match &daemon {
@@ -274,11 +296,13 @@ impl Facts {
             daemon,
             exe: this,
             installed: to.is_dir(),
-            config_exists: data.join("daifuku.json").is_file(),
+            config_exists,
+            config,
             terminal: terminal::find().is_some(),
             from,
             to,
             data,
+            user_data: paths::user_data_dir().filter(|d| d.is_dir()),
             on_path,
             data_locked,
             sid,
@@ -391,6 +415,8 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
         daemon: facts.to.join("daifukud.exe"),
         sid: facts.sid.clone(),
         data: facts.data.clone(),
+        // A config that does not read asks for nothing.
+        elevated: facts.config.as_ref().is_some_and(|c| c.elevated),
     });
     if facts.legacy_task_ours {
         steps.push(Step::RemoveLegacyTask {
@@ -451,15 +477,16 @@ pub fn uninstall_plan(facts: &Facts, purge: bool) -> Vec<Step> {
     steps.push(Step::RemoveAppEntry {
         present: facts.app_entry,
     });
-    steps.push(if purge {
-        Step::RemoveData {
-            dir: facts.data.clone(),
-        }
-    } else {
-        Step::KeepData {
-            dir: facts.data.clone(),
-        }
-    });
+    let folders =
+        std::iter::once((&facts.data, DATA)).chain(facts.user_data.iter().map(|d| (d, USER_DATA)));
+    for (dir, what) in folders {
+        let dir = dir.clone();
+        steps.push(if purge {
+            Step::RemoveData { dir, what }
+        } else {
+            Step::KeepData { dir, what }
+        });
+    }
     steps
 }
 
@@ -546,10 +573,25 @@ impl Step {
                 vec![at("write_config", file, Some("the starter config".into()))]
             }
             Self::Config { file, write: false } => vec![at("keep_config", file, None)],
-            Self::RegisterTask { name, daemon, .. } => vec![named(
+            Self::RegisterTask {
+                name,
+                daemon,
+                elevated,
+                ..
+            } => vec![named(
                 "register_task",
                 name,
-                Some(format!("starts {} elevated at sign-in", daemon.display())),
+                Some(if *elevated {
+                    format!(
+                        "starts {} elevated at sign-in, as the config asks",
+                        daemon.display()
+                    )
+                } else {
+                    format!(
+                        "starts {} at sign-in with your own rights",
+                        daemon.display()
+                    )
+                }),
             )],
             Self::RemoveLegacyTask { .. } => vec![named(
                 "remove_task",
@@ -610,15 +652,13 @@ impl Step {
                     Vec::new()
                 }
             }
-            Self::RemoveData { dir } => vec![at(
-                "remove_folder",
-                dir,
-                Some("config, logs and saved state".into()),
-            )],
-            Self::KeepData { dir } => vec![at(
+            Self::RemoveData { dir, what } => {
+                vec![at("remove_folder", dir, Some((*what).into()))]
+            }
+            Self::KeepData { dir, what } => vec![at(
                 "keep_folder",
                 dir,
-                Some("config, logs and saved state; --purge removes them".into()),
+                Some(format!("{what}; --purge removes them")),
             )],
         }
     }
@@ -672,7 +712,37 @@ pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
             "Windows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)".into(),
         );
     }
+    if let Some(note) = facts.config.as_ref().and_then(admin_without_elevation) {
+        plan.notes.push(note);
+    }
     Ok(plan)
+}
+
+/// What to say when `config` has fleets of administrator terminals but does
+/// not ask for an elevated daemon, which they need; `None` when it is fine.
+fn admin_without_elevation(config: &Config) -> Option<String> {
+    let admin: Vec<String> = config
+        .fleets
+        .iter()
+        .filter(|f| f.admin)
+        .map(|f| format!("`{}`", f.name))
+        .collect();
+    (!config.elevated && !admin.is_empty()).then(|| {
+        format!(
+            "{} {} administrator terminals, which needs \"elevated\": true in the config and `daifuku install` again; without it the daemon runs with your own rights and refuses {}",
+            admin.join(", "),
+            if admin.len() == 1 { "opens" } else { "open" },
+            if admin.len() == 1 { "it" } else { "them" },
+        )
+    })
+}
+
+/// The config in `file`, as the daemon reads it.
+fn read_config(file: &Path) -> Result<Config, String> {
+    std::fs::read(file)
+        .and_then(|b| config::decode(&b))
+        .map_err(|e| e.to_string())
+        .and_then(|t| Config::from_json(&t).map_err(|e| e.to_string()))
 }
 
 /// The plan `uninstall --dry-run` prints.
@@ -708,10 +778,10 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     }
     // From the config on disk, which an update keeps, so the key named is
     // the one the daemon registers.
-    let kept = std::fs::read(facts.data.join("daifuku.json"))
-        .and_then(|b| config::decode(&b))
-        .map_err(|e| e.to_string())
-        .and_then(|t| Config::from_json(&t).map_err(|e| e.to_string()));
+    let kept = read_config(&facts.data.join("daifuku.json"));
+    if let Some(note) = kept.as_ref().ok().and_then(admin_without_elevation) {
+        println!("\nNote: {note}.");
+    }
     match kept.map(|c| how_to_open(&c)) {
         Ok(Some(how)) if options.no_start => {
             println!("\nAfter your next sign-in, {how} to open your first fleet.");
@@ -790,10 +860,15 @@ fn run(step: &Step) -> anyhow::Result<()> {
             daemon,
             sid,
             data,
+            elevated,
         } => {
-            setup::create_task(name, &xml(&daemon.to_string_lossy(), sid), data)
+            setup::create_task(name, &xml(&daemon.to_string_lossy(), sid, *elevated), data)
                 .context("could not register the logon task")?;
-            println!("logon task   {name}");
+            if *elevated {
+                println!("logon task   {name}, elevated");
+            } else {
+                println!("logon task   {name}");
+            }
         }
         Step::RemoveLegacyTask { sid } => remove_legacy_task(sid),
         Step::StartTask { name } => {
@@ -874,13 +949,13 @@ fn run(step: &Step) -> anyhow::Result<()> {
             Ok(false) => {}
             Err(e) => println!("left         in Settings > Apps > Installed apps ({e})"),
         },
-        Step::RemoveData { dir } => {
+        Step::RemoveData { dir, .. } => {
             std::fs::remove_dir_all(dir)
                 .with_context(|| format!("could not remove {}", dir.display()))?;
             println!("removed      {}", dir.display());
         }
-        Step::KeepData { dir } => println!(
-            "kept         {} (config, logs and saved state; --purge removes them)",
+        Step::KeepData { dir, what } => println!(
+            "kept         {} ({what}; --purge removes them)",
             dir.display()
         ),
     }
@@ -1072,9 +1147,20 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                 Err(e) => Err(format!("{}: {e}", p.display())),
             },
         );
-    match config {
-        Some(Ok(_)) => doctor.check(true, "config valid", ""),
-        Some(Err(e)) => doctor.check(false, "config valid", &e),
+    // Whether the config asks for an elevated daemon: what the logon task
+    // was registered with, if install ran since the config last changed.
+    let wants_elevated = matches!(&config, Some(Ok(c)) if c.elevated);
+    match &config {
+        Some(Ok(c)) => {
+            doctor.check(true, "config valid", "");
+            let note = admin_without_elevation(c);
+            doctor.check(
+                note.is_none(),
+                "administrator fleets have an elevated daemon",
+                note.as_deref().unwrap_or_default(),
+            );
+        }
+        Some(Err(e)) => doctor.check(false, "config valid", e),
         None => doctor.check(false, "config valid", "no ProgramData folder"),
     }
 
@@ -1116,9 +1202,8 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
         &format!("sign out and in, or `schtasks /Run /TN {task}`"),
     );
 
-    if !running {
-        // Nothing more to ask a daemon that is not there.
-    } else if process::current_is_elevated() {
+    let elevated = process::current_is_elevated();
+    if running {
         let mut told = false;
         let reply = patient_status(BUSY_TRIES, || {
             let reply = status_reply(
@@ -1136,9 +1221,9 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
         match reply {
             StatusReply::Status(s) => {
                 doctor.check(
-                    s.elevated,
-                    "daemon elevated",
-                    "start it through the logon task, not by hand",
+                    s.elevated == wants_elevated,
+                    "daemon rights as the config asks",
+                    &rights_fix(s.elevated, &task),
                 );
                 doctor.check(
                     s.version == env!("CARGO_PKG_VERSION"),
@@ -1164,11 +1249,16 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                 "daemon answers",
                 &stuck_fix(process::session(), &task),
             ),
-            StatusReply::NotElevated => doctor.check(
+            // An elevated daemon answers only an administrator terminal.
+            StatusReply::Refused if !elevated => doctor.note(
+                "the daemon runs elevated and answers only an administrator terminal: run doctor from one to check its rights and hotkeys too",
+            ),
+            StatusReply::Refused | StatusReply::Stranger => doctor.check(
                 false,
-                "daemon elevated",
+                "daemon answers",
                 &format!(
-                    "the process answering on Daifuku's control pipe is not the elevated daemon: sign out and in, or end it and run `schtasks /Run /TN {task}`"
+                    "{}: sign out and in, or end it and run `schtasks /Run /TN {task}`",
+                    daifuku_win::pipe::NOT_THE_DAEMON
                 ),
             ),
             StatusReply::Silent => doctor.check(
@@ -1177,12 +1267,8 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                 &format!("restart it: `daifuku stop`, then `schtasks /Run /TN {task}`"),
             ),
         }
-    } else {
-        doctor.note(
-            "elevation and hotkeys: run doctor from an administrator terminal to check those too",
-        );
     }
-    if let Some(logs) = paths::log_dir(true) {
+    if let Some(logs) = paths::log_dir(wants_elevated) {
         (doctor.report)(Finding::Logs(logs.display().to_string()));
     }
     doctor.ok
@@ -1237,10 +1323,14 @@ enum StatusReply {
     /// Busy on every one of [`BUSY_TRIES`] asks: one command has held the
     /// daemon far longer than any should.
     Stuck,
-    /// Windows or the pipe client turned the answer away: the process on
-    /// the control pipe is not the elevated daemon. Doctor asks only from an
-    /// elevated terminal, which the real daemon lets in.
-    NotElevated,
+    /// Windows refused the pipe. From a terminal that is not elevated, the
+    /// daemon is: its pipe admits only elevated processes. An administrator
+    /// terminal every daemon of this user lets in, so there the pipe is
+    /// someone else's.
+    Refused,
+    /// The pipe client turned the server away: the process on the pipe is
+    /// neither an elevated one nor one of this user's.
+    Stranger,
     /// No answer, or one that does not read.
     Silent,
 }
@@ -1267,6 +1357,20 @@ fn stuck_fix(session: u32, task: &str) -> String {
     )
 }
 
+/// What to do about a daemon that runs `elevated` while the config asks for
+/// the other, whose logon task is `task`.
+fn rights_fix(elevated: bool, task: &str) -> String {
+    if elevated {
+        format!(
+            "it runs elevated, which the config does not ask for: run `daifuku install` again, which registers {task} to start it with your own rights, or set \"elevated\": true"
+        )
+    } else {
+        format!(
+            "the config says \"elevated\": true, but it runs with your own rights: run `daifuku install` again from an administrator terminal, which registers {task} to start it elevated, and start it through that task, not by hand"
+        )
+    }
+}
+
 /// Asks with `ask` until the answer is not [`StatusReply::Busy`], at most
 /// `tries` times; busy every time is [`StatusReply::Stuck`].
 fn patient_status(tries: usize, mut ask: impl FnMut() -> StatusReply) -> StatusReply {
@@ -1288,7 +1392,14 @@ fn status_reply(reply: std::io::Result<Option<String>>) -> StatusReply {
             _ => StatusReply::Silent,
         },
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => StatusReply::Busy,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => StatusReply::NotElevated,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Windows says why with a code; the client's own refusal has none.
+            if e.raw_os_error().is_some() {
+                StatusReply::Refused
+            } else {
+                StatusReply::Stranger
+            }
+        }
         _ => StatusReply::Silent,
     }
 }
@@ -1633,6 +1744,7 @@ mod tests {
             from: PathBuf::from(r"C:\Users\u\Downloads\daifuku"),
             to: PathBuf::from(r"C:\Program Files\Daifuku"),
             data: PathBuf::from(r"C:\ProgramData\Daifuku"),
+            user_data: None,
             daemon: Some(Daemon::Beside(PathBuf::from(
                 r"C:\Users\u\Downloads\daifuku\daifukud.exe",
             ))),
@@ -1640,6 +1752,7 @@ mod tests {
             installed: false,
             data_locked: None,
             config_exists: false,
+            config: Some(Config::default()),
             sid: SID.into(),
             legacy_task_ours: false,
             hooks: vec![
@@ -1727,6 +1840,77 @@ mod tests {
                 ("add_hooks", r"C:\Users\u\.codex\hooks.json".to_owned()),
             ]
         );
+    }
+
+    /// Whether the plan's logon task starts the daemon elevated, and what
+    /// the dry run says of it.
+    fn task_of(facts: &Facts) -> (bool, String) {
+        let steps = install_plan(facts, &ALL);
+        let task = steps
+            .iter()
+            .find(|s| matches!(s, Step::RegisterTask { .. }))
+            .unwrap();
+        let Step::RegisterTask { elevated, .. } = task else {
+            unreachable!()
+        };
+        (*elevated, task.describe()[0].detail.clone().unwrap())
+    }
+
+    #[test]
+    fn the_logon_task_runs_with_the_users_own_rights_by_default() {
+        let (elevated, detail) = task_of(&fresh());
+        assert!(!elevated);
+        assert_eq!(
+            detail,
+            r"starts C:\Program Files\Daifuku\daifukud.exe at sign-in with your own rights"
+        );
+        // A kept config without the key, and one that does not read.
+        let mut kept = installed();
+        assert!(!task_of(&kept).0);
+        kept.config = None;
+        assert!(!task_of(&kept).0);
+    }
+
+    #[test]
+    fn the_logon_task_runs_elevated_only_when_the_config_asks() {
+        let mut f = installed();
+        f.config = Some(Config::from_json(r#"{"elevated": true}"#).unwrap());
+        let (elevated, detail) = task_of(&f);
+        assert!(elevated);
+        assert_eq!(
+            detail,
+            r"starts C:\Program Files\Daifuku\daifukud.exe elevated at sign-in, as the config asks"
+        );
+        // A folder that is not locked goes, and its config with it: the
+        // starter config asks for nothing.
+        f.data_locked = Some(false);
+        f.config = Some(Config::default());
+        assert!(!task_of(&f).0);
+    }
+
+    #[test]
+    fn administrator_fleets_without_elevation_are_named_with_the_key_to_set() {
+        assert_eq!(admin_without_elevation(&Config::default()), None);
+        let two = Config::from_json(
+            r#"{"fleets":[{"name":"a","admin":true},{"name":"b","hotkey":null},{"name":"c","admin":true,"hotkey":null}]}"#,
+        )
+        .unwrap();
+        let note = admin_without_elevation(&two).unwrap();
+        assert!(
+            note.starts_with(
+                "`a`, `c` open administrator terminals, which needs \"elevated\": true"
+            ),
+            "{note}"
+        );
+        let one = Config::from_json(r#"{"fleets":[{"name":"a","admin":true}]}"#).unwrap();
+        assert!(
+            admin_without_elevation(&one)
+                .unwrap()
+                .starts_with("`a` opens administrator terminals"),
+        );
+        let asked =
+            Config::from_json(r#"{"elevated":true,"fleets":[{"name":"a","admin":true}]}"#).unwrap();
+        assert_eq!(admin_without_elevation(&asked), None);
     }
 
     #[test]
@@ -1840,6 +2024,40 @@ mod tests {
         assert_eq!(
             purged.last(),
             Some(&("remove_folder", r"C:\ProgramData\Daifuku".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_purge_also_removes_what_a_daemon_with_the_users_rights_kept() {
+        let mut f = installed();
+        let mine = PathBuf::from(r"C:\Users\u\AppData\Local\Daifuku");
+        f.user_data = Some(mine.clone());
+        let tail = |purge| {
+            uninstall_plan(&f, purge)
+                .iter()
+                .flat_map(Step::describe)
+                .filter(|s| s.action.ends_with("_folder") && !s.target.contains("Program Files"))
+                .map(|s| (s.action, s.target, s.detail))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            tail(true),
+            [
+                (
+                    "remove_folder",
+                    r"C:\ProgramData\Daifuku".to_owned(),
+                    Some(DATA.to_owned())
+                ),
+                (
+                    "remove_folder",
+                    mine.display().to_string(),
+                    Some(USER_DATA.to_owned())
+                ),
+            ]
+        );
+        assert_eq!(
+            tail(false).last().map(|s| (s.0, s.1.clone())),
+            Some(("keep_folder", mine.display().to_string()))
         );
     }
 
@@ -2279,21 +2497,16 @@ mod tests {
         assert!(matches!(status_reply(Err(busy)), StatusReply::Busy));
         let gone = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         assert!(matches!(status_reply(Err(gone)), StatusReply::Silent));
-        // What the pipe client says of a server that is not elevated, and
-        // what Windows says when it refuses the open.
+        // What the pipe client says of a server that is neither the
+        // elevated daemon nor this user's, and what Windows says when it
+        // refuses the open.
         let impostor = std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "the process answering on Daifuku's control pipe is not the elevated daemon",
+            daifuku_win::pipe::NOT_THE_DAEMON,
         );
-        assert!(matches!(
-            status_reply(Err(impostor)),
-            StatusReply::NotElevated
-        ));
+        assert!(matches!(status_reply(Err(impostor)), StatusReply::Stranger));
         let refused = std::io::Error::from_raw_os_error(5);
-        assert!(matches!(
-            status_reply(Err(refused)),
-            StatusReply::NotElevated
-        ));
+        assert!(matches!(status_reply(Err(refused)), StatusReply::Refused));
         let garbled = Ok(Some("not json\n".to_owned()));
         assert!(matches!(status_reply(garbled), StatusReply::Silent));
         let line = to_line(&Response::Status(Status::default())).unwrap();

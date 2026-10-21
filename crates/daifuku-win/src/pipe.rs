@@ -5,17 +5,18 @@
 //! | pipe | who may connect | why |
 //! |---|---|---|
 //! | hook | the signed-in user, at medium integrity or above | a hook runs at its agent's level, the medium label keeps low-integrity processes out, and the most a hook can do is colour a border |
-//! | control | Administrators, elevated | a request can open administrator terminals |
+//! | control, elevated daemon | Administrators, elevated | a request can open administrator terminals |
+//! | control, daemon with the user's rights | the signed-in user, at medium integrity or above | a request can do no more than the user can already |
 //!
 //! A pipe created by an elevated process carries a high mandatory label, and
 //! Windows' no-write-up rule then stops every ordinary process from writing to
 //! it whatever the access list says. The hook pipe therefore sets a medium
-//! label explicitly; the control pipe keeps the high one.
+//! label explicitly; the elevated daemon's control pipe keeps the high one.
 //!
 //! Both are created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a process that
 //! grabbed the name first makes the daemon fail loudly instead of sharing it,
-//! and the control client checks that whoever answers is elevated before it
-//! sends anything.
+//! and the control client checks before it sends anything that whoever
+//! answers is elevated or runs as the same account as the client.
 
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -86,7 +87,11 @@ impl Pipe {
     ///   processes could add a server of its own and collect hook lines. A
     ///   daemon that is not elevated keeps generic write, since it creates
     ///   its further instances as that same user.
-    /// - Control: full access for SYSTEM and Administrators only, high label.
+    /// - Control, elevated: full access for SYSTEM and Administrators only,
+    ///   high label.
+    /// - Control, not elevated: as the hook pipe of such a daemon. It has a
+    ///   single instance, created before any client can connect, so no other
+    ///   process can add one.
     fn sddl(self, elevated: bool) -> String {
         // Without a SID, which only a broken token gives, no user entry at
         // all; `instances` refuses to create a hook pipe like that.
@@ -100,13 +105,16 @@ impl Pipe {
                 "D:P(A;;GA;;;SY)(A;;GA;;;BA){}S:(ML;;NW;;;ME)",
                 user("0x12008b")
             ),
-            (Self::Hook, false) => {
+            (Self::Hook | Self::Control, false) => {
                 format!("D:P(A;;GA;;;SY)(A;;GA;;;BA){}S:(ML;;NW;;;ME)", user("GRGW"))
             }
-            (Self::Control, _) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)".to_owned(),
+            (Self::Control, true) => "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)".to_owned(),
         }
     }
 }
+
+/// What the control client says of a server it will not talk to.
+pub const NOT_THE_DAEMON: &str = "the process answering on Daifuku's control pipe is neither an elevated daemon nor one of yours";
 
 /// One server instance of a pipe. The daemon creates a few per pipe, one
 /// thread each, and every thread loops on [`Instance::accept`].
@@ -143,36 +151,26 @@ pub struct Connection<'a> {
 ///
 /// # Errors
 ///
-/// When the name is taken or the security descriptor is refused, for the
-/// hook pipe when this process cannot read its user's SID, and for the
-/// control pipe when this process is not elevated.
+/// When the name is taken or the security descriptor is refused, and when
+/// this process cannot read its user's SID to let them in: always for the
+/// hook pipe, for the control pipe when this process is not elevated.
 pub fn instances(pipe: Pipe, count: usize) -> io::Result<Vec<Instance>> {
     let elevated = process::current_is_elevated();
-    may_serve(pipe, elevated)?;
+    may_serve(pipe, elevated, crate::setup::user_sid().is_some())?;
     instances_at(&pipe.name(), &pipe.sddl(elevated), count)
 }
 
-/// Refuses a pipe this process cannot serve, and says why.
-///
-/// - Hook: without the user's SID, every hook would be turned away without a
-///   word.
-/// - Control: only an elevated process can. Windows lets no process label a
-///   pipe above its own integrity level, so the high label is refused, and a
-///   client turns away a control server that is not elevated in any case.
-fn may_serve(pipe: Pipe, elevated: bool) -> io::Result<()> {
+/// Refuses a pipe this process cannot serve, and says why: one whose access
+/// list would need the user's SID, when `has_sid` says it cannot be read.
+/// Every hook, or every command from a daemon that is not elevated, would be
+/// turned away without a word.
+fn may_serve(pipe: Pipe, elevated: bool, has_sid: bool) -> io::Result<()> {
     match pipe {
-        Pipe::Hook if crate::setup::user_sid().is_none() => Err(io::Error::other(
+        Pipe::Hook if !has_sid => Err(io::Error::other(
             "cannot read this user's SID to let their hooks in",
         )),
-        Pipe::Control if !elevated => Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "daifukud must run elevated; start it with schtasks /Run /TN {}",
-                crate::setup::user_sid().map_or_else(
-                    || daifuku_core::task::task_name("<your SID>"),
-                    |sid| daifuku_core::task::task_name(&sid)
-                )
-            ),
+        Pipe::Control if !elevated && !has_sid => Err(io::Error::other(
+            "cannot read this user's SID to let their commands in",
         )),
         _ => Ok(()),
     }
@@ -472,8 +470,8 @@ impl Drop for Connection<'_> {
 ///
 /// # Errors
 ///
-/// When no daemon is listening, the control server is not elevated, or the
-/// exchange fails.
+/// When no daemon is listening, the control server is neither elevated nor
+/// this user's, or the exchange fails.
 pub fn send(pipe: Pipe, line: &str, wait: Duration) -> io::Result<Option<String>> {
     send_to(&pipe.name(), pipe, line, wait)
 }
@@ -537,10 +535,10 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
         let mut server = 0u32;
         // SAFETY: server is a valid out pointer.
         let _ = unsafe { GetNamedPipeServerProcessId(h, &raw mut server) };
-        if process::is_elevated(server) != Some(true) {
+        if !trusted_server(server) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "the process answering on Daifuku's control pipe is not the elevated daemon",
+                NOT_THE_DAEMON,
             ));
         }
     }
@@ -555,8 +553,16 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
         wait_until_read(h, deadline);
         return Ok(None);
     }
-    // The elevated daemon bounds how long it takes to answer.
+    // The daemon bounds how long it takes to answer.
     read_reply(h, raw(&event)).map(Some)
+}
+
+/// Whether the control client may talk to process `server`: an elevated one,
+/// which only an administrator could have started, or one of this same
+/// account, which can do nothing with a request the account could not do
+/// itself. Another user's process is turned away.
+fn trusted_server(server: u32) -> bool {
+    process::is_elevated(server) == Some(true) || process::runs_as_this_user(server) == Some(true)
 }
 
 /// Reads the daemon's reply, which is one whole line. A line cut short means
@@ -615,12 +621,21 @@ mod tests {
     }
 
     #[test]
-    fn the_control_pipe_admits_no_ordinary_user() {
-        for elevated in [true, false] {
-            let sddl = &Pipe::Control.sddl(elevated);
-            assert!(!sddl.contains(";IU)") && !sddl.contains(";AU)") && !sddl.contains(";WD)"));
-            assert!(sddl.contains("ML;;NW;;;HI"));
-        }
+    fn the_elevated_daemons_control_pipe_admits_no_ordinary_user() {
+        let sddl = &Pipe::Control.sddl(true);
+        assert_eq!(sddl, "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)");
+    }
+
+    #[test]
+    fn the_control_pipe_of_a_daemon_with_the_users_rights_admits_that_user_alone() {
+        let sddl = &Pipe::Control.sddl(false);
+        let sid = crate::setup::user_sid().unwrap();
+        assert_eq!(
+            sddl,
+            &format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{sid})S:(ML;;NW;;;ME)")
+        );
+        // Not every interactive or signed-in user, nor everyone.
+        assert!(!sddl.contains(";IU)") && !sddl.contains(";AU)") && !sddl.contains(";WD)"));
     }
 
     #[test]
@@ -671,20 +686,64 @@ mod tests {
     }
 
     #[test]
-    fn only_an_elevated_process_serves_the_control_pipe() {
-        let refused = may_serve(Pipe::Control, false).unwrap_err();
-        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
-        assert!(
-            refused.to_string().contains("must run elevated"),
-            "{refused}"
-        );
-        assert!(may_serve(Pipe::Control, true).is_ok());
-        // Why: an ordinary process cannot even give a pipe the high label.
-        let name = private_name();
-        let made = crate::test_support::as_ordinary_user(|| {
-            create(&name, &Pipe::Control.sddl(false), true, 1)
+    fn a_daemon_with_the_users_rights_serves_the_control_pipe_with_the_medium_label() {
+        assert!(may_serve(Pipe::Control, true, true).is_ok());
+        assert!(may_serve(Pipe::Control, false, true).is_ok());
+        assert!(may_serve(Pipe::Control, true, false).is_ok());
+        assert!(may_serve(Pipe::Control, false, false).is_err());
+        assert!(may_serve(Pipe::Hook, true, false).is_err());
+        // An ordinary process cannot give a pipe the high label, and does
+        // not need to for the medium one.
+        let (high, medium) = (private_name(), private_name());
+        let (high_made, medium_made) = crate::test_support::as_ordinary_user(|| {
+            (
+                create(&high, &Pipe::Control.sddl(true), true, 1),
+                create(&medium, &Pipe::Control.sddl(false), true, 1),
+            )
         });
-        assert!(made.is_err(), "an ordinary process made the control pipe");
+        assert!(
+            high_made.is_err(),
+            "an ordinary process gave a pipe the high label"
+        );
+        assert!(medium_made.is_ok(), "{medium_made:?}");
+    }
+
+    #[test]
+    fn a_control_server_of_this_user_is_answered() {
+        // This process serves, so the server runs as this same account,
+        // elevated or not.
+        assert!(trusted_server(process::current()));
+        let name = private_name();
+        let mut instance = instances_at(&name, &Pipe::Control.sddl(false), 1)
+            .unwrap()
+            .remove(0);
+        let server = std::thread::spawn(move || {
+            let mut connection = instance.accept().unwrap();
+            let line = connection.read_line(Duration::from_secs(2)).unwrap();
+            connection
+                .write_line("{\"result\":\"ok\"}\n", Duration::from_secs(2))
+                .unwrap();
+            line
+        });
+        let reply = send_to(
+            &name,
+            Pipe::Control,
+            "{\"command\":\"status\"}\n",
+            Duration::from_secs(2),
+        );
+        assert_eq!(reply.unwrap().as_deref(), Some("{\"result\":\"ok\"}\n"));
+        assert_eq!(server.join().unwrap(), "{\"command\":\"status\"}\n");
+    }
+
+    #[test]
+    fn a_control_server_of_another_account_is_not_answered() {
+        // The System process runs as SYSTEM, not elevated as this user is.
+        // From an elevated run it counts as elevated, which only an
+        // administrator could have started.
+        if !process::current_is_elevated() {
+            assert!(!trusted_server(4));
+        }
+        assert!(!trusted_server(u32::MAX));
     }
 
     #[test]
@@ -901,6 +960,7 @@ mod tests {
             (Pipe::Hook, true),
             (Pipe::Hook, false),
             (Pipe::Control, true),
+            (Pipe::Control, false),
         ] {
             let sddl = to_wide(&pipe.sddl(elevated));
             let mut sd = PSECURITY_DESCRIPTOR::default();

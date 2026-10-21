@@ -1,8 +1,8 @@
 //! The config file, `C:\ProgramData\Daifuku\daifuku.json`.
 //!
 //! Every key is optional. An empty file, or no file, is a working setup: one
-//! fleet of six admin terminals running `claude` on the monitor turned on its
-//! side, or on the primary one when none is.
+//! fleet of six terminals running `claude` with the user's own rights, on the
+//! monitor turned on its side, or on the primary one when none is.
 //!
 //! ```json
 //! {
@@ -53,6 +53,10 @@ pub struct Config {
     /// Play Windows' Asterisk sound when an agent starts waiting for you,
     /// for when you are not looking at the screen.
     pub sound: bool,
+    /// Start the daemon with administrator rights at sign-in, which fleets
+    /// with `"admin": true` need. Off, it runs with your own rights. Takes
+    /// effect at the next `daifuku install`, which registers the logon task.
+    pub elevated: bool,
 }
 
 impl Default for Config {
@@ -64,6 +68,7 @@ impl Default for Config {
             hotkeys: Hotkeys::default(),
             fleets: vec![Fleet::default()],
             sound: false,
+            elevated: false,
         }
     }
 }
@@ -279,7 +284,7 @@ pub struct Fleet {
     /// Terminal's own default profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// Open the terminals as administrator.
+    /// Open the terminals as administrator. Needs `"elevated": true`.
     pub admin: bool,
     /// Start PowerShell without the user's profile script.
     pub no_profile: bool,
@@ -309,7 +314,7 @@ impl Default for Fleet {
             directory: None,
             command: Some("claude".to_owned()),
             profile: None,
-            admin: true,
+            admin: false,
             no_profile: false,
             hotkey: Some(HotkeyText::new("ctrl + alt + return")),
             with: Vec::new(),
@@ -1075,15 +1080,30 @@ mod tests {
     }
 
     #[test]
-    fn no_file_is_one_fleet_of_six_admin_claudes_on_the_portrait_monitor() {
+    fn no_file_is_one_fleet_of_six_claudes_on_the_portrait_monitor_with_the_users_rights() {
         let c = Config::from_json("").unwrap();
+        assert!(!c.elevated);
         assert_eq!(c.fleets.len(), 1);
         let f = &c.fleets[0];
         assert_eq!(
             (f.count, f.admin, f.command.as_deref()),
-            (6, true, Some("claude"))
+            (6, false, Some("claude"))
         );
         assert_eq!(f.monitor, MonitorPick::Portrait);
+    }
+
+    #[test]
+    fn elevation_is_asked_for_by_one_top_level_key() {
+        assert!(Config::from_json(r#"{"elevated": true}"#).unwrap().elevated);
+        assert!(
+            !Config::from_json(r#"{"elevated": false}"#)
+                .unwrap()
+                .elevated
+        );
+        assert!(Config::from_json(r#"{"elevated": "yes"}"#).is_err());
+        // An administrator fleet alone does not ask for it.
+        let admin = Config::from_json(r#"{"fleets":[{"name":"a","admin":true}]}"#).unwrap();
+        assert!(admin.fleets[0].admin && !admin.elevated);
     }
 
     #[test]

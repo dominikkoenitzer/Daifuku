@@ -1,9 +1,10 @@
 # Security
 
-Daifuku's daemon runs as administrator. It has to: Windows does not let an
-ordinary process move an administrator's window or draw a frame beside it,
-and fleets of administrator terminals are the common case. That makes the
-daemon worth attacking, because whatever can change what it starts gets
+Daifuku's daemon runs with the signed-in user's own rights. Only when the
+config sets `"elevated": true` does it run as administrator, because Windows
+does not let an ordinary process move an administrator's window or draw a
+frame beside it, so fleets of administrator terminals need it. An elevated
+daemon is worth attacking, because whatever can change what it starts gets
 administrator rights for nothing. This page is the threat model: what an
 attacker without administrator rights could try, and what stops it. It
 describes the code on `main`; several of these protections came after 0.1.1,
@@ -23,9 +24,14 @@ input to ordinary windows. It cannot write where only administrators can.
 | The saved state: open fleets and what each agent is doing | `C:\ProgramData\Daifuku\state-<SID>.json`, one per user (`state.json` up to 0.1.3, read once when the user's own is missing) | In the same locked folder as the config, written by the daemon alone. It is taken back only within the same start of Windows and for five minutes after it was written, and every window in it is checked again: a fleet's must still be a Windows Terminal window, an agent's a window a hook could name. |
 | The peers `daifuku spawn` opened: folder, label, fleet, place, the cell of a fleet each is in and the last session id | `C:\ProgramData\Daifuku\peers-<SID>.json`, one per user | In the same locked folder, written by the daemon alone. `daifuku restore` puts these into command lines the elevated daemon starts, so a session id is kept only when it is letters, digits, `-` and `_`, only from a hook that ran inside that peer's terminal (below), and is checked again before it goes into a command line. Only the peers open when Windows last stopped are restored, and never a session that runs already. A peer whose terminal is still open after the daemon restarts goes back into its cell only when that window is still a Windows Terminal window of this start of Windows and the cell is free. |
 | The entry in Settings > Apps > Installed apps | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku` | Writable by administrators only. Its Uninstall runs `daifuku.exe` in Program Files, which asks for administrator rights through the normal Windows prompt. |
-| The logon task, one per user | `\Daifuku\Daemon-<user SID>` in Task Scheduler | Creating or changing a task that runs with highest privileges needs administrator rights. Its definition passes through the locked data folder on the way in, never through the user's temp folder. |
+| The logon task, one per user | `\Daifuku\Daemon-<user SID>` in Task Scheduler | It runs with the user's own rights, or with highest privileges when the config sets `"elevated": true`. Creating or changing a task that runs with highest privileges needs administrator rights, and the config that asks for one is writable by administrators only. Its definition passes through the locked data folder on the way in, never through the user's temp folder. |
 | Windows Terminal | its package folder under `WindowsApps` | Found through the package API, never through `PATH`, which contains folders the user can write. Only a package the system installed from a signed source counts: one registered from loose files in developer mode can live in any folder. |
 | PowerShell | `Program Files\PowerShell\7` or `System32` | Found through the known-folder API, never through `PATH` or environment variables. |
+
+The saved state and peers above are an elevated daemon's. A daemon with the
+user's own rights keeps them, and its logs, in `%LocalAppData%\Daifuku`,
+which the user may write: whatever it starts from there runs with no more
+rights than the user has already. An elevated daemon never reads that folder.
 
 The command a fleet runs (`claude` by default) is resolved by that PowerShell
 inside the terminal, from the user's own `PATH`. An administrator fleet
@@ -41,16 +47,21 @@ terminal, ask for administrator rights through the normal Windows prompt.
 
 There are two named pipes, per Remote Desktop session.
 
-**The control pipe** takes commands: open a fleet, snap, stop. Only SYSTEM and
-Administrators are in its access list, and it carries a high mandatory label,
-so no process below high integrity can open it whatever else is true. The
-command line also checks that whoever answers on the pipe runs elevated before
-it sends anything, so a process that squatted the name cannot collect
-commands. `daifuku status` goes through it too, so fleets, agents and
-hotkeys need an administrator terminal. From any other, `status` does not
-open the pipe: it reports only what files, the registry, the process list
-and Task Scheduler show any user, and names the command to run in an
-administrator terminal.
+**The control pipe** takes commands: open a fleet, snap, stop. Who may open
+it follows the daemon's rights. For a daemon with the user's own rights,
+SYSTEM, Administrators and the signed-in user by their own SID are in its
+access list, with a medium label, so processes below medium integrity and
+other people signed in at the same time cannot open it. Such a daemon starts
+nothing with more rights than the user has: a fleet with `"admin": true` is
+refused with a message naming the `elevated` key. For an elevated daemon,
+only SYSTEM and Administrators are in the list, and the pipe carries a high
+mandatory label, so no process below high integrity can open it whatever
+else is true. Before it sends anything, the command line checks that
+whoever answers on the pipe runs elevated or as the same user, so a process
+of another account that squatted the name cannot collect commands. From a
+terminal that is not elevated, against an elevated daemon, `daifuku status`
+reports only what files, the registry, the process list and Task Scheduler
+show any user, and names the command to run in an administrator terminal.
 
 **The hook pipe** takes state reports from agent hooks. The signed-in user,
 by their own SID, may open it to read and to write data from a normal process
