@@ -19,8 +19,8 @@ Install, in order:
 3. Lists Daifuku in Settings > Apps > Installed apps: the key `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku`, whose Uninstall button runs the installed `daifuku.exe`.
 4. Locks `C:\ProgramData\Daifuku` to administrators. A folder there that is not locked that way is deleted, with any config in it, and made anew.
 5. Writes `C:\ProgramData\Daifuku\daifuku.json` with the defaults spelled out, unless a config is already there (`kept config`).
-6. Registers the logon task `\Daifuku\Daemon-<user SID>`, which starts `daifukud.exe` at this user's sign-in with the user's own rights, or elevated when the config sets `"elevated": true`, at normal priority, with no time limit. It removes the task `\Daifuku\Daemon` of earlier versions when that one runs for this user.
-7. Starts the daemon, unless `--no-start`.
+6. Writes no logon task for an ordinary daemon, and removes one an earlier version wrote for this user; the daemon runs with the user's own rights, started on demand (step 7). Only when the config sets `"elevated": true` does it register the logon task `\Daifuku\Daemon-<user SID>`, which starts `daifukud.exe` elevated at this user's sign-in, at normal priority, with no time limit, since an elevated daemon needs a start without a prompt. It also removes the task `\Daifuku\Daemon` of earlier versions when that one runs for this user.
+7. Starts the daemon, unless `--no-start`: an ordinary one directly, with the installer's own rights; an elevated one through its logon task. After that the first command line or hook event of any later session starts an ordinary daemon on demand when none is listening.
 8. Adds the hooks, unless `--no-hooks` (below).
 9. Prints how to open the first fleet, for example `To open your first fleet, press ctrl + alt + return.`
 

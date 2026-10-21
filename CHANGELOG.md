@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- The ordinary install writes no logon task. The daemon runs with the
+  user's own rights and the command line starts it on demand: the first
+  `daifuku` command or hook event of a session that finds nothing listening
+  starts `daifukud` with the caller's own rights and asks again, and later
+  ones find it running. A logon task is written only when the config sets
+  `"elevated": true`, which needs a prompt-free start at sign-in. An install
+  removes a logon task an earlier version wrote for an ordinary daemon.
+- `daifuku doctor` checks for a logon task only when the config asks for an
+  elevated daemon; for an ordinary one it reports the daemon as started on
+  demand and, when it is not running, says to run `daifuku open`.
+
 ## 0.4.0, 2026-10-21
 
 - The daemon runs with the user's own rights by default. The logon task
