@@ -43,7 +43,7 @@ Default hotkeys, all changeable in the config:
 
 ## Install, update, uninstall
 
-1. Download `daifuku.exe` from https://get-daifuku.vercel.app/download/windows, or `daifuku-arm64.exe` from https://get-daifuku.vercel.app/download/windows-arm64 when Settings > System > About says "ARM-based processor". It is the only file needed.
+1. Download `daifuku.exe` from https://daifuku.punds.ch/download/windows, or `daifuku-arm64.exe` from https://daifuku.punds.ch/download/windows-arm64 when Settings > System > About says "ARM-based processor". It is the only file needed.
 2. Double-click it, press Enter, and approve the Windows prompt. SmartScreen may stop the unsigned exe the first time: "More info", then "Run anyway".
 
 From an administrator terminal in the download folder, `.\daifuku.exe install` does the same. To update, run the new `daifuku.exe` the same way; config and hooks are kept. To remove it, open Settings > Apps > Installed apps, find Daifuku and choose Uninstall, or run `daifuku uninstall` from an administrator terminal; `daifuku uninstall --purge` also deletes the config, logs and saved state.
