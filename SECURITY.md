@@ -9,8 +9,10 @@ and the output of `daifuku doctor`.
 
 ## Scope
 
-The Daifuku daemon runs as administrator, so the question that matters is
-whether anything without administrator rights can make it do something. The
+The Daifuku daemon runs with the user's own rights by default, and as
+administrator when the config sets `"elevated": true`. The question that
+matters is whether anything without administrator rights can make an
+elevated daemon do something, or make either do something as another user. The
 design, and what each part defends against, is in
 [docs/security.md](docs/security.md). In scope, most of all:
 

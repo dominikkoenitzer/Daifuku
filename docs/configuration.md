@@ -5,13 +5,33 @@ it in your editor, and `daifuku config --path` prints that path. The daemon
 picks up every saved change by itself within two seconds; `daifuku reload`
 applies one at once.
 
-The folder is writable by administrators only, on purpose: the daemon runs
-elevated and the config says what it starts. So `daifuku config` asks
+The folder is writable by administrators only, on purpose: the config says
+what the daemon starts and whether it runs elevated. So `daifuku config` asks
 Windows for permission before it opens the editor, unless the terminal is an
 administrator terminal already.
 
 Every key is optional. An empty file, or no file, is one fleet of six
-administrator terminals running `claude` on the monitor turned on its side.
+terminals running `claude` on the monitor turned on its side, opened by a
+daemon with your own rights.
+
+## `elevated`
+
+`false` by default: the logon task starts the daemon with your own rights,
+and it opens terminals as you. Set `"elevated": true` for fleets with
+`"admin": true`, whose administrator terminals only an elevated daemon can
+start, move and frame: Windows keeps an ordinary process away from an
+administrator's windows. The key takes effect at the next `daifuku install`,
+which registers the logon task to start the daemon elevated, and from then
+on the daemon commands need an administrator terminal. Without it, a fleet
+with `"admin": true` does not open and says why; `daifuku install` and
+`daifuku doctor` name the fleets that need the key.
+
+```json
+{
+  "elevated": true,
+  "fleets": [{ "name": "agents", "admin": true }]
+}
+```
 With `"$schema"` pointing at the published schema, an editor completes every
 key and checks its name and type:
 
@@ -58,7 +78,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree (in releases after 0.1.1). A folder that does not exist falls back to your profile folder. An `"admin": false` fleet looks for the folder as you, so a drive you mapped or made with `subst` counts (after 0.1.1). |
 | `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it: PowerShell 7 when it is installed in Program Files, else Windows PowerShell. When no execution policy lets Windows PowerShell run scripts, it starts with `-ExecutionPolicy RemoteSigned` so a `claude` installed with npm runs; a policy you or your organisation set is kept. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | Windows Terminal's default | A Windows Terminal profile, by name. |
-| `admin` | `true` | Open the terminals as administrator. With `false`, Windows starts them as you through its Secondary Logon service (seclogon), which must not be disabled, and takes at most 1024 characters for their whole command line. The encoded `command` uses almost three of those for each of its own, so keep it under about 250 characters, or about 225 with a `priority`, whose group takes about 70 more. |
+| `admin` | `false` | Open the terminals as administrator. Needs `"elevated": true`. With `false` and an elevated daemon, Windows starts them as you through its Secondary Logon service (seclogon), which must not be disabled, and takes at most 1024 characters for their whole command line. The encoded `command` uses almost three of those for each of its own, so keep it under about 250 characters, or about 225 with a `priority`, whose group takes about 70 more. A daemon with your own rights starts them directly, with neither limit. |
 | `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
 | `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet opens last and asks for the focus. Their own `with` is not followed (after 0.1.3). |
