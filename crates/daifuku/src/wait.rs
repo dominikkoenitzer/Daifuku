@@ -160,6 +160,10 @@ mod tests {
             label: label.map(Into::into),
             fleet: None,
             session_id: Some(format!("s{window}")),
+            cwd: None,
+            last_tool: None,
+            last_message: None,
+            transcript_path: None,
         }
     }
 
