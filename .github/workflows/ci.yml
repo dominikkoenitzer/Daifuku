@@ -169,11 +169,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "the build of daifuku.exe with the daemon inside failed" }
           Copy-Item target/release/daifuku.exe $alone
       # The behaviour scanner on a user's machine condemns the carrier and,
-      # once it has, the file on any later read. The runner keeps Defender on,
-      # so a custom scan of the built binaries before they are installed shows
-      # whether the files themselves carry a verdict. Exit 2 means a threat
-      # was found; 0 means clean. Real-time protection has to be on for the
-      # scan to mean anything, so its state is printed with the result.
+      # once it has, the file on any later read. A custom scan of the built
+      # binaries before they are installed shows whether the files
+      # themselves match a signature; it uses the signatures whether or not
+      # real-time protection is on, and it cannot say what the behaviour
+      # scanner will make of the install. Exit 2 means a threat was found;
+      # 0 means clean. The engine's state is printed with the result.
       - name: Defender scans the built binaries
         shell: pwsh
         run: |
