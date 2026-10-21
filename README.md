@@ -29,16 +29,17 @@ Each border shows its agent: blue working, yellow waiting for you at a
 permission prompt or a question, green done (its turn is over, or it has just
 started), red its turn ended on an error, such as a rate limit.
 
-It works with Claude Code and Codex, in Windows Terminal. Fleets open as
-administrator by default, which also keeps them out of a tiling window
-manager's reach, so the two run side by side. The agent in such a terminal,
-and every command it runs, runs as administrator; `"admin": false` on a fleet
-opens its terminals as you instead.
+It works with Claude Code and Codex, in Windows Terminal. The daemon and its
+fleets run with your own rights by default. For fleets that open as
+administrator, which also keeps them out of a tiling window manager's reach,
+set `"elevated": true` at the top of the config, run `daifuku install` again,
+and set `"admin": true` on those fleets. The agent in such a terminal, and
+every command it runs, then runs as administrator.
 
 After install, `daifuku` works by name in every new terminal, and
 `daifuku doctor` checks the whole setup and says how to fix anything that is
-wrong. To see it work without a real agent, `daifuku demo` from an
-administrator terminal opens six scripted ones.
+wrong. To see it work without a real agent, `daifuku demo` opens six
+scripted ones.
 
 ## Configure
 
@@ -78,7 +79,7 @@ path to check another file first.
 | `area` | `"full"` | the part of the monitor it fills: `full`, `left`, `right`, `top`, `bottom`, or `{ "x", "y", "width", "height" }` in fractions |
 | `command` | `"claude"` | the PowerShell command each terminal runs; `{n}` is its number; `null` for a plain shell |
 | `directory` | your profile | where the terminals start; `{n}` is its number |
-| `admin` | `true` | open as administrator |
+| `admin` | `false` | open as administrator; needs `"elevated": true` |
 | `hotkey` | `"ctrl + alt + return"` | the key that opens this fleet; a second fleet needs its own, or `null` |
 | `shape` | automatic | force a grid, `{ "columns": 3, "rows": 2 }` |
 | `with` | none | other fleets, by name, that open with this one |
@@ -159,12 +160,12 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku uninstall [--purge]` | remove it again |
 | `daifuku uninstall --dry-run [--purge]` | list what uninstall would remove |
 
-The commands that talk to the daemon, `open` to `stop`, need an
-administrator terminal, as the daemon runs elevated and only answers
-elevated processes. From an ordinary terminal they stop with an error that
-names the command to run, except `status`, which says what it can tell
-without the daemon: installed or not, the daemon process, the logon task and
-the config. `doctor`, `config validate`, `schema`,
+The commands that talk to the daemon, `open` to `stop`, work from your own
+terminals. With `"elevated": true` the daemon answers only elevated
+processes, so they need an administrator terminal: from an ordinary one they
+stop with an error that names the command to run, except `status`, which
+says what it can tell without the daemon: installed or not, the daemon
+process, the logon task and the config. `doctor`, `config validate`, `schema`,
 `config --path` and the dry runs work from any terminal. The hotkeys work
 from anywhere.
 
@@ -300,13 +301,15 @@ Windows PC without installing a runtime.
 
 ## Security
 
-The daemon runs as administrator, so nothing an ordinary program can change
-decides what it starts:
+The daemon runs with your own rights unless the config, which only
+administrators can write, sets `"elevated": true`. An elevated daemon runs as
+administrator, so nothing an ordinary program can change decides what it
+starts:
 
 - the binaries live in `Program Files`;
 - the config lives in a folder only administrators can write, owned by the
   Administrators group;
-- commands arrive on a pipe only elevated processes can open;
+- its commands arrive on a pipe only elevated processes can open;
 - Windows Terminal is found through its package and PowerShell through the
   system folders, never through `PATH`.
 

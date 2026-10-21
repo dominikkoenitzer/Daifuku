@@ -1,6 +1,6 @@
 # Configuration
 
-File: `C:\ProgramData\Daifuku\daifuku.json` (`daifuku config --path` prints it). JSON, UTF-8. Every key is optional; a key left out keeps its default. An empty file, `{}` or no file at all is one fleet of six administrator terminals running `claude` on the monitor turned on its side.
+File: `C:\ProgramData\Daifuku\daifuku.json` (`daifuku config --path` prints it). JSON, UTF-8. Every key is optional; a key left out keeps its default. An empty file, `{}` or no file at all is one fleet of six terminals running `claude` on the monitor turned on its side, opened by a daemon with the user's own rights.
 
 Unknown keys are errors at the top level and in `fleets[]`, `gaps`, `border`, `border.colours` and `hotkeys`. A misspelt key there makes the whole file invalid. `shape` needs both `columns` and `rows`, each at least 1.
 
@@ -8,7 +8,7 @@ Unknown keys are errors at the top level and in `fleets[]`, `gaps`, `border`, `b
 
 - Only administrators may write `C:\ProgramData\Daifuku`. `daifuku config` asks Windows for permission and opens the user's editor. From an administrator shell you may write the file directly, after the user has seen the change.
 - Never take ownership of the folder or give the user's account write access to it. The next install deletes a folder that is not locked to administrators, config included.
-- The daemon re-reads the file within two seconds of each save. `daifuku reload` (administrator terminal) applies it at once.
+- The daemon re-reads the file within two seconds of each save. `daifuku reload` applies it at once (from an administrator terminal when the daemon runs elevated). `elevated` is the exception: it takes effect only when `daifuku install` runs again.
 - An invalid file never takes Daifuku down. The daemon keeps the last valid config, or the defaults when it started with an invalid file. `daifuku doctor` prints `ok    config valid` or `FIX   config valid: <the error>`.
 - `daifuku schema` prints the JSON schema. Install writes `"$schema": "https://get-daifuku.vercel.app/schema.json"` into the starter config, so an editor that reads schemas completes and checks every key.
 
@@ -40,6 +40,7 @@ To check a draft without the daemon, run `daifuku config validate <path>`; witho
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `$schema` | string | none | Schema link for editors. Daifuku ignores it. |
+| `elevated` | bool | `false` | Start the daemon with administrator rights at sign-in, which fleets with `"admin": true` need. Takes effect at the next `daifuku install`, from an administrator terminal. Then the daemon commands need an administrator terminal too. Never set it without the user asking. |
 | `fleets` | list | one fleet with every default below | The fleets. |
 | `gaps` | object | see below | Spacing around and between terminals. |
 | `border` | object | see below | The status borders. |
@@ -58,7 +59,7 @@ To check a draft without the daemon, run `daifuku config validate <path>`; witho
 | `directory` | string | the user's profile folder | Where every terminal starts. `{n}` becomes the terminal's number, so `C:\src\site-{n}` gives each agent its own folder. A folder that does not exist falls back to the profile folder. |
 | `command` | string or `null` | `"claude"` | What each terminal runs, in a PowerShell that stays open after it (PowerShell 7 when installed in Program Files, else Windows PowerShell). `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | string | Windows Terminal's default profile | A Windows Terminal profile, by name. |
-| `admin` | bool | `true` | Open the terminals as administrator. The agent and every command it runs then run as administrator. With `false` they open as the user through the Secondary Logon service (seclogon), which must not be disabled; keep `command` under about 250 characters then. |
+| `admin` | bool | `false` | Open the terminals as administrator. Needs `"elevated": true`. The agent and every command it runs then run as administrator. With `false` and an elevated daemon they open as the user through the Secondary Logon service (seclogon), which must not be disabled; keep `command` under about 250 characters then. A daemon with the user's own rights opens them directly. |
 | `no_profile` | bool | `false` | With a `command`, start PowerShell without the user's profile script. |
 | `hotkey` | string or `null` | `"ctrl + alt + return"` | The key that opens this fleet or brings it back. Every fleet without the key gets the default, so a second fleet needs its own key or `null`. |
 | `with` | list of strings | none | Other fleets, by name, that open with this one, before it, so this one opens last. Their own `with` is not followed. A name that is not a fleet, or the fleet itself, is an error. |

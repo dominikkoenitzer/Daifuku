@@ -188,6 +188,30 @@ pub fn is_elevated(pid: u32) -> Option<bool> {
     }
 }
 
+/// Whether another process runs as the same account as this one, `None` if
+/// it cannot be asked.
+#[must_use]
+pub fn runs_as_this_user(pid: u32) -> Option<bool> {
+    // SAFETY: every handle is closed before returning.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut theirs = HANDLE::default();
+        let opened = OpenProcessToken(process, TOKEN_QUERY, &raw mut theirs);
+        let _ = CloseHandle(process);
+        opened.ok()?;
+        let mut own = HANDLE::default();
+        let same = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut own)
+            .is_ok()
+            .then(|| {
+                let same = same_user(theirs, own);
+                let _ = CloseHandle(own);
+                same
+            });
+        let _ = CloseHandle(theirs);
+        same
+    }
+}
+
 fn token_elevated(process: HANDLE) -> Option<bool> {
     // SAFETY: the token is closed before returning; the buffer is a
     // TOKEN_ELEVATION of the size passed.
@@ -424,6 +448,14 @@ mod tests {
     #[test]
     fn an_unknown_pid_has_no_ancestors() {
         assert!(ancestors(u32::MAX - 3).is_empty());
+    }
+
+    #[test]
+    fn this_process_runs_as_this_user_and_the_system_process_does_not() {
+        assert_eq!(runs_as_this_user(current()), Some(true));
+        // The System process (pid 4) runs as SYSTEM, which no test runs as;
+        // an ordinary process may not even open its token.
+        assert_ne!(runs_as_this_user(4), Some(true));
     }
 
     #[test]
