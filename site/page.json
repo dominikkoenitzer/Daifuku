@@ -1,7 +1,7 @@
 {
   "slug": "daifuku",
   "name": "Daifuku",
-  "url": "https://get-daifuku.vercel.app/",
+  "url": "https://daifuku.punds.ch/",
   "description": "Daifuku opens a grid of AI agent terminals with one key and colours each window's border by what its agent is doing.",
   "colours": {
     "light": {
