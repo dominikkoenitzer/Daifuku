@@ -17,14 +17,14 @@ Exit code 0 when every check passed, 1 otherwise. There is no JSON output.
 |---|---|
 | `installed in Program Files` | run `daifuku install` from an administrator terminal |
 | `Program Files folder on the machine PATH` | run `daifuku install` again |
-| `logon task registered` | run `daifuku install` |
+| `logon task registered` (only with an elevated config) | run `daifuku install` |
 | `Windows Terminal found` | `winget install Microsoft.WindowsTerminal` |
 | `config valid` | the parse error, or the file that cannot be read |
 | `administrator fleets have an elevated daemon` | set `"elevated": true` and run `daifuku install` again, or set `"admin": false` on the named fleets |
 | `Claude Code hooks present and current` | run `daifuku install`; or repair the named file first; or make a linked file a real file in the profile; or copy the hooks into the file `CLAUDE_CONFIG_DIR` points to |
 | `Codex hooks present and current` | the same, with `CODEX_HOME`; skipped when Codex's folder does not exist |
-| `daemon running` | sign out and in, or `schtasks /Run /TN \Daifuku\Daemon-<SID>` |
-| `daemon rights as the config asks` | run `daifuku install` again, which registers the logon task with the rights `elevated` asks for, and start the daemon through that task, not by hand |
+| `daemon running` | run `daifuku reload`, which starts it; an elevated daemon instead: sign out and in, or `schtasks /Run /TN \Daifuku\Daemon-<SID>` |
+| `daemon rights as the config asks` | an elevated daemon the config does not ask for: run `daifuku install` again, which stops it, removes any logon task and starts it with the user's own rights; a config with `"elevated": true` and a daemon without: run `daifuku install` again from an administrator terminal, which registers the logon task, and start the daemon through that task, not by hand |
 | `daemon up to date` | run `daifuku install` from the newer download; it restarts the daemon |
 | `hotkeys registered` | another program holds the named keys; pick others in the config |
 | `daemon answers` | a restart command, see "The daemon does not answer" |
@@ -49,13 +49,15 @@ The fixes name the user's real task name. `whoami /user` shows the SID.
 
 ## The daemon is not running
 
-Sign out and back in, or start the logon task:
+An ordinary daemon is started on demand: run `daifuku reload`, or let the next hook event or daemon command start it (`status` and `stop` do not). There is no logon task to run and no need to start `daifukud.exe` by hand.
+
+An elevated daemon (the config sets `"elevated": true`) starts through its logon task. Sign out and back in, or run the task:
 
 ```powershell
 schtasks /Run /TN "\Daifuku\Daemon-<SID>"
 ```
 
-Start the daemon through the logon task, not by running `daifukud.exe` yourself. The task starts it with the rights the config's `elevated` asked for at the last install; `daifuku doctor` reports a daemon whose rights differ.
+Start an elevated daemon through its logon task, not by running `daifukud.exe` yourself. The task starts it with the rights the config's `elevated` asked for at the last install; `daifuku doctor` reports a daemon whose rights differ.
 
 ## The daemon does not answer
 
@@ -63,10 +65,10 @@ Doctor waits about 20 seconds for a daemon busy with another command, such as op
 
 ```powershell
 taskkill /F /FI "SESSION eq <session>" /IM daifukud.exe
-schtasks /Run /TN "\Daifuku\Daemon-<SID>"
+daifuku reload
 ```
 
-When it answers nothing at all: `daifuku stop`, then the `schtasks` line.
+For an elevated daemon the second line is `schtasks /Run /TN "\Daifuku\Daemon-<SID>"` instead. When it answers nothing at all: `daifuku stop`, then that second line.
 
 ## A config change does not apply
 

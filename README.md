@@ -226,7 +226,7 @@ new folder.
 From an administrator terminal in its folder, `.\daifuku.exe install` does
 the same as the double click. `--no-hooks` leaves Claude Code's and Codex's
 settings alone, and `--no-start` stops a running daemon and
-leaves it to start at the next sign-in. `.\daifuku.exe install --dry-run`
+leaves it to start with the next `daifuku` command or agent hook. `.\daifuku.exe install --dry-run`
 lists every file, folder, `PATH` entry, task, hook and Settings entry it
 would create or change, and changes nothing; it runs from any terminal.
 
@@ -235,8 +235,8 @@ To install a build of your own, see [Build from source](#build-from-source).
 ## Your data, updates and removal
 
 Install copies Daifuku to `C:\Program Files\Daifuku`, lists it in Settings >
-Apps > Installed apps, adds that folder to the machine `PATH`, starts it at
-every logon, and adds its hooks to
+Apps > Installed apps, adds that folder to the machine `PATH`, starts it, and
+adds its hooks to
 `%USERPROFILE%\.claude\settings.json` (and to Codex's
 `%USERPROFILE%\.codex\hooks.json`, if Codex is installed). Your own hooks stay
 exactly as they are. Claude Code sessions that are already open normally pick
@@ -263,7 +263,7 @@ To remove Daifuku, open Settings > Apps > Installed apps, click the three
 dots next to Daifuku and choose Uninstall (on Windows 10, Settings > Apps >
 Apps & features, Daifuku, Uninstall). Windows asks for permission, and a
 window lists what was removed. Uninstall takes out the program, its entry in
-Settings, the `PATH` entry, the logon task and the hooks, and keeps your
+Settings, the `PATH` entry, any logon task and the hooks, and keeps your
 config, logs and saved state. From an administrator terminal,
 `daifuku uninstall` does the same, and `daifuku uninstall --purge` removes
 those too.
