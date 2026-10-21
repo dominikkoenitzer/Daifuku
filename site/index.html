@@ -436,9 +436,9 @@ footer p { margin: 0.3rem 0; }
 <h2 id="new-h" class="vh">Details</h2>
 <div class="grid2">
 <div class="card">
-<div class="num">Version 0.3.0</div>
+<div class="num">Version 0.4.0</div>
 <h3>What's new</h3>
-<ul><li><code>daifuku spawn --cell</code> puts an agent terminal in a free cell of a fleet, where it snaps and closes with the rest of the fleet.</li><li><code>daifuku close --terminal</code> closes one terminal by its label or its window.</li><li><code>daifuku restore</code> also brings back the terminals closed with their fleet, each in its own cell.</li><li>A resumed session keeps the fleet's command as it is around the agent, and Codex resumes with <code>codex resume</code>.</li></ul>
+<ul><li>The daemon and its fleets run with your own rights by default, and its commands work from an ordinary terminal.</li><li>Fleets that open as administrator need <code>"elevated": true</code> at the top of the config and <code>daifuku install</code> run again; <code>daifuku doctor</code> names any that lack it.</li></ul>
 </div>
 <div class="card">
 <div class="num">Requirements</div>
@@ -502,11 +502,11 @@ footer p { margin: 0.3rem 0; }
 </details>
 <details>
 <summary>Can I try it without an agent?</summary>
-<div class="answer"><p>Yes. <code>daifuku demo</code> from an administrator terminal opens six scripted agents.</p></div>
+<div class="answer"><p>Yes. <code>daifuku demo</code> opens six scripted agents.</p></div>
 </details>
 <details>
 <summary>Why does it need administrator rights?</summary>
-<div class="answer"><p>The daemon runs as administrator so that no ordinary program can change what it starts, and fleets open as administrator by default. <code>"admin": false</code> on a fleet opens its terminals as you.</p></div>
+<div class="answer"><p>To install and uninstall, which write to Program Files and the machine PATH. The daemon and its fleets then run with your own rights. With <code>"elevated": true</code> in the config, which only administrators can change, the daemon runs as administrator and fleets with <code>"admin": true</code> open as administrator.</p></div>
 </details>
 <details>
 <summary>Where does my data live?</summary>

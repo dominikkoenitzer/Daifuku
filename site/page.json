@@ -143,12 +143,10 @@
     "code": "{\n  \"fleets\": [\n    { \"name\": \"agents\", \"count\": 6, \"monitor\": \"portrait\" },\n    {\n      \"name\": \"site\",\n      \"count\": 4,\n      \"monitor\": \"primary\",\n      \"directory\": \"C:\\\\src\\\\site\",\n      \"hotkey\": \"ctrl + alt + w\"\n    }\n  ]\n}"
   },
   "new": {
-    "version": "0.3.0",
+    "version": "0.4.0",
     "items": [
-      "<code>daifuku spawn --cell</code> puts an agent terminal in a free cell of a fleet, where it snaps and closes with the rest of the fleet.",
-      "<code>daifuku close --terminal</code> closes one terminal by its label or its window.",
-      "<code>daifuku restore</code> also brings back the terminals closed with their fleet, each in its own cell.",
-      "A resumed session keeps the fleet's command as it is around the agent, and Codex resumes with <code>codex resume</code>."
+      "The daemon and its fleets run with your own rights by default, and its commands work from an ordinary terminal.",
+      "Fleets that open as administrator need <code>\"elevated\": true</code> at the top of the config and <code>daifuku install</code> run again; <code>daifuku doctor</code> names any that lack it."
     ]
   },
   "requirements": [
@@ -227,13 +225,13 @@
     {
       "q": "Can I try it without an agent?",
       "a": [
-        "Yes. <code>daifuku demo</code> from an administrator terminal opens six scripted agents."
+        "Yes. <code>daifuku demo</code> opens six scripted agents."
       ]
     },
     {
       "q": "Why does it need administrator rights?",
       "a": [
-        "The daemon runs as administrator so that no ordinary program can change what it starts, and fleets open as administrator by default. <code>\"admin\": false</code> on a fleet opens its terminals as you."
+        "To install and uninstall, which write to Program Files and the machine PATH. The daemon and its fleets then run with your own rights. With <code>\"elevated\": true</code> in the config, which only administrators can change, the daemon runs as administrator and fleets with <code>\"admin\": true</code> open as administrator."
       ]
     },
     {
