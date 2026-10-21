@@ -80,7 +80,7 @@ The program is an executable found on `PATH`, not a PowerShell line; for one, ru
 |---|---|---|
 | `daifuku install` | Install for this user, or update in place. | administrator terminal |
 | `daifuku install --no-hooks` | Install without touching Claude Code's or Codex's settings. | administrator terminal |
-| `daifuku install --no-start` | Stop a running daemon and do not start it again; it starts at the next sign-in. | administrator terminal |
+| `daifuku install --no-start` | Stop a running daemon and do not start it now; an ordinary daemon starts on demand with the next command or hook, an elevated one at the next sign-in. | administrator terminal |
 | `daifuku uninstall` | Remove the program, the `PATH` entry, the logon task and Daifuku's hooks. Keeps config, logs and saved state. | administrator terminal |
 | `daifuku uninstall --purge` | Also delete `C:\ProgramData\Daifuku` (config, logs and saved state) and `%LocalAppData%\Daifuku` (the logs and saved state of a daemon with the user's own rights). | administrator terminal |
 | `daifuku doctor` | Check the setup and print a fix for each problem. Exit code 0 when every check passes, 1 otherwise. | any terminal; for an elevated daemon, its rights and hotkey checks only from an administrator terminal |

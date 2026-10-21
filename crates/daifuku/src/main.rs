@@ -854,6 +854,52 @@ fn doctor_cmd(json: bool) -> ExitCode {
     }
 }
 
+/// Whether the config on disk asks for an elevated daemon. An elevated one
+/// may be started only without a prompt at logon by its task, never raised
+/// here, so the CLI leaves it to the task.
+#[cfg(windows)]
+fn config_wants_elevated() -> bool {
+    use daifuku_core::config::{self, Config};
+    daifuku_win::paths::config_file()
+        .and_then(|p| std::fs::read(&p).ok())
+        .and_then(|b| config::decode(&b).ok())
+        .and_then(|t| Config::from_json(&t).ok())
+        .is_some_and(|c| c.elevated)
+}
+
+/// Starts the daemon with this process's own rights when none is listening,
+/// for the default install that has no logon task. `daifukud.exe` sits next
+/// to this program. Returns whether the daemon answers afterwards.
+///
+/// An elevated daemon is never started here: it would need a prompt, and the
+/// config that asks for it keeps a logon task for exactly that reason.
+#[cfg(windows)]
+fn start_daemon() -> bool {
+    use daifuku_win::pipe::{Pipe, send};
+    if config_wants_elevated() {
+        return false;
+    }
+    let Some(daemon) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("daifukud.exe")))
+        .filter(|d| d.is_file())
+    else {
+        return false;
+    };
+    if install::start_daemon_process(&daemon).is_err() {
+        return false;
+    }
+    // Wait, but not for long, for it to begin listening.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if send(Pipe::Hook, "{}\n", std::time::Duration::from_millis(100)).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
 #[cfg(windows)]
 fn hook() {
     use daifuku_core::protocol::{HookMessage, to_line};
@@ -889,7 +935,13 @@ fn hook() {
     };
     // A short wait: an agent that waits for its hook must never notice a
     // daemon that is busy or not running.
-    let _ = send(Pipe::Hook, &line, std::time::Duration::from_millis(100));
+    let sent = send(Pipe::Hook, &line, std::time::Duration::from_millis(100));
+    // The default install has no logon task, so the first event of a session
+    // finds no daemon: start one and let the agent carry on. Later events
+    // find it running and pay nothing for this.
+    if matches!(&sent, Err(e) if e.kind() == std::io::ErrorKind::NotFound) && start_daemon() {
+        let _ = send(Pipe::Hook, &line, std::time::Duration::from_secs(1));
+    }
 }
 
 #[cfg(not(windows))]
@@ -1001,7 +1053,13 @@ fn control(request: &Request, json: bool) -> ExitCode {
             ExitCode::FAILURE
         };
     };
-    match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
+    let mut result = send(Pipe::Control, &line, std::time::Duration::from_secs(2));
+    // No logon task on the default install: the first command of a session
+    // starts the daemon, then asks again.
+    if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::NotFound) && start_daemon() {
+        result = send(Pipe::Control, &line, std::time::Duration::from_secs(2));
+    }
+    match result {
         Ok(Some(reply)) => answer(&reply, request, json),
         Ok(None) if json => fail_json(ErrorCode::Ipc, "the daemon did not answer"),
         Ok(None) => ExitCode::FAILURE,
