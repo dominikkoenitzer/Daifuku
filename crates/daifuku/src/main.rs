@@ -63,7 +63,7 @@ struct Format {
     name = "daifuku",
     version,
     about = "Fleets of agent terminals, in a grid, coloured by what each agent is doing.",
-    after_help = "The commands that talk to the daemon, open to stop, need an administrator terminal. From any other, status says only what it can tell without the daemon."
+    after_help = "The daemon runs with your own rights unless the config sets \"elevated\": true. Then the commands that talk to it, open to stop, need an administrator terminal, and from any other, status says only what it can tell without the daemon."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -220,8 +220,8 @@ enum Command {
         number: Option<usize>,
     },
     /// Show fleets, agents, hotkeys and the config in use. From a terminal
-    /// that is not elevated: whether Daifuku is installed and running, and
-    /// the config.
+    /// that is not elevated, when the daemon runs elevated: whether Daifuku
+    /// is installed and running, and the config.
     Status {
         #[command(flatten)]
         format: Format,
@@ -991,18 +991,9 @@ fn default_config_file() -> Result<std::path::PathBuf, (ErrorCode, String)> {
 
 #[cfg(windows)]
 fn control(request: &Request, json: bool) -> ExitCode {
-    use daifuku_core::protocol::{Response, from_line, to_line};
+    use daifuku_core::protocol::to_line;
     use daifuku_win::pipe::{Pipe, send};
 
-    // Without --json a failure prints on stderr, as it always has.
-    let fail = |code: ErrorCode, message: &str| {
-        if json {
-            fail_json(code, message)
-        } else {
-            eprintln!("daifuku: {message}");
-            ExitCode::FAILURE
-        }
-    };
     let Ok(line) = to_line(request) else {
         return if json {
             fail_json(ErrorCode::Internal, "could not write the request")
@@ -1010,17 +1001,37 @@ fn control(request: &Request, json: bool) -> ExitCode {
             ExitCode::FAILURE
         };
     };
-    let reply = match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
-        Ok(Some(reply)) => reply,
-        Ok(None) if json => return fail_json(ErrorCode::Ipc, "the daemon did not answer"),
-        Ok(None) => return ExitCode::FAILURE,
+    match send(Pipe::Control, &line, std::time::Duration::from_secs(2)) {
+        Ok(Some(reply)) => answer(&reply, request, json),
+        Ok(None) if json => fail_json(ErrorCode::Ipc, "the daemon did not answer"),
+        Ok(None) => ExitCode::FAILURE,
         Err(e) => {
             let elevated = daifuku_win::process::current_is_elevated();
             let message = control_error(&e, elevated, &command_line(request, json));
-            return fail(control_code(&e, elevated), &message);
+            control_failed(json, control_code(&e, elevated), &message)
         }
-    };
-    match from_line::<Response>(&reply) {
+    }
+}
+
+/// A failure of a command for the daemon: as JSON with --json, else on
+/// stderr, as it always has been.
+#[cfg(windows)]
+fn control_failed(json: bool, code: ErrorCode, message: &str) -> ExitCode {
+    if json {
+        fail_json(code, message)
+    } else {
+        eprintln!("daifuku: {message}");
+        ExitCode::FAILURE
+    }
+}
+
+/// Prints the daemon's `reply` to `request`.
+#[cfg(windows)]
+fn answer(reply: &str, request: &Request, json: bool) -> ExitCode {
+    use daifuku_core::protocol::{Response, from_line, to_line};
+
+    let fail = |code: ErrorCode, message: &str| control_failed(json, code, message);
+    match from_line::<Response>(reply) {
         Ok(Response::Ok { .. }) if json => {
             output::print_json(&output::Done { ok: true });
             ExitCode::SUCCESS
@@ -1081,15 +1092,25 @@ fn control(request: &Request, json: bool) -> ExitCode {
     }
 }
 
-/// `daifuku status`. The daemon answers only an elevated process, so from
-/// any other terminal it does not ask it: it reports what it can tell
-/// without the pipe and exits 0.
+/// `daifuku status`. A daemon with the user's own rights answers any of the
+/// user's terminals; an elevated one only an administrator terminal. So from
+/// a terminal that is not elevated, when the daemon does not answer it, this
+/// reports what it can tell without the pipe and exits 0.
 #[cfg(windows)]
 fn status_cmd(json: bool) -> ExitCode {
+    use daifuku_core::protocol::to_line;
+    use daifuku_win::pipe::{Pipe, send};
+
+    let request = Request::Status;
     if daifuku_win::process::current_is_elevated() {
-        return control(&Request::Status, json);
+        return control(&request, json);
     }
-    let status = local::gather(&install::Here, &command_line(&Request::Status, json));
+    if let Ok(line) = to_line(&request)
+        && let Ok(Some(reply)) = send(Pipe::Control, &line, std::time::Duration::from_secs(2))
+    {
+        return answer(&reply, &request, json);
+    }
+    let status = local::gather(&install::Here, &command_line(&request, json));
     let (text, code) = local::report(&status, json);
     println!("{text}");
     ExitCode::from(code)
@@ -1100,20 +1121,29 @@ fn status_cmd(json: bool) -> ExitCode {
     control(&Request::Status, json)
 }
 
-/// What to say when the daemon could not be asked. Only an elevated process
-/// may open the control pipe, as a request can open administrator terminals,
-/// so for any other process every failure but a missing daemon means Windows
-/// refused it. Then the message ends with `command`, the command to run again
-/// in an administrator terminal.
+/// What to say when the daemon could not be asked. An elevated daemon's
+/// control pipe admits only elevated processes, as a request can open
+/// administrator terminals; a daemon with the user's own rights admits the
+/// user's terminals. So when Windows itself refused the open from a terminal
+/// that is not elevated, the daemon runs elevated, and the message ends with
+/// `command`, the command to run again in an administrator terminal.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn control_error(e: &std::io::Error, elevated: bool, command: &str) -> String {
-    if !elevated && e.kind() != std::io::ErrorKind::NotFound {
+    if refused_by_windows(e, elevated) {
         format!(
-            "the daemon answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: {command}"
+            "the daemon runs elevated and answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: {command}"
         )
     } else {
         e.to_string()
     }
+}
+
+/// Whether Windows refused a terminal that is not elevated the control pipe,
+/// as it does an elevated daemon's. The client's own refusal of a server it
+/// does not trust is no Windows error code, and is said as it is.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn refused_by_windows(e: &std::io::Error, elevated: bool) -> bool {
+    !elevated && e.kind() == std::io::ErrorKind::PermissionDenied && e.raw_os_error().is_some()
 }
 
 /// The command line that sends `request`, as a person would type it, with
@@ -1241,7 +1271,7 @@ fn spawned_line(
 fn control_code(e: &std::io::Error, elevated: bool) -> ErrorCode {
     if e.kind() == std::io::ErrorKind::NotFound {
         ErrorCode::DaemonNotRunning
-    } else if !elevated {
+    } else if refused_by_windows(e, elevated) {
         ErrorCode::NotElevated
     } else {
         ErrorCode::Ipc
@@ -1613,7 +1643,23 @@ mod tests {
         let denied = std::io::Error::from_raw_os_error(5);
         assert_eq!(
             control_error(&denied, false, "daifuku status --json"),
-            "the daemon answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status --json"
+            "the daemon runs elevated and answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status --json"
+        );
+        // A daemon with the user's rights that is busy is said as it is: an
+        // administrator terminal would not help.
+        let busy = std::io::Error::new(std::io::ErrorKind::TimedOut, "Daifuku is busy");
+        assert_eq!(
+            control_error(&busy, false, "daifuku status"),
+            "Daifuku is busy"
+        );
+        // So is a server the client itself turned away.
+        let stranger = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the process answering is not the daemon",
+        );
+        assert_eq!(
+            control_error(&stranger, false, "daifuku status"),
+            "the process answering is not the daemon"
         );
         // A daemon that is not running is said as it is.
         let missing = std::io::Error::new(
@@ -1625,10 +1671,7 @@ mod tests {
             "Daifuku is not running; `daifuku doctor` says why"
         );
         // Elevated already, the terminal is not the problem.
-        let spoofed = std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "the process answering on Daifuku's control pipe is not the elevated daemon",
-        );
+        let spoofed = std::io::Error::from_raw_os_error(5);
         assert_eq!(
             control_error(&spoofed, true, "daifuku status"),
             spoofed.to_string()
@@ -2079,6 +2122,8 @@ mod tests {
         let denied = std::io::Error::from_raw_os_error(5);
         assert_eq!(control_code(&denied, false), ErrorCode::NotElevated);
         assert_eq!(control_code(&denied, true), ErrorCode::Ipc);
+        let busy = std::io::Error::new(std::io::ErrorKind::TimedOut, "busy");
+        assert_eq!(control_code(&busy, false), ErrorCode::Ipc);
     }
 
     #[test]

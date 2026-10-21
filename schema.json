@@ -53,7 +53,7 @@
           "monitor": "portrait",
           "area": "full",
           "command": "claude",
-          "admin": true,
+          "admin": false,
           "no_profile": false,
           "hotkey": "ctrl + alt + return"
         }
@@ -61,6 +61,11 @@
     },
     "sound": {
       "description": "Play Windows' Asterisk sound when an agent starts waiting for you,\nfor when you are not looking at the screen.",
+      "type": "boolean",
+      "default": false
+    },
+    "elevated": {
+      "description": "Start the daemon with administrator rights at sign-in, which fleets\nwith `\"admin\": true` need. Off, it runs with your own rights. Takes\neffect at the next `daifuku install`, which registers the logon task.",
       "type": "boolean",
       "default": false
     }
@@ -314,9 +319,9 @@
           ]
         },
         "admin": {
-          "description": "Open the terminals as administrator.",
+          "description": "Open the terminals as administrator. Needs `\"elevated\": true`.",
           "type": "boolean",
-          "default": true
+          "default": false
         },
         "no_profile": {
           "description": "Start PowerShell without the user's profile script.",

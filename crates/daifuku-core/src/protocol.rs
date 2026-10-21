@@ -6,9 +6,10 @@
 //!   whatever integrity the agent runs at. The worst a message can do is
 //!   colour a border, so any process of the signed-in user may write to it.
 //! - **The control pipe** takes [`Request`] from the command line. A request
-//!   can open a fleet of administrator terminals, so only an elevated process
-//!   may connect. The daemon runs elevated; letting an ordinary process drive
-//!   it would hand that process administrator rights.
+//!   can open a fleet of administrator terminals when the daemon runs
+//!   elevated, so then only an elevated process may connect; letting an
+//!   ordinary process drive it would hand that process administrator rights.
+//!   A daemon with the user's own rights lets in that user alone.
 
 use serde::{Deserialize, Serialize};
 
