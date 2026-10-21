@@ -1,12 +1,18 @@
 //! Where Daifuku keeps its files.
 //!
 //! The config lives in `%ProgramData%\Daifuku`, not in the user profile, and
-//! that is a security decision rather than a preference. The daemon runs
-//! elevated and the config says what it starts, so whoever can write the
-//! config can run anything as administrator. Every ordinary process can write
+//! that is a security decision rather than a preference. The daemon may run
+//! elevated and the config says what it starts and whether it is elevated, so
+//! whoever could write the config could run anything as administrator. Every
+//! ordinary process can write
 //! the user profile, including by deleting a protected file and putting a new
 //! one in its place, because the user owns the folder. `%ProgramData%\Daifuku`
 //! is created by the installer with write access for administrators only.
+//!
+//! A daemon with the user's own rights cannot write there, and needs no
+//! protection from the user: it keeps its state and logs under the user's
+//! local app data instead. An elevated daemon never reads anything from that
+//! folder.
 //!
 //! The paths come from the known folders API rather than the environment,
 //! which the user can change. `ProgramData` is the exception: the known folder
@@ -32,10 +38,29 @@ fn known(id: &windows::core::GUID) -> Option<PathBuf> {
     }
 }
 
-/// `%ProgramData%\Daifuku`: the config and the daemon's logs.
+/// `%ProgramData%\Daifuku`: the config, and the state and logs of an
+/// elevated daemon.
 #[must_use]
 pub fn data_dir() -> Option<PathBuf> {
     program_data().map(|p| p.join("Daifuku"))
+}
+
+/// `%LocalAppData%\Daifuku`: the state and logs of a daemon with the user's
+/// own rights, which cannot write [`data_dir`].
+#[must_use]
+pub fn user_data_dir() -> Option<PathBuf> {
+    known(&FOLDERID_LocalAppData).map(|p| p.join("Daifuku"))
+}
+
+/// Where a daemon keeps its state: [`data_dir`] when it is `elevated`, else
+/// [`user_data_dir`].
+#[must_use]
+pub fn state_dir(elevated: bool) -> Option<PathBuf> {
+    if elevated {
+        data_dir()
+    } else {
+        user_data_dir()
+    }
 }
 
 /// `ProgramData` at the root of the drive Windows is on.
@@ -62,16 +87,11 @@ pub fn config_file() -> Option<PathBuf> {
     data_dir().map(|p| p.join("daifuku.json"))
 }
 
-/// Where the daemon writes its log: next to the config when that folder is
-/// writable (an installed, elevated daemon), else under the user's local app
-/// data (a development run).
+/// Where the daemon writes its log: next to the config when it runs
+/// elevated, else under the user's local app data.
 #[must_use]
 pub fn log_dir(elevated: bool) -> Option<PathBuf> {
-    if elevated {
-        data_dir().map(|p| p.join("logs"))
-    } else {
-        known(&FOLDERID_LocalAppData).map(|p| p.join("Daifuku").join("logs"))
-    }
+    state_dir(elevated).map(|p| p.join("logs"))
 }
 
 /// `%ProgramFiles%\Daifuku`: where the installer puts the binaries.
@@ -132,6 +152,17 @@ mod tests {
             "{}",
             p.display()
         );
+    }
+
+    #[test]
+    fn only_an_elevated_daemon_keeps_its_state_and_logs_under_program_data() {
+        assert_eq!(state_dir(true), data_dir());
+        let mine = state_dir(false).unwrap();
+        assert_eq!(Some(mine.clone()), user_data_dir());
+        assert_ne!(Some(mine.clone()), data_dir());
+        assert!(mine.ends_with("Daifuku"), "{}", mine.display());
+        assert_eq!(log_dir(false), Some(mine.join("logs")));
+        assert_eq!(log_dir(true), data_dir().map(|p| p.join("logs")));
     }
 
     #[test]

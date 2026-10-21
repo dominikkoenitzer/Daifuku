@@ -239,8 +239,11 @@ jobs:
           if ($userWrite) { throw 'ordinary users can write ProgramData\Daifuku' }
           $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           $task = "\Daifuku\Daemon-$sid"
-          schtasks /Query /TN $task | Out-Null
+          $xml = schtasks /Query /TN $task /XML | Out-String
           if ($LASTEXITCODE -ne 0) { throw 'the logon task was not registered' }
+          # The starter config asks for no elevation, so the task runs with
+          # the user's own rights.
+          if ($xml -notmatch '<RunLevel>LeastPrivilege</RunLevel>') { throw "the logon task asks for more than the user's rights: $xml" }
           # The entry Settings > Apps lists it by, whose Uninstall runs the
           # installed copy.
           $entry = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku'

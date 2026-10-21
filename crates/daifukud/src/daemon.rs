@@ -149,15 +149,24 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
     let main_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
     let inbox = ipc::start(main_thread).context("could not open Daifuku's pipes")?;
 
-    // Only the installed daemon, elevated and on its own config, keeps its
-    // state: one run on another config, as the end-to-end tests run theirs,
-    // starts clean every time and leaves the installed one's state alone.
-    let keeps_state = elevated && config_override.is_none();
+    // Only the daemon on the installed config keeps its state: one run on
+    // another config, as the end-to-end tests run theirs, starts clean every
+    // time and leaves the installed one's state alone. Elevated, it keeps it
+    // next to the config; with the user's own rights, which cannot write
+    // there, under the user's local app data.
+    let keeps_state = config_override.is_none();
     let config_path = config_override
         .or_else(paths::config_file)
         .context("no ProgramData folder")?;
     let mut d = Daemon::new(config_path, elevated, events::Hooks::install());
-    if let Some(dir) = state_dir.or_else(|| paths::data_dir().filter(|_| keeps_state)) {
+    let own_dir = || {
+        let dir = paths::state_dir(elevated)?;
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(path = %dir.display(), error = %e, "no folder for the state");
+        }
+        Some(dir)
+    };
+    if let Some(dir) = state_dir.or_else(|| keeps_state.then(own_dir).flatten()) {
         let files = SavedFiles::in_dir(&dir, daifuku_win::setup::user_sid().as_deref());
         d.state_file = Some(files.state);
         d.peers_file = Some(files.peers);
