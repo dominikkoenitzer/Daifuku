@@ -43,15 +43,17 @@ fleets
 
 agents
   <state>  <time in state>  <window title>  (<window handle>)
+             in <the folder its session works in>
+             asks: <what it asks, while it waits>
 ```
 
-Agents are listed most urgent first: waiting, failed, working, done, and within each state the one in it longest first. Times read `41s`, `3m 12s`, `2h 5m`. `none open` and `none reporting` mean there is nothing in that list. A hotkey another program holds ends in `: refused, another program holds it`.
+Agents are listed most urgent first: waiting, failed, working, done, and within each state the one in it longest first. Times read `41s`, `3m 12s`, `2h 5m`. `none open` and `none reporting` mean there is nothing in that list. The `in` and `asks:` lines appear only when the agent's hooks reported them. A hotkey another program holds ends in `: refused, another program holds it`.
 
 ### `daifuku status --json`
 
 Prints one JSON object. Every character past ASCII is written as a `\u` escape, so it reads the same in any console code page. Check the exit code first: 0 only when the reply is not an error.
 
-Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`, and when known `label`, `fleet`, `session_id`), `peers` (each `window`, `label`, `directory`, `session_id`: the terminals `spawn` opened). An error reply is `{"result":"error","message":"..."}`.
+Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`, and when known `label`, `fleet`, `session_id`, `cwd` (the session's folder), `last_tool`, `last_message` (its last notification's text, such as what it asks permission for) and `transcript_path`), `peers` (each `window`, `label`, `directory`, `session_id`: the terminals `spawn` opened). An error reply is `{"result":"error","message":"..."}`.
 
 ### `daifuku status` from a terminal that is not elevated
 

@@ -732,19 +732,31 @@ impl Daemon {
             .agents
             .windows()
             .into_iter()
-            .map(|(w, state)| AgentWindow {
-                window: w,
-                title: window::title(w),
-                state,
-                for_seconds: window_since(&self.agents, &self.shown_since, w)
-                    .map_or(0, |t| t.elapsed().as_secs()),
-                label: self.label_of(w),
-                fleet: self
-                    .fleets
-                    .iter()
-                    .find(|f| f.slots.contains(&Some(w)))
-                    .map(|f| f.name.clone()),
-                session_id: shown_session(&self.agents, w, state),
+            .map(|(w, state)| {
+                let session_id = shown_session(&self.agents, w, state);
+                let detail = session_id
+                    .as_deref()
+                    .and_then(|s| self.agents.session_detail(s))
+                    .cloned()
+                    .unwrap_or_default();
+                AgentWindow {
+                    window: w,
+                    title: window::title(w),
+                    state,
+                    for_seconds: window_since(&self.agents, &self.shown_since, w)
+                        .map_or(0, |t| t.elapsed().as_secs()),
+                    label: self.label_of(w),
+                    fleet: self
+                        .fleets
+                        .iter()
+                        .find(|f| f.slots.contains(&Some(w)))
+                        .map(|f| f.name.clone()),
+                    session_id,
+                    cwd: detail.cwd,
+                    last_tool: detail.last_tool,
+                    last_message: detail.last_message,
+                    transcript_path: detail.transcript_path,
+                }
             })
             .collect();
         let fleets = self
