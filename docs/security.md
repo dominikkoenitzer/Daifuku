@@ -74,10 +74,14 @@ write to it.
 A message names a window and an event. A forged one can set the state
 Daifuku shows for any live top-level window: draw, recolour or remove its
 border, play the chime when sound is on, list it in `daifuku status`, and put
-it in the next key's queue, so that key brings it to the front. The daemon
-never starts anything because of a hook, ignores session and subagent ids
-longer than 128 bytes, lets one session have at most 32 threads waiting, and
-stops tracking new sessions past 512.
+it in the next key's queue, so that key brings it to the front. It can also
+set the folder, tool, notification text and transcript path `status` shows
+for its session: these are what the hook said, never checked and never used
+for anything but that listing. The daemon never starts anything because of a
+hook, ignores session and subagent ids longer than 128 bytes, lets one
+session have at most 32 threads waiting, keeps a folder or transcript path of
+at most 4096 bytes, a tool name of at most 128 and the first 1024 bytes of a
+notification's text, and stops tracking new sessions past 512.
 
 A message may also name the agent's process. The daemon believes it only
 when the pipe says the hook ran under that process: the hook waits, within

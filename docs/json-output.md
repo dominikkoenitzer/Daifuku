@@ -66,7 +66,21 @@ runs.
   "elevated": true,
   "hotkeys": ["ctrl + alt + return: open agents"],
   "fleets": [{ "name": "agents", "monitor": "portrait", "windows": [1050190, 984356] }],
-  "agents": [{ "window": 1050190, "title": "claude", "state": "waiting", "for_seconds": 73 }]
+  "agents": [
+    {
+      "window": 1050190,
+      "title": "claude",
+      "state": "waiting",
+      "for_seconds": 73,
+      "label": "agents 1",
+      "fleet": "agents",
+      "session_id": "0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80",
+      "cwd": "C:\\src\\site",
+      "last_tool": "Bash",
+      "last_message": "the agent needs your permission to use Bash",
+      "transcript_path": "C:\\src\\transcripts\\0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80.jsonl"
+    }
+  ]
 }
 ```
 
@@ -89,6 +103,10 @@ runs.
 | `agents[].label` | string | What to call it: the label `spawn` or `label` gave it, else its fleet's name and its number, such as `"agents 2"`. Left out when it has neither. |
 | `agents[].fleet` | string | The fleet it is in; left out when it is in none. |
 | `agents[].session_id` | string | The session whose state it shows, as the agent names it. |
+| `agents[].cwd` | string | The folder that session works in. Left out until one of its hooks names it, as are the three below. |
+| `agents[].last_tool` | string | The tool it ran last, or is running now. |
+| `agents[].last_message` | string | The text of its last notification, such as what it asks permission for; at most 1024 bytes. |
+| `agents[].transcript_path` | string | Its transcript file. |
 | `peers` | array of objects | Every terminal `daifuku spawn` opened that is still open. |
 | `peers[].window` | integer | Its window handle. |
 | `peers[].label` | string | Its label; left out when it has none. |

@@ -930,6 +930,8 @@ fn hook() {
     if event.transition() == Transition::Ignore {
         return;
     }
+    // A long notification must not make the line too long for the pipe.
+    event.trim();
     let Some((window, agent)) = console::terminal_window_of(process::current()) else {
         return;
     };
@@ -1599,6 +1601,9 @@ fn print_status(s: &daifuku_core::protocol::Status) {
             a.title,
             a.window
         );
+        for line in details(a) {
+            println!("           {line}");
+        }
     }
     if !s.peers.is_empty() {
         println!("\npeers");
@@ -1646,6 +1651,27 @@ fn by_urgency(
     sorted
 }
 
+/// The lines under an agent in `daifuku status`: the folder it works in,
+/// and what it asks while it waits. A notification's line breaks and other
+/// control characters become spaces, so the text stays on its line.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(cwd) = &a.cwd {
+        lines.push(format!("in {cwd}"));
+    }
+    if a.state == daifuku_core::state::AgentState::Waiting
+        && let Some(m) = &a.last_message
+    {
+        let m: String = m
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        lines.push(format!("asks: {}", m.trim()));
+    }
+    lines
+}
+
 /// `1 terminal`, `3 terminals`: how many terminals a fleet has.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn terminals(n: usize) -> String {
@@ -1682,6 +1708,10 @@ mod tests {
             label: None,
             fleet: None,
             session_id: None,
+            cwd: None,
+            last_tool: None,
+            last_message: None,
+            transcript_path: None,
         };
         let agents = [
             agent(1, AgentState::Done, 90),
@@ -1692,6 +1722,31 @@ mod tests {
         ];
         let order: Vec<u64> = by_urgency(&agents).iter().map(|a| a.window).collect();
         assert_eq!(order, [4, 2, 5, 3, 1]);
+    }
+
+    #[test]
+    fn status_says_where_an_agent_works_and_what_it_asks() {
+        use daifuku_core::protocol::AgentWindow;
+        use daifuku_core::state::AgentState;
+        let mut a = AgentWindow {
+            window: 1,
+            title: String::new(),
+            state: AgentState::Waiting,
+            for_seconds: 0,
+            label: None,
+            fleet: None,
+            session_id: None,
+            cwd: Some("site".into()),
+            last_tool: Some("Bash".into()),
+            last_message: Some("may I run\r\nthis? ".into()),
+            transcript_path: None,
+        };
+        assert_eq!(details(&a), ["in site", "asks: may I run  this?"]);
+        // Once it works again, the question is old news.
+        a.state = AgentState::Working;
+        assert_eq!(details(&a), ["in site"]);
+        a.cwd = None;
+        assert!(details(&a).is_empty());
     }
     use clap::CommandFactory;
 
