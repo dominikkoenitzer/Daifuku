@@ -242,8 +242,11 @@ jobs:
           $xml = schtasks /Query /TN $task /XML | Out-String
           if ($LASTEXITCODE -ne 0) { throw 'the logon task was not registered' }
           # The starter config asks for no elevation, so the task runs with
-          # the user's own rights.
-          if ($xml -notmatch '<RunLevel>LeastPrivilege</RunLevel>') { throw "the logon task asks for more than the user's rights: $xml" }
+          # the user's own rights. Task Scheduler leaves the default run level
+          # out of its export, so what proves it is that the highest one is
+          # not there, in an export that holds the task.
+          if ($xml -notmatch '<Principal ') { throw "the logon task's export holds no principal: $xml" }
+          if ($xml -match 'HighestAvailable') { throw "the logon task asks for more than the user's rights: $xml" }
           # The entry Settings > Apps lists it by, whose Uninstall runs the
           # installed copy.
           $entry = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku'
@@ -268,6 +271,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "the install from the zip exited with $LASTEXITCODE" }
           if ((Get-Content -Raw $settings) -ne $before) { throw 'a second install changed the settings' }
           if ((& $onPath) -ne 1) { throw "a second install left $dir on the machine PATH $(& $onPath) times" }
+
+          # Elevation is the config's to ask for, and install registers the
+          # task with the highest run level only then.
+          $config = Join-Path $data 'daifuku.json'
+          '{"elevated":true}' | Set-Content -Encoding utf8 $config
+          & (Join-Path $zip 'daifuku.exe') install --no-start --no-hooks | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "the install with elevation exited with $LASTEXITCODE" }
+          $xml = schtasks /Query /TN $task /XML | Out-String
+          if ($xml -notmatch '<RunLevel>HighestAvailable</RunLevel>') { throw "the config asked for elevation and the logon task does not: $xml" }
+          Write-Output 'logon task: the user''s rights by default, highest only when the config asks'
 
           & (Join-Path $dir 'daifuku.exe') uninstall --purge
           if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }
