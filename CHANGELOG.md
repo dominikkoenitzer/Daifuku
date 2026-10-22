@@ -9,6 +9,11 @@
   access of that folder, which every user may read. The daemon now writes
   them with an access list of their own that lets in only you, SYSTEM and
   Administrators.
+- Fleets that go on the same monitor and fill the same area share one grid
+  instead of each filling all of it on top of the others. Each takes its
+  cells in the order the fleets are listed, whether the others are open or
+  not, so six terminals and four more on a portrait monitor fill it two by
+  five. A fleet that goes where the cursor is keeps a grid of its own.
 
 ## 0.4.4, 2026-11-21
 
