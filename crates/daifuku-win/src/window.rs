@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use daifuku_core::Rect;
 use windows::Win32::Foundation::{
-    ERROR_TIMEOUT, GetLastError, HWND, LPARAM, RECT, WIN32_ERROR, WPARAM,
+    ERROR_TIMEOUT, GetLastError, HANDLE, HWND, LPARAM, RECT, WIN32_ERROR, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
@@ -31,12 +31,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetPropW, GetWindowRect,
     GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible,
-    IsZoomed, PostMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_RESTORE, SWP_ASYNCWINDOWPOS,
-    SWP_NOACTIVATE, SWP_NOZORDER, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
-    ShowWindow, ShowWindowAsync, WM_CLOSE, WM_NULL,
+    IsZoomed, PostMessageW, RemovePropW, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_RESTORE,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageTimeoutW, SetForegroundWindow,
+    SetPropW, SetWindowPos, ShowWindow, ShowWindowAsync, WM_CLOSE, WM_NULL,
 };
+use windows::core::{PCWSTR, w};
 
 use crate::monitor::rect;
 use crate::wide::from_wide;
@@ -427,6 +428,37 @@ pub fn close(w: u64) -> bool {
     unsafe { PostMessageW(Some(hwnd(w)), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok()
 }
 
+/// The window property that tells a tiling window manager to leave a window
+/// alone. Daifuku sets it on every terminal it places, so a tiler that
+/// honours it does not pull the terminal out of its cell.
+const NO_TILING: PCWSTR = w!("NoTiling");
+
+/// Marks the window as placed by Daifuku, or takes the mark off again.
+/// Returns whether the change reached the window.
+pub fn set_no_tiling(w: u64, on: bool) -> bool {
+    if on {
+        // SAFETY: the name is a static wide string; the value is a plain
+        // number stored in the property, never read as a pointer.
+        unsafe {
+            SetPropW(
+                hwnd(w),
+                NO_TILING,
+                Some(HANDLE(std::ptr::without_provenance_mut(1))),
+            )
+        }
+        .is_ok()
+    } else {
+        // SAFETY: as above; removing a property that is not there is harmless.
+        unsafe { RemovePropW(hwnd(w), NO_TILING) }.is_ok_and(|h| !h.is_invalid())
+    }
+}
+
+/// Whether the window carries the mark [`set_no_tiling`] sets.
+pub fn has_no_tiling(w: u64) -> bool {
+    // SAFETY: reading a property by a static wide-string name.
+    !unsafe { GetPropW(hwnd(w), NO_TILING) }.is_invalid()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,5 +507,42 @@ mod tests {
         assert!(!exists(0));
         assert!(frame(0).is_none());
         assert!(place(0, Rect::new(0, 0, 10, 10)).is_none());
+        assert!(!set_no_tiling(0, true));
+        assert!(!has_no_tiling(0));
+    }
+
+    #[test]
+    fn the_no_tiling_mark_goes_on_and_comes_off_again() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+        };
+        // A hidden window of this test's own, never shown or moved.
+        // SAFETY: a system class, static strings, no parent and no data.
+        let h = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!(""),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a hidden test window");
+        let w = raw(h);
+        assert!(!has_no_tiling(w));
+        assert!(set_no_tiling(w, true));
+        assert!(has_no_tiling(w));
+        assert!(set_no_tiling(w, false));
+        assert!(!has_no_tiling(w));
+        assert!(!set_no_tiling(w, false));
+        // SAFETY: the window was made on this thread just above.
+        unsafe { DestroyWindow(h) }.expect("the test window goes away");
     }
 }

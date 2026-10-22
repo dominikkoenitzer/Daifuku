@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Every terminal Daifuku places carries the window property `NoTiling` from
+  the moment its window is found, and loses it when Daifuku lets it go
+  while it stays open, so a tiling window manager that honours the property
+  leaves it in its cell. Terminals that only have a label never get it.
+
 ## 0.4.1, 2026-10-22
 
 - The ordinary install writes no logon task, and one an earlier version

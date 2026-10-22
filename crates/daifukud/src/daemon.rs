@@ -75,6 +75,9 @@ struct Daemon {
     /// Labels `daifuku label` gave terminals that are not peers, whose
     /// labels live in their [`Spawn`].
     labels: std::collections::HashMap<u64, String>,
+    /// The terminals carrying the mark that tells a tiling window manager to
+    /// leave them alone, as [`Daemon::mark_placed`] last set it.
+    marked: std::collections::BTreeSet<u64>,
     /// Peers that were open when Windows last stopped, for `daifuku restore`
     /// to open again.
     dormant: Vec<Spawn>,
@@ -248,6 +251,7 @@ impl Daemon {
             peers: Vec::new(),
             agent_processes: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
+            marked: std::collections::BTreeSet::new(),
             dormant: Vec::new(),
             dormant_boot: 0,
             closed: Vec::new(),
@@ -371,6 +375,12 @@ impl Daemon {
     }
 
     fn control(&mut self, request: &Request) -> Response {
+        let response = self.answer(request);
+        self.mark_placed();
+        response
+    }
+
+    fn answer(&mut self, request: &Request) -> Response {
         match request {
             Request::Open { fleet } => self.open(fleet.as_deref()),
             Request::Snap => self.snap(),
@@ -948,6 +958,7 @@ impl Daemon {
         if !dead.is_empty() {
             self.refresh_borders();
         }
+        self.mark_placed();
         self.save(false);
     }
 
@@ -1139,6 +1150,34 @@ impl Daemon {
         self.labels.retain(|&w, _| window::exists(w));
     }
 
+    /// The terminals Daifuku places: every fleet terminal and every peer. A
+    /// terminal that only has a label is someone's own and is not one.
+    fn placed(&self) -> std::collections::BTreeSet<u64> {
+        self.fleets
+            .iter()
+            .flat_map(OpenFleet::windows)
+            .chain(self.peers.iter().map(|p| p.window))
+            .collect()
+    }
+
+    /// Puts the mark that keeps a tiling window manager away on every
+    /// terminal Daifuku places, and takes it off one it let go that is
+    /// still open. A mark that did not reach its window is tried again on
+    /// the next call.
+    fn mark_placed(&mut self) {
+        let want = self.placed();
+        let (on, off) = mark_changes(&want, &self.marked);
+        for w in off {
+            window::set_no_tiling(w, false);
+            self.marked.remove(&w);
+        }
+        for w in on {
+            if window::set_no_tiling(w, true) {
+                self.marked.insert(w);
+            }
+        }
+    }
+
     /// Lets go of window `w`, which was destroyed: its agents, its cell in a
     /// fleet, its peer, which leaves the peers file, and its label. Says
     /// whether an agent was forgotten.
@@ -1156,6 +1195,9 @@ impl Daemon {
             self.save_peers();
         }
         self.labels.remove(&w);
+        // Its handle may come back on a new window, which must keep its own
+        // properties.
+        self.marked.remove(&w);
         self.drop_closed_fleets();
         forgot
     }
@@ -2095,6 +2137,18 @@ fn next_target<T: PartialEq + Copy>(
     })
 }
 
+/// The windows to mark and the ones to unmark so that exactly `want` carry
+/// the mark when `have` do now.
+fn mark_changes(
+    want: &std::collections::BTreeSet<u64>,
+    have: &std::collections::BTreeSet<u64>,
+) -> (Vec<u64>, Vec<u64>) {
+    (
+        want.difference(have).copied().collect(),
+        have.difference(want).copied().collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2361,6 +2415,30 @@ mod tests {
         assert_eq!(d.label_of(9), None);
         d.labels.insert(3, "lead".into());
         assert_eq!(d.label_of(3).as_deref(), Some("lead"));
+    }
+
+    #[test]
+    fn fleet_terminals_and_peers_are_marked_and_labelled_terminals_never() {
+        let mut d = daemon();
+        let mut record = OpenFleet::new("work");
+        record.slots = vec![Some(1), None, Some(3)];
+        d.fleets.push(record);
+        d.peers.push(Peer {
+            window: 7,
+            spawn: Spawn::default(),
+        });
+        d.labels.insert(9, "own".into());
+        let placed = d.placed();
+        assert_eq!(placed.iter().copied().collect::<Vec<_>>(), [1, 3, 7]);
+        assert!(!placed.contains(&9), "a labelled terminal is someone's own");
+    }
+
+    #[test]
+    fn a_terminal_let_go_loses_the_mark_and_a_new_one_gets_it() {
+        let have = [1, 3, 7].into_iter().collect();
+        let want = [1, 7, 11].into_iter().collect();
+        assert_eq!(mark_changes(&want, &have), (vec![11], vec![3]));
+        assert_eq!(mark_changes(&want, &want), (vec![], vec![]));
     }
 
     #[test]
