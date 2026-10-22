@@ -393,8 +393,13 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
         Duration::from_secs(15),
         || (!window::exists(second)).then_some(()),
     );
+    let front = window::foreground();
     let reopened = run(&["open", "e2e"]);
     assert!(reopened.contains("opened e2e (4 terminals"), "{reopened}");
+    expect_failure(
+        "daifuku open leaves the window in front where it was",
+        window::foreground() == front,
+    );
     let fleet = wait_for("the reopened fleet", Duration::from_secs(10), || {
         status()?
             .fleets
@@ -413,6 +418,50 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
             i + 1
         );
     }
+    steps += 1;
+
+    // Placing a maximised terminal restores it into its cell and leaves the
+    // window in front where it was, and so does a snap.
+    let (first, third) = (before[0], before[2]);
+    maximise(first);
+    wait_for(
+        "the first terminal to maximise",
+        Duration::from_secs(5),
+        || window::is_maximised(first).then_some(()),
+    );
+    assert!(
+        window::focus(third),
+        "the third terminal did not come to the front"
+    );
+    let front = window::foreground();
+    window::place(first, cells[0]);
+    assert_eq!(
+        window::frame(first),
+        Some(cells[0]),
+        "the maximised terminal is not back in its cell"
+    );
+    assert_eq!(
+        window::foreground(),
+        front,
+        "placing the maximised terminal took the foreground: {}",
+        describe(window::foreground())
+    );
+    maximise(first);
+    wait_for(
+        "the first terminal to maximise",
+        Duration::from_secs(5),
+        || window::is_maximised(first).then_some(()),
+    );
+    assert!(window::focus(third), "the third terminal did not come back");
+    let front = window::foreground();
+    let snapped = run(&["snap"]);
+    assert!(snapped.contains("snapped 4 terminals"), "{snapped}");
+    assert_eq!(
+        window::foreground(),
+        front,
+        "snap took the foreground: {}",
+        describe(window::foreground())
+    );
     steps += 1;
 
     // Closing the fleet takes every terminal down.
@@ -457,6 +506,17 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
     });
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
+}
+
+/// Maximises a window, as its maximise button would.
+fn maximise(w: u64) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SW_MAXIMIZE, ShowWindow};
+
+    // SAFETY: plain call on a handle.
+    unsafe {
+        let _ = ShowWindow(HWND(w as usize as *mut core::ffi::c_void), SW_MAXIMIZE);
+    }
 }
 
 /// A window as a line: handle, class, title and, for the foreground, which
@@ -1016,6 +1076,7 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         ],
     );
 
+    let front = window::foreground();
     let w = spawn(&[
         "--dir",
         &work.display().to_string(),
@@ -1026,6 +1087,10 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         "--area",
         "right",
     ]);
+    expect_failure(
+        "daifuku spawn leaves the window in front where it was",
+        window::foreground() == front,
+    );
     let first = ran_full(&dir, "");
     assert!(
         same_dir(&first.folder, &work),
