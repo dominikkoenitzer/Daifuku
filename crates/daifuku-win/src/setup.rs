@@ -10,17 +10,19 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SDDL_REVISION_1, SE_FILE_OBJECT,
+    SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, GetAce, GetTokenInformation,
-    IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
-    TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, GetAce,
+    GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, GetTokenInformation, IsWellKnownSid,
+    OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid,
+    WinLocalSystemSid,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateDirectoryW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-    MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW, READ_CONTROL,
+    MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 use windows::Win32::System::Threading::{
     CreateMutexW, GetCurrentProcess, OpenMutexW, OpenProcessToken, SYNCHRONIZATION_SYNCHRONIZE,
@@ -137,6 +139,124 @@ pub fn is_locked(dir: &Path) -> std::io::Result<bool> {
     trusted(dir)
 }
 
+/// The config's access list as install leaves it. SYSTEM and Administrators
+/// may do anything and every other user may read, as in the folder. When the
+/// daemon runs with the user's own rights, `writer`, that user's SID, may
+/// also read and write this one file: not delete or rename it, not change
+/// its access list or owner, and not create anything next to it. An
+/// elevated daemon's config gets no writer, since whoever could write it
+/// could run anything as administrator.
+#[must_use]
+pub fn config_sddl(writer: Option<&str>) -> String {
+    /// `FILE_GENERIC_READ` and `FILE_GENERIC_WRITE`, without `DELETE`,
+    /// `WRITE_DAC` or `WRITE_OWNER`.
+    const READ_WRITE: &str = "0x12019f";
+    let admins = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)";
+    match writer {
+        Some(sid) => format!("{admins}(A;;{READ_WRITE};;;{sid})"),
+        None => admins.to_owned(),
+    }
+}
+
+/// Whether `s` reads as a SID string and nothing else, so it cannot add an
+/// entry of its own to an access list it is put into.
+fn is_sid(s: &str) -> bool {
+    s.strip_prefix("S-1-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .split('-')
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// Gives the config at `file` the owner and access list [`config_sddl`]
+/// builds for `writer`. The file is opened without following a link, and a
+/// link or a folder there is refused, though in the locked folder only an
+/// administrator could have put one.
+///
+/// # Errors
+///
+/// When `writer` is not a SID, `file` cannot be opened or is not a plain
+/// file, or Windows refuses the change, as it does for a process that is not
+/// elevated.
+pub fn secure_config(file: &Path, writer: Option<&str>) -> std::io::Result<()> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+
+    if writer.is_some_and(|s| !is_sid(s)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the writer is not a SID",
+        ));
+    }
+    let handle = std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL.0 | WRITE_DAC.0 | WRITE_OWNER.0 | FILE_READ_ATTRIBUTES.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(file)?;
+    let attributes = handle.metadata()?.file_attributes();
+    if attributes & (FILE_ATTRIBUTE_REPARSE_POINT.0 | FILE_ATTRIBUTE_DIRECTORY.0) != 0 {
+        return Err(std::io::Error::other(format!(
+            "{} is not a plain file",
+            file.display()
+        )));
+    }
+    let sddl = to_wide(&config_sddl(writer));
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: the string is NUL terminated; owner and dacl point into sd,
+    // which is freed after the call that reads them.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &raw mut sd,
+            None,
+        )
+        .map_err(std::io::Error::other)?;
+        let mut owner = PSID::default();
+        let mut defaulted = windows::core::BOOL(0);
+        let mut present = windows::core::BOOL(0);
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let r = GetSecurityDescriptorOwner(sd, &raw mut owner, &raw mut defaulted)
+            .and_then(|()| {
+                GetSecurityDescriptorDacl(sd, &raw mut present, &raw mut dacl, &raw mut defaulted)
+            })
+            .map_err(std::io::Error::other)
+            .and_then(|()| {
+                let e = SetSecurityInfo(
+                    HANDLE(handle.as_raw_handle()),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION
+                        | DACL_SECURITY_INFORMATION
+                        | PROTECTED_DACL_SECURITY_INFORMATION,
+                    Some(owner),
+                    None,
+                    Some(dacl),
+                    None,
+                );
+                if e.is_ok() {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from_raw_os_error(
+                        i32::try_from(e.0).unwrap_or(-1),
+                    ))
+                }
+            });
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        r
+    }
+}
+
+/// Whether the config at `file` is a plain file, not a link, that only
+/// administrators can change, as install leaves an elevated daemon's. Reads,
+/// changes nothing.
+///
+/// # Errors
+///
+/// When `file` cannot be opened, `NotFound` when there is nothing there.
+pub fn config_is_locked(file: &Path) -> std::io::Result<bool> {
+    secured(file, false)
+}
+
 /// Whether `dir` is a real folder, not a link, owned by Administrators or
 /// SYSTEM, with an access list that lets no one else write, delete or change
 /// it. The folder is opened without following a link, so its answer is about
@@ -146,16 +266,27 @@ pub fn is_locked(dir: &Path) -> std::io::Result<bool> {
 ///
 /// When `dir` cannot be opened, `NotFound` when there is nothing there.
 fn trusted(dir: &Path) -> std::io::Result<bool> {
+    secured(dir, true)
+}
+
+/// Whether `path` is a folder when `folder`, else a file, and in either case
+/// not a link, owned by Administrators or SYSTEM, with an access list that
+/// lets no one else write, delete or change it.
+///
+/// # Errors
+///
+/// When `path` cannot be opened, `NotFound` when there is nothing there.
+fn secured(path: &Path, folder: bool) -> std::io::Result<bool> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;
 
     let file = std::fs::OpenOptions::new()
         .access_mode(READ_CONTROL.0 | FILE_READ_ATTRIBUTES.0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
-        .open(dir)?;
+        .open(path)?;
     let attributes = file.metadata()?.file_attributes();
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
-        || attributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+        || (attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0) != folder
     {
         return Ok(false);
     }
@@ -199,6 +330,12 @@ unsafe fn is_admin(sid: PSID) -> bool {
     }
 }
 
+/// Write data, append, write extended attributes, delete a child, write
+/// attributes, delete, change the access list, take ownership, and the
+/// generic write and all.
+const WRITE: u32 =
+    0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000 | 0x4000_0000;
+
 /// Whether every entry of the access list that grants a right to change the
 /// folder or what is in it grants it to Administrators or SYSTEM. An entry of
 /// a kind this does not read counts as granting everything.
@@ -207,19 +344,6 @@ unsafe fn is_admin(sid: PSID) -> bool {
 ///
 /// `dacl` must point to a valid ACL.
 unsafe fn only_admins_write(dacl: *mut ACL) -> bool {
-    /// Write data, append, write extended attributes, delete a child, write
-    /// attributes, delete, change the access list, take ownership, and the
-    /// generic write and all.
-    const WRITE: u32 = 0x2
-        | 0x4
-        | 0x10
-        | 0x40
-        | 0x100
-        | 0x1_0000
-        | 0x4_0000
-        | 0x8_0000
-        | 0x1000_0000
-        | 0x4000_0000;
     const ALLOWED: u8 = 0;
     const DENIED: u8 = 1;
     // SAFETY: as the caller promises; GetAce only hands out entries inside
@@ -569,6 +693,120 @@ mod tests {
         assert!(!link.exists());
         assert!(target.join("daifuku.json").is_file());
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Each entry of `sddl`'s access list that lets someone other than
+    /// Administrators or SYSTEM change the file: their SID and the rights.
+    fn writers(sddl: &str) -> Vec<(String, u32)> {
+        let w = to_wide(sddl);
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let mut out = Vec::new();
+        // SAFETY: as in secure_config; every entry is read inside the list.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(w.as_ptr()),
+                SDDL_REVISION_1,
+                &raw mut sd,
+                None,
+            )
+            .unwrap();
+            let mut present = windows::core::BOOL(0);
+            let mut defaulted = windows::core::BOOL(0);
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            GetSecurityDescriptorDacl(sd, &raw mut present, &raw mut dacl, &raw mut defaulted)
+                .unwrap();
+            assert!(present.as_bool() && !dacl.is_null());
+            for i in 0..u32::from((*dacl).AceCount) {
+                let mut ace: *mut std::ffi::c_void = std::ptr::null_mut();
+                GetAce(dacl, i, &raw mut ace).unwrap();
+                assert_eq!(
+                    (*ace.cast::<ACE_HEADER>()).AceType,
+                    0,
+                    "allowed entries only"
+                );
+                let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+                let sid = PSID((&raw const allowed.SidStart).cast_mut().cast());
+                if allowed.Mask & WRITE != 0 && !is_admin(sid) {
+                    let mut s = PWSTR::null();
+                    ConvertSidToStringSidW(sid, &raw mut s).unwrap();
+                    out.push((from_wide(s.as_wide()), allowed.Mask));
+                    let _ = LocalFree(Some(HLOCAL(s.0.cast())));
+                }
+            }
+            assert_eq!(only_admins_write(dacl), out.is_empty());
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+        }
+        out
+    }
+
+    #[test]
+    fn an_ordinary_daemons_config_is_writable_by_its_user_alone() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        let sddl = config_sddl(Some(sid));
+        assert!(sddl.starts_with("O:BAD:P"), "{sddl}");
+        let w = writers(&sddl);
+        assert_eq!(w.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), [sid]);
+        let mask = w[0].1;
+        // Write data and append, so an editor can save in place.
+        assert_eq!(mask & 0x6, 0x6, "{mask:#x}");
+        // Not delete, change the access list or take ownership.
+        assert_eq!(mask & (0x1_0000 | 0x4_0000 | 0x8_0000), 0, "{mask:#x}");
+        assert_eq!(mask & (0x1000_0000 | 0x4000_0000), 0, "{mask:#x}");
+    }
+
+    #[test]
+    fn an_elevated_daemons_config_is_writable_by_administrators_only() {
+        assert_eq!(writers(&config_sddl(None)), []);
+        assert_eq!(config_sddl(None), FOLDER_SDDL.replace("OICI", ""));
+    }
+
+    #[test]
+    fn only_a_sid_is_taken_as_the_writer() {
+        assert!(is_sid("S-1-5-21-1-2-3-1001"));
+        assert!(!is_sid("S-1-5-21-1)(A;;FA;;;WD"));
+        assert!(!is_sid("S-1-"));
+        assert!(!is_sid("S-1-5--1"));
+        assert!(!is_sid("BU"));
+        let file = std::env::temp_dir().join(format!("daifuku-sid-{}.json", std::process::id()));
+        std::fs::write(&file, "{}").unwrap();
+        let e = secure_config(&file, Some("WD")).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+        std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn a_config_this_user_made_is_not_locked_and_a_folder_is_no_config() {
+        let base = std::env::temp_dir().join(format!("daifuku-config-{}", std::process::id()));
+        std::fs::create_dir(&base).unwrap();
+        let file = base.join("daifuku.json");
+        std::fs::write(&file, "{}").unwrap();
+        // Unelevated this user owns it; elevated it inherits the temp
+        // folder's access list, which lets this user write.
+        assert!(!config_is_locked(&file).unwrap());
+        assert!(!config_is_locked(&base).unwrap());
+        assert!(secure_config(&base, None).is_err());
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            config_is_locked(&file).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn a_config_secured_for_its_user_is_open_and_without_a_writer_locked() {
+        // Setting the owner to Administrators needs an elevated process, as
+        // install is and as CI runs the tests.
+        if !crate::process::current_is_elevated() {
+            return;
+        }
+        let file = std::env::temp_dir().join(format!("daifuku-secure-{}.json", std::process::id()));
+        std::fs::write(&file, "{}").unwrap();
+        let sid = user_sid().unwrap();
+        secure_config(&file, Some(&sid)).unwrap();
+        assert!(!config_is_locked(&file).unwrap());
+        secure_config(&file, None).unwrap();
+        assert!(config_is_locked(&file).unwrap());
+        std::fs::remove_file(&file).unwrap();
     }
 
     #[test]
