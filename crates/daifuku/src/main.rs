@@ -1652,22 +1652,26 @@ fn by_urgency(
 }
 
 /// The lines under an agent in `daifuku status`: the folder it works in,
-/// and what it asks while it waits. A notification's line breaks and other
-/// control characters become spaces, so the text stays on its line.
+/// and what it asks while it waits. Both are what a hook said, so their line
+/// breaks and other control characters become spaces and each stays on its
+/// line.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
+    let one_line = |text: &str| -> String {
+        let text: String = text
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        text.trim().to_owned()
+    };
     let mut lines = Vec::new();
     if let Some(cwd) = &a.cwd {
-        lines.push(format!("in {cwd}"));
+        lines.push(format!("in {}", one_line(cwd)));
     }
     if a.state == daifuku_core::state::AgentState::Waiting
         && let Some(m) = &a.last_message
     {
-        let m: String = m
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        lines.push(format!("asks: {}", m.trim()));
+        lines.push(format!("asks: {}", one_line(m)));
     }
     lines
 }
@@ -1745,6 +1749,9 @@ mod tests {
         // Once it works again, the question is old news.
         a.state = AgentState::Working;
         assert_eq!(details(&a), ["in site"]);
+        // The folder is what a hook said too, so it cannot break the listing.
+        a.cwd = Some("C:\\src\nfake line\u{1b}[2J".into());
+        assert_eq!(details(&a), ["in C:\\src fake line [2J"]);
         a.cwd = None;
         assert!(details(&a).is_empty());
     }
