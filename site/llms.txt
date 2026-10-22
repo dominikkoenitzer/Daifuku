@@ -5,7 +5,7 @@
 Windows 10 and 11, with Windows Terminal. Works with Claude Code and Codex through their hooks.
 Border states: blue working, yellow waiting for the user, green done, red failed. Each state also has its own width.
 Default hotkeys: Ctrl+Alt+Enter opens a fleet of six terminals, Ctrl+Alt+N focuses the agent that has waited longest, Ctrl+Alt+Backspace puts terminals back in their cells, Ctrl+Alt+F4 closes every fleet.
-Install: download [daifuku.exe](/download/windows) and double-click it ([daifuku-arm64.exe](/download/windows-arm64) on ARM). It installs to C:\Program Files\Daifuku and starts at every sign-in.
+Install: download [daifuku.exe](/download/windows) and double-click it ([daifuku-arm64.exe](/download/windows-arm64) on ARM). It installs to C:\Program Files\Daifuku and starts the daemon; after that the first daifuku command or agent hook of a session starts it.
 Config: C:\ProgramData\Daifuku\daifuku.json, every key optional. `daifuku config` opens it, `daifuku doctor` checks the whole setup.
 
 ## Agent skill
