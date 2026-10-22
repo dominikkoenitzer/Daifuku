@@ -1996,6 +1996,7 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
             rows: 2,
         }),
     );
+    let half = Grid::plan(1, Area::Right.within(primary.work), Gaps::default(), None)[0];
     let dir_arg = work.display().to_string();
     let at = |args: &[&str]| {
         let mut all = vec!["--dir", dir_arg.as_str(), "--fleet", "crew"];
@@ -2028,6 +2029,27 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
             .filter(|&w| window::class(w) == daifuku_win::terminal::WINDOW_CLASS)
             .count()
     };
+    // A spawn with no cell, monitor or area that goes on the crew's half,
+    // outside its grid; it reports no session, so it takes none of the crew's.
+    let on_the_half = |what: &str| {
+        let _ = std::fs::remove_file(dir.join("ran-1.txt"));
+        events(false);
+        let reply = run(&["spawn", "--dir", &dir_arg, "--fleet", "crew", "--json"]);
+        let spawned = crate::json(&reply);
+        assert_eq!(spawned["area"], "right", "{reply}");
+        assert_eq!(spawned["monitor"], primary.device.as_str(), "{reply}");
+        assert!(spawned.get("cell").is_none(), "{reply}");
+        let w = spawned["window"].as_u64().unwrap();
+        ran_full(&dir, "1");
+        assert_in_cell(w, half, what);
+        events(true);
+        w
+    };
+    let close_by_window = |w: u64| {
+        let closed = run(&["close", "--terminal", &format!("{w:#x}")]);
+        assert!(closed.contains("closed"), "{closed}");
+        assert!(!window::exists(w));
+    };
 
     // The first peer takes the first cell and is the crew's first terminal,
     // numbered as it.
@@ -2057,6 +2079,13 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
     assert_eq!(terminals(), before, "a third terminal opened");
     steps += 1;
 
+    // Without --cell, a third goes on the full crew's half instead, and
+    // stays out of the crew.
+    let d = on_the_half("the peer beside the full crew");
+    assert_eq!(fleet_windows("crew"), vec![a, b]);
+    close_by_window(d);
+    steps += 1;
+
     // Snap puts a peer that was moved back in its cell, as any of the crew.
     let _ = window::place(a, daifuku_core::Rect::new(10, 10, 600, 400));
     run(&["snap"]);
@@ -2078,6 +2107,21 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
         unknown.contains("no terminal is called `nobody`"),
         "{unknown}"
     );
+    steps += 1;
+
+    // Without --cell, a peer takes the free cell of the open crew and is
+    // one of it.
+    let _ = std::fs::remove_file(dir.join("ran-1.txt"));
+    let (d, fleet, cell) = at(&["--label", "site"]);
+    assert_eq!((fleet.as_deref(), cell), (Some("crew"), Some(1)));
+    ran_full(&dir, "1");
+    assert_in_cell(d, cells[0], "the peer that joined the crew");
+    assert_eq!(fleet_windows("crew"), vec![d, b]);
+    let closed = run(&["close", "--terminal", "site"]);
+    assert!(closed.contains("closed site"), "{closed}");
+    wait_for("the crew to keep one again", Duration::from_secs(5), || {
+        (fleet_windows("crew") == vec![b]).then_some(())
+    });
     steps += 1;
 
     // A peer that asks for the first cell gets it back.
@@ -2137,6 +2181,7 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
         let w = p.window.expect("a restored window");
         assert!(window::exists(w));
         assert!(!crew.contains(&w), "{p:?} took a cell of the crew");
+        assert_in_cell(w, half, &format!("{} beside the crew", p.session_id));
     }
     assert_eq!(fleet_windows("crew"), crew, "the crew kept its terminals");
     steps += 1;
@@ -2152,6 +2197,13 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
     wait_for("nothing to be left", Duration::from_secs(15), || {
         status().filter(|s| s.peers.is_empty() && s.fleets.is_empty())
     });
+    steps += 1;
+
+    // With the crew closed, a peer without a cell still goes on its half,
+    // and the crew stays closed.
+    let d = on_the_half("the peer of the closed crew");
+    assert!(status().unwrap().fleets.is_empty(), "the crew opened");
+    close_by_window(d);
     steps += 1;
 
     stop(&mut cleanup);
