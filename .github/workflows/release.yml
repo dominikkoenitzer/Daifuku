@@ -296,8 +296,11 @@ jobs:
       # signatures only, which works whether or not real-time protection is
       # on and on ARM64 files as well, since nothing is run; it cannot say
       # what the behaviour scanner on a user's machine will make of an
-      # install. Exit 2 means a threat was found; 0 means clean. The engine's
-      # state is printed with the result.
+      # install. -DisableRemediation makes it ignore Defender's exclusions
+      # and look inside archives, so a runner that excludes its drives still
+      # scans these files, and a threat is reported rather than quarantined.
+      # Exit 2 means a threat was found; 0 means clean. The engine's state is
+      # printed with the result.
       - name: Defender scans the release files
         shell: pwsh
         run: |
@@ -324,7 +327,7 @@ jobs:
           foreach ($f in $files) {
               $hash = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
               Write-Output "scanning $f (sha256 $hash)"
-              & $mp -Scan -ScanType 3 -File $f
+              & $mp -Scan -ScanType 3 -File $f -DisableRemediation
               $code = $LASTEXITCODE
               Write-Output "MpCmdRun exit $code for $f"
               if ($code -eq 2) { throw "Defender found a threat in $f" }
