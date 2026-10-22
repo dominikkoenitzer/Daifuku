@@ -291,7 +291,7 @@ jobs:
           Get-Content "$exe.sha256"
 
       # The same scan CI runs on its own builds, here on the very files this
-      # run uploads: both single downloads, both zips, and the programs inside
+      # run uploads: both single downloads, both zips, and every file inside
       # each zip, taken out of the zip itself. It is a custom scan against the
       # signatures only, which works whether or not real-time protection is
       # on and on ARM64 files as well, since nothing is run; it cannot say
@@ -319,10 +319,9 @@ jobs:
               Expand-Archive -Path $zip -DestinationPath $out -Force
               $files += $zip
               foreach ($exe in 'daifuku.exe', 'daifukud.exe') {
-                  $path = Join-Path $out $exe
-                  if (-not (Test-Path $path)) { throw "$file holds no $exe" }
-                  $files += $path
+                  if (-not (Test-Path (Join-Path $out $exe))) { throw "$file holds no $exe" }
               }
+              $files += @(Get-ChildItem -Recurse -File -Path $out | ForEach-Object FullName)
           }
           foreach ($f in $files) {
               $hash = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
