@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use daifuku_core::Rect;
-use daifuku_core::config::{Config, Fleet, MonitorPick};
+use daifuku_core::config::{Area, Config, Fleet, MonitorPick};
 use daifuku_core::grid::Grid;
 use daifuku_core::monitor::{MonitorInfo, pick};
 use daifuku_core::peer::{Cell, Spawn, resume_command};
@@ -83,11 +83,10 @@ pub trait Desk {
     fn spawn(
         &mut self,
         base: &Fleet,
-        config: &Config,
         spawn: &Spawn,
         elevated: bool,
         taken: &[u64],
-        cell: Option<(usize, Rect)>,
+        spot: &Spot,
     ) -> anyhow::Result<u64>;
 
     /// Brings window `w` to the front, as [`window::focus`] does.
@@ -111,13 +110,12 @@ impl Desk for Live {
     fn spawn(
         &mut self,
         base: &Fleet,
-        config: &Config,
         spawn: &Spawn,
         elevated: bool,
         taken: &[u64],
-        cell: Option<(usize, Rect)>,
+        spot: &Spot,
     ) -> anyhow::Result<u64> {
-        self::spawn(base, config, spawn, elevated, taken, cell)
+        self::spawn(base, spawn, elevated, taken, spot)
     }
 
     fn focus(&mut self, w: u64) -> bool {
@@ -309,22 +307,24 @@ fn start_one(
 
 /// Opens one peer as `spawn` asks, from the fleet `base`: its command,
 /// profile and administrator setting. `taken` are the terminals Daifuku
-/// already knows, none of which can be the new one. `cell` is the slot of
-/// `base`'s grid it goes in and where that is, as [`cell_for`] found it,
-/// when it asked for one: it is then numbered as that cell's terminal of
-/// the fleet. Returns its window.
+/// already knows, none of which can be the new one. `spot` is where it goes,
+/// as [`spot`] found it: in a cell, it is numbered as that cell's terminal
+/// of the fleet. Returns its window.
 pub fn spawn(
     base: &Fleet,
-    config: &Config,
     spawn: &Spawn,
     elevated: bool,
     taken: &[u64],
-    cell: Option<(usize, Rect)>,
+    spot: &Spot,
 ) -> anyhow::Result<u64> {
     if base.admin && !elevated {
         return Err(needs_elevation(base));
     }
-    let n = cell.map_or(1, |(slot, _)| slot + 1);
+    let cell = match *spot {
+        Spot::Cell { slot, .. } => Some(slot),
+        Spot::Area { .. } | Spot::Loose => None,
+    };
+    let n = cell.map_or(1, |slot| slot + 1);
     let command = base
         .command
         .as_ref()
@@ -356,15 +356,91 @@ pub fn spawn(
     let w = start_one(&wt, &launch, base.admin, elevated, &known)?.ok_or_else(|| {
         anyhow!("Windows Terminal did not show the terminal in time; close it if it shows up late")
     })?;
-    if let Some((_, rect)) = cell {
+    if let Spot::Cell { rect, .. } | Spot::Area { rect, .. } = *spot {
         window::place(w, rect);
-    } else if let Some(fleet) = placement(base, spawn)
-        && let Ok((_, cells)) = cells(&fleet, config, None)
-        && let Some(&first) = cells.first()
-    {
-        window::place(w, first);
     }
     Ok(w)
+}
+
+/// Where a spawned peer goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Spot {
+    /// A cell of its fleet's grid: the slot it takes and where that is.
+    Cell { slot: usize, rect: Rect },
+    /// An area of a monitor, outside the grid.
+    Area {
+        device: String,
+        area: Area,
+        rect: Rect,
+    },
+    /// Where Windows Terminal opens it.
+    Loose,
+}
+
+/// Where a peer `spawn` asks for goes, from fleet `base`, whose record is
+/// `record`, empty when the fleet is not open. `beside` is set for a peer
+/// that asks for a cell and opens beside the grid when every cell is taken,
+/// rather than not at all. `None` when it asks for a cell and none is free.
+/// A peer that takes a cell gets its slot in `record`.
+///
+/// # Errors
+///
+/// When there is no monitor.
+pub fn spot(
+    base: &Fleet,
+    config: &Config,
+    spawn: &Spawn,
+    beside: bool,
+    record: &mut OpenFleet,
+) -> anyhow::Result<Option<Spot>> {
+    record.prune();
+    spot_on(
+        base,
+        config,
+        spawn,
+        beside,
+        record,
+        &monitor::monitors(),
+        monitor::cursor(),
+    )
+}
+
+/// [`spot`] on `monitors` with the cursor at `cursor`, for a record whose
+/// closed terminals are pruned already.
+fn spot_on(
+    base: &Fleet,
+    config: &Config,
+    spawn: &Spawn,
+    beside: bool,
+    record: &mut OpenFleet,
+    monitors: &[MonitorInfo],
+    cursor: (i32, i32),
+) -> anyhow::Result<Option<Spot>> {
+    let open = record.windows().next().is_some();
+    let cell = spawn
+        .cell
+        .or_else(|| (open && !spawn.placed()).then_some(Cell::Free));
+    if let Some(cell) = cell {
+        match plan_cell(base, config, record, cell, monitors, cursor)? {
+            Some((slot, rect)) => return Ok(Some(Spot::Cell { slot, rect })),
+            None if spawn.cell.is_some() && !beside => return Ok(None),
+            None => {}
+        }
+    }
+    let Some(fleet) = placement(base, spawn, !config.fleets.is_empty()) else {
+        return Ok(Some(Spot::Loose));
+    };
+    let stay_on = (open && spawn.monitor.is_none()).then_some(record.monitor.as_str());
+    let (m, cells) =
+        plan(&fleet, config, stay_on, monitors, cursor).ok_or_else(|| anyhow!("no monitor"))?;
+    let Some(&rect) = cells.first() else {
+        return Ok(Some(Spot::Loose));
+    };
+    Ok(Some(Spot::Area {
+        device: m.device,
+        area: fleet.area,
+        rect,
+    }))
 }
 
 /// The slot of `slots` a peer that asks for `cell` takes: the one it names
@@ -382,30 +458,11 @@ fn free_slot(slots: &[Option<u64>], cell: Cell) -> Option<usize> {
 /// the fleet's record, empty when the fleet is not open: its slot and where
 /// it is, or `None` when every cell has a terminal in it. The record is
 /// brought in line with the fleet's terminals, count and monitor first, as
-/// opening the fleet would.
+/// opening the fleet would. Its closed terminals are pruned already.
 ///
 /// # Errors
 ///
 /// When there is no monitor.
-pub fn cell_for(
-    fleet: &Fleet,
-    config: &Config,
-    record: &mut OpenFleet,
-    cell: Cell,
-) -> anyhow::Result<Option<(usize, Rect)>> {
-    record.prune();
-    plan_cell(
-        fleet,
-        config,
-        record,
-        cell,
-        &monitor::monitors(),
-        monitor::cursor(),
-    )
-}
-
-/// [`cell_for`] on `monitors` with the cursor at `cursor`, for a record
-/// whose closed terminals are pruned already.
 fn plan_cell(
     fleet: &Fleet,
     config: &Config,
@@ -501,17 +558,25 @@ fn group_for(
     Ok(Some((exe, priority)))
 }
 
-/// A fleet of one with the monitor and area a peer asked for, the base
-/// fleet's monitor when it named only an area, or `None` when it asked for
-/// neither and stays where Windows Terminal opens it.
-fn placement(base: &Fleet, spawn: &Spawn) -> Option<Fleet> {
-    spawn.placed().then(|| Fleet {
+/// A fleet of one with the monitor and area a peer asked for: the base
+/// fleet's monitor when it named only an area, the whole monitor when it
+/// named only a monitor, and the base fleet's monitor and area when it named
+/// neither. `None` when it named neither and the config has no fleet, so it
+/// stays where Windows Terminal opens it.
+fn placement(base: &Fleet, spawn: &Spawn, has_fleet: bool) -> Option<Fleet> {
+    let area = match (&spawn.monitor, spawn.area) {
+        (_, Some(area)) => area,
+        (Some(_), None) => Area::Full,
+        (None, None) if has_fleet => base.area,
+        (None, None) => return None,
+    };
+    Some(Fleet {
         count: 1,
         monitor: spawn
             .monitor
             .clone()
             .unwrap_or_else(|| base.monitor.clone()),
-        area: spawn.area.unwrap_or_default(),
+        area,
         shape: None,
         ..base.clone()
     })
@@ -1027,8 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_is_placed_only_when_it_asks_for_a_monitor_or_an_area() {
-        use daifuku_core::config::Area;
+    fn a_peer_is_placed_where_it_asks_else_on_its_fleet_s_monitor_and_area() {
         let base = Fleet {
             area: Area::Left,
             count: 4,
@@ -1043,13 +1107,18 @@ mod tests {
             area,
             ..Spawn::default()
         };
-        assert!(placement(&base, &at(None, None)).is_none());
-        let one = placement(&base, &at(None, Some(Area::Right))).unwrap();
+        assert!(placement(&base, &at(None, None), false).is_none());
+        let own = placement(&base, &at(None, None), true).unwrap();
+        assert_eq!(
+            (own.count, own.monitor, own.area, own.shape),
+            (1, MonitorPick::Landscape, Area::Left, None)
+        );
+        let one = placement(&base, &at(None, Some(Area::Right)), true).unwrap();
         assert_eq!(
             (one.count, one.monitor, one.area, one.shape),
             (1, MonitorPick::Landscape, Area::Right, None)
         );
-        let whole = placement(&base, &at(Some(MonitorPick::Primary), None)).unwrap();
+        let whole = placement(&base, &at(Some(MonitorPick::Primary), None), true).unwrap();
         assert_eq!(
             (whole.monitor, whole.area),
             (MonitorPick::Primary, Area::Full)
@@ -1114,6 +1183,186 @@ mod tests {
         wide.slots = vec![None, None, None, Some(7)];
         assert_eq!(take(&mut wide, Cell::At(4)), Some((0, all[0])));
         assert_eq!(wide.slots.len(), 3);
+    }
+
+    fn crew_monitors() -> [MonitorInfo; 2] {
+        [
+            MonitorInfo {
+                device: r"\\.\DISPLAY1".into(),
+                bounds: Rect::new(0, 0, 3840, 2160),
+                work: Rect::new(0, 0, 3840, 2112),
+                dpi: 144,
+                primary: true,
+            },
+            MonitorInfo {
+                device: r"\\.\DISPLAY2".into(),
+                bounds: Rect::new(-1080, -600, 0, 1320),
+                work: Rect::new(-1080, -600, 0, 1272),
+                dpi: 96,
+                primary: false,
+            },
+        ]
+    }
+
+    fn crew_config(monitor: &str) -> Config {
+        Config::from_json(&format!(
+            r#"{{"fleets":[{{"name":"crew","count":3,"monitor":"{monitor}","area":"right",
+                "shape":{{"columns":1,"rows":3}}}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    fn right_half() -> Spot {
+        Spot::Area {
+            device: r"\\.\DISPLAY1".into(),
+            area: Area::Right,
+            rect: Rect::new(1944, 24, 3816, 2088),
+        }
+    }
+
+    #[test]
+    fn a_peer_without_a_cell_joins_its_open_fleet_in_a_free_cell() {
+        let config = crew_config("landscape");
+        let crew = config.fleet("crew").unwrap();
+        let monitors = crew_monitors();
+        let (_, all) = plan(crew, &config, None, &monitors, (0, 0)).unwrap();
+        let mut record = record(r"\\.\DISPLAY1", vec![Some(1), None, None]);
+        let got = spot_on(
+            crew,
+            &config,
+            &Spawn::default(),
+            false,
+            &mut record,
+            &monitors,
+            (0, 0),
+        );
+        assert_eq!(
+            got.unwrap(),
+            Some(Spot::Cell {
+                slot: 1,
+                rect: all[1]
+            })
+        );
+    }
+
+    #[test]
+    fn a_peer_without_a_cell_goes_on_its_fleet_s_area_when_the_fleet_is_full_or_closed() {
+        let config = crew_config("landscape");
+        let crew = config.fleet("crew").unwrap();
+        let monitors = crew_monitors();
+        let mut full = record(r"\\.\DISPLAY1", vec![Some(1), Some(2), Some(3)]);
+        let got = spot_on(
+            crew,
+            &config,
+            &Spawn::default(),
+            false,
+            &mut full,
+            &monitors,
+            (0, 0),
+        );
+        assert_eq!(got.unwrap(), Some(right_half()), "full");
+        assert_eq!(full.slots, vec![Some(1), Some(2), Some(3)]);
+        let mut closed = OpenFleet::new("crew");
+        let got = spot_on(
+            crew,
+            &config,
+            &Spawn::default(),
+            false,
+            &mut closed,
+            &monitors,
+            (0, 0),
+        );
+        assert_eq!(got.unwrap(), Some(right_half()), "closed");
+        assert!(closed.slots.is_empty(), "a closed fleet is not opened");
+    }
+
+    #[test]
+    fn a_full_fleet_on_the_cursor_s_monitor_keeps_its_peer_on_its_own_monitor() {
+        let config = crew_config("cursor");
+        let crew = config.fleet("crew").unwrap();
+        let monitors = crew_monitors();
+        let mut full = record(r"\\.\DISPLAY1", vec![Some(1), Some(2), Some(3)]);
+        let elsewhere = (-500, 0);
+        let got = spot_on(
+            crew,
+            &config,
+            &Spawn::default(),
+            false,
+            &mut full,
+            &monitors,
+            elsewhere,
+        );
+        assert_eq!(got.unwrap(), Some(right_half()));
+    }
+
+    #[test]
+    fn a_monitor_or_an_area_a_peer_asks_for_wins_over_its_fleet() {
+        let config = crew_config("landscape");
+        let crew = config.fleet("crew").unwrap();
+        let monitors = crew_monitors();
+        let open = || record(r"\\.\DISPLAY1", vec![Some(1), None, None]);
+        let left = Spawn {
+            area: Some(Area::Left),
+            ..Spawn::default()
+        };
+        let mut r = open();
+        let got = spot_on(crew, &config, &left, false, &mut r, &monitors, (0, 0));
+        assert_eq!(
+            got.unwrap(),
+            Some(Spot::Area {
+                device: r"\\.\DISPLAY1".into(),
+                area: Area::Left,
+                rect: Rect::new(24, 24, 1896, 2088),
+            })
+        );
+        assert_eq!(r.slots, open().slots);
+        let portrait = Spawn {
+            monitor: Some(MonitorPick::Portrait),
+            ..Spawn::default()
+        };
+        let mut r = open();
+        let got = spot_on(crew, &config, &portrait, false, &mut r, &monitors, (0, 0));
+        assert_eq!(
+            got.unwrap(),
+            Some(Spot::Area {
+                device: r"\\.\DISPLAY2".into(),
+                area: Area::Full,
+                rect: Grid::plan(1, monitors[1].work, config.gaps, None)[0],
+            })
+        );
+        assert_eq!(r.slots, open().slots);
+    }
+
+    #[test]
+    fn a_peer_with_no_fleet_in_the_config_stays_where_windows_terminal_opens_it() {
+        let config = Config::from_json(r#"{"fleets":[]}"#).unwrap();
+        let mut r = OpenFleet::new("");
+        let got = spot_on(
+            &Fleet::default(),
+            &config,
+            &Spawn::default(),
+            false,
+            &mut r,
+            &crew_monitors(),
+            (0, 0),
+        );
+        assert_eq!(got.unwrap(), Some(Spot::Loose));
+    }
+
+    #[test]
+    fn a_peer_asking_for_a_cell_of_a_full_fleet_opens_beside_it_only_when_restored() {
+        let config = crew_config("landscape");
+        let crew = config.fleet("crew").unwrap();
+        let monitors = crew_monitors();
+        let cell = Spawn {
+            cell: Some(Cell::Free),
+            ..Spawn::default()
+        };
+        let mut full = record(r"\\.\DISPLAY1", vec![Some(1), Some(2), Some(3)]);
+        let got = spot_on(crew, &config, &cell, false, &mut full, &monitors, (0, 0));
+        assert_eq!(got.unwrap(), None);
+        let got = spot_on(crew, &config, &cell, true, &mut full, &monitors, (0, 0));
+        assert_eq!(got.unwrap(), Some(right_half()));
     }
 
     #[test]

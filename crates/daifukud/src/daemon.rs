@@ -1530,48 +1530,39 @@ impl Daemon {
             .flat_map(OpenFleet::windows)
             .chain(self.peers.iter().map(|p| p.window))
             .collect();
-        // A peer in a cell joins its fleet's record, open or not yet, and
-        // takes a slot of it: placed, snapped and closed with the fleet.
-        let mut joined = None;
-        if let Some(cell) = spawn.cell {
-            let mut record = self
-                .fleets
-                .iter()
-                .position(|f| f.name.eq_ignore_ascii_case(&base.name))
-                .map_or_else(|| OpenFleet::new(&base.name), |i| self.fleets.remove(i));
-            let planned = fleet::cell_for(&base, &self.config, &mut record, cell);
-            match planned {
-                Ok(Some(slot)) => joined = Some((record, slot)),
-                Ok(None) if restoring => {
-                    tracing::info!(fleet = %base.name, "no free cell for a restored peer, opening it beside");
-                    self.keep_fleet(record);
-                }
-                Ok(None) => {
-                    let message = fleet::no_free_cell(&base.name, record.slots.len());
-                    self.keep_fleet(record);
-                    return Response::error(message);
-                }
-                Err(e) => {
-                    self.keep_fleet(record);
-                    return Response::error(format!("{e:#}"));
-                }
+        // A peer in a cell joins its fleet's record, open or not yet, as does
+        // one with no place of its own while the fleet is open: it takes a
+        // slot of it, placed, snapped and closed with the fleet.
+        let mut record = self
+            .fleets
+            .iter()
+            .position(|f| f.name.eq_ignore_ascii_case(&base.name))
+            .map_or_else(|| OpenFleet::new(&base.name), |i| self.fleets.remove(i));
+        let spot = match fleet::spot(&base, &self.config, spawn, restoring, &mut record) {
+            Ok(Some(spot)) => spot,
+            Ok(None) => {
+                let message = fleet::no_free_cell(&base.name, record.slots.len());
+                self.keep_fleet(record);
+                return Response::error(message);
             }
+            Err(e) => {
+                self.keep_fleet(record);
+                return Response::error(format!("{e:#}"));
+            }
+        };
+        if restoring && spawn.cell.is_some() && !matches!(spot, fleet::Spot::Cell { .. }) {
+            tracing::info!(fleet = %base.name, "no free cell for a restored peer, opening it beside");
         }
-        let cell = joined.as_ref().map(|(_, slot)| *slot);
-        let opened = self
-            .desk
-            .spawn(&base, &self.config, spawn, self.elevated, &taken, cell);
+        let opened = self.desk.spawn(&base, spawn, self.elevated, &taken, &spot);
         let mut kept = spawn.clone();
         let mut in_fleet = None;
-        if let Some((mut record, (slot, _))) = joined {
-            if let Ok(window) = opened {
-                record.slots[slot] = Some(window);
-                let number = u32::try_from(slot + 1).unwrap_or(u32::MAX);
-                kept.cell = Some(peer::Cell::At(number));
-                in_fleet = Some((record.name.clone(), number));
-            }
-            self.keep_fleet(record);
+        if let (Ok(window), fleet::Spot::Cell { slot, .. }) = (&opened, &spot) {
+            record.slots[*slot] = Some(*window);
+            let number = u32::try_from(slot + 1).unwrap_or(u32::MAX);
+            kept.cell = Some(peer::Cell::At(number));
+            in_fleet = Some((record.name.clone(), number));
         }
+        self.keep_fleet(record);
         match opened {
             Ok(window) => {
                 tracing::info!(window = format!("{window:#x}"), label = ?spawn.label, fleet = ?in_fleet, "spawned a peer");
@@ -1582,11 +1573,17 @@ impl Daemon {
                 self.save_peers();
                 self.refresh_borders();
                 let (fleet, cell) = in_fleet.unzip();
+                let (monitor, area) = match spot {
+                    fleet::Spot::Area { device, area, .. } => (Some(device), Some(area)),
+                    fleet::Spot::Cell { .. } | fleet::Spot::Loose => (None, None),
+                };
                 Response::Spawned {
                     window,
                     label: spawn.label.clone(),
                     fleet,
                     cell,
+                    monitor,
+                    area,
                 }
             }
             Err(e) => Response::error(format!("{e:#}")),
@@ -3104,11 +3101,10 @@ mod tests {
         fn spawn(
             &mut self,
             _: &daifuku_core::config::Fleet,
-            _: &Config,
             _: &Spawn,
             _: bool,
             _: &[u64],
-            _: Option<(usize, daifuku_core::Rect)>,
+            _: &fleet::Spot,
         ) -> anyhow::Result<u64> {
             Ok(self.window())
         }
