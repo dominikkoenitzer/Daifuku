@@ -118,6 +118,9 @@ pub struct Facts {
     pub data_locked: Option<bool>,
     /// Whether the data folder holds a config.
     pub config_exists: bool,
+    /// Whether the config kept could be written by someone other than
+    /// administrators, as install leaves an ordinary daemon's for its user.
+    pub config_open: bool,
     /// The config the daemon runs on after the install: the one kept, or
     /// the starter one. `None` when the one kept does not read.
     pub config: Option<Config>,
@@ -171,8 +174,13 @@ pub enum Step {
     AddToPath { dir: PathBuf, present: bool },
     /// Lock the data folder to administrators; `found` as [`Facts::data_locked`].
     DataFolder { dir: PathBuf, found: Option<bool> },
-    /// Keep the config, or write the starter one when there is none.
-    Config { file: PathBuf, write: bool },
+    /// Keep the config, or write the starter one when there is none, and
+    /// let `writer`, a user's SID, write it as well as administrators.
+    Config {
+        file: PathBuf,
+        write: bool,
+        writer: Option<String>,
+    },
     /// Register this user's logon task, which starts the daemon with
     /// administrator rights only when `elevated`.
     RegisterTask {
@@ -284,8 +292,15 @@ impl Facts {
             })
             .collect();
         let config_exists = data.join("daifuku.json").is_file();
+        let kept = config_exists && data_locked == Some(true);
+        // One that cannot be read counts as open.
+        let config_open = kept
+            && !matches!(
+                setup::config_is_locked(&data.join("daifuku.json")),
+                Ok(true)
+            );
         // A folder that is not locked goes, config and all.
-        let config = if config_exists && data_locked == Some(true) {
+        let config = if kept {
             read_config(&data.join("daifuku.json")).ok()
         } else {
             Some(Config::default())
@@ -303,6 +318,7 @@ impl Facts {
             exe: this,
             installed: to.is_dir(),
             config_exists,
+            config_open,
             config,
             terminal: terminal::find().is_some(),
             from,
@@ -410,13 +426,19 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
         dir: facts.data.clone(),
         found: facts.data_locked,
     });
+    // A config that does not read asks for nothing.
+    let asked = facts.config.as_ref().is_some_and(|c| c.elevated);
     steps.push(Step::Config {
         file: facts.data.join("daifuku.json"),
         // A folder that is not locked goes, config and all.
         write: !(facts.config_exists && facts.data_locked == Some(true)),
+        // The user may change what a daemon with their own rights starts,
+        // never what an elevated one does.
+        writer: (!asked).then(|| facts.sid.clone()),
     });
-    // A config that does not read asks for nothing.
-    let elevated = facts.config.as_ref().is_some_and(|c| c.elevated);
+    // Any process of the user could have asked for elevation in a config
+    // they could write. It is locked now, and the next install trusts it.
+    let elevated = asked && !facts.config_open;
     let name = task_name(&facts.sid);
     if elevated {
         // An elevated daemon can only be started without a prompt at logon,
@@ -436,7 +458,9 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
         // starts it on demand, so no logon task is written. Remove one an
         // earlier install left (`delete_task` ignores a task that is gone).
         steps.push(Step::RemoveTask { name });
-        if !options.no_start {
+        // The command line starts no daemon for a config that asks for an
+        // elevated one, and neither does install.
+        if !options.no_start && !asked {
             steps.push(Step::StartDaemon {
                 daemon: facts.to.join("daifukud.exe"),
             });
@@ -590,10 +614,26 @@ impl Step {
                 dir,
                 Some("locked to administrators".into()),
             )],
-            Self::Config { file, write: true } => {
-                vec![at("write_config", file, Some("the starter config".into()))]
+            Self::Config {
+                file,
+                write,
+                writer,
+            } => {
+                let who = if writer.is_some() {
+                    "writable by you"
+                } else {
+                    "writable by administrators only"
+                };
+                if *write {
+                    vec![at(
+                        "write_config",
+                        file,
+                        Some(format!("the starter config, {who}")),
+                    )]
+                } else {
+                    vec![at("keep_config", file, Some(who.into()))]
+                }
             }
-            Self::Config { file, write: false } => vec![at("keep_config", file, None)],
             Self::RegisterTask {
                 name,
                 daemon,
@@ -741,6 +781,9 @@ pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
     if let Some(note) = facts.config.as_ref().and_then(admin_without_elevation) {
         plan.notes.push(note);
     }
+    if let Some(note) = elevation_held_back(&facts) {
+        plan.notes.push(note.into());
+    }
     Ok(plan)
 }
 
@@ -761,6 +804,15 @@ fn admin_without_elevation(config: &Config) -> Option<String> {
             if admin.len() == 1 { "it" } else { "them" },
         )
     })
+}
+
+/// What to say when the config asks for an elevated daemon but could be
+/// written without administrator rights until this install locked it, so
+/// the install starts no daemon; `None` when it does not.
+fn elevation_held_back(facts: &Facts) -> Option<&'static str> {
+    (facts.config_open && facts.config.as_ref().is_some_and(|c| c.elevated)).then_some(
+        "the config asks for \"elevated\": true but could be changed without administrator rights, so this install only locks it to administrators and starts no daemon: check it with `daifuku config`, then run `daifuku install` again",
+    )
 }
 
 /// The config in `file`, as the daemon reads it.
@@ -804,6 +856,10 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
         println!(
             "\nWindows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)."
         );
+    }
+    if let Some(note) = elevation_held_back(&facts) {
+        println!("\nNote: {note}.");
+        return Ok(());
     }
     // From the config on disk, which an update keeps, so the key named is
     // the one the daemon registers.
@@ -882,12 +938,24 @@ fn run(step: &Step) -> anyhow::Result<()> {
             }
         }
         // Asked again: the folder may just have gone, config and all.
-        Step::Config { file, .. } => {
+        Step::Config { file, writer, .. } => {
             if file.is_file() {
                 println!("kept config  {}", file.display());
             } else {
                 std::fs::write(file, starter_config())?;
                 println!("wrote config {}", file.display());
+            }
+            match setup::secure_config(file, writer.as_deref()) {
+                Ok(()) => {}
+                // Only the right to edit it without a prompt is missing.
+                Err(e) if writer.is_some() => println!(
+                    "config       only administrators may change it ({e}); `daifuku config` asks for permission"
+                ),
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("could not lock {} to administrators", file.display())
+                    });
+                }
             }
         }
         Step::RegisterTask {
@@ -1821,6 +1889,7 @@ mod tests {
             installed: false,
             data_locked: None,
             config_exists: false,
+            config_open: false,
             config: Some(Config::default()),
             sid: SID.into(),
             legacy_task_ours: false,
@@ -1963,6 +2032,66 @@ mod tests {
         f.data_locked = Some(false);
         f.config = Some(Config::default());
         assert_eq!(task_of(&f), None);
+    }
+
+    /// Whom the plan lets write the config besides administrators.
+    fn config_writer(facts: &Facts) -> Option<String> {
+        install_plan(facts, &ALL)
+            .into_iter()
+            .find_map(|s| match s {
+                Step::Config { writer, .. } => Some(writer),
+                _ => None,
+            })
+            .expect("every install has a config step")
+    }
+
+    #[test]
+    fn an_ordinary_daemons_config_is_left_writable_by_the_user_who_installs() {
+        assert_eq!(config_writer(&fresh()).as_deref(), Some(SID));
+        let mut kept = installed();
+        assert_eq!(config_writer(&kept).as_deref(), Some(SID));
+        // One that does not read asks for nothing, and the user may fix it.
+        kept.config = None;
+        assert_eq!(config_writer(&kept).as_deref(), Some(SID));
+        let plan = install_plan(&installed(), &ALL);
+        let step = plan.iter().find(|s| matches!(s, Step::Config { .. }));
+        assert_eq!(
+            step.unwrap().describe()[0].detail.as_deref(),
+            Some("writable by you")
+        );
+    }
+
+    #[test]
+    fn an_elevated_daemons_config_is_locked_to_administrators() {
+        let mut f = installed();
+        f.config = Some(Config::from_json(r#"{"elevated": true}"#).unwrap());
+        assert_eq!(config_writer(&f), None);
+        assert!(task_of(&f).is_some_and(|(elevated, _)| elevated));
+        assert_eq!(elevation_held_back(&f), None);
+    }
+
+    #[test]
+    fn elevation_from_a_config_the_user_could_write_waits_for_the_next_install() {
+        let mut f = installed();
+        f.config = Some(Config::from_json(r#"{"elevated": true}"#).unwrap());
+        f.config_open = true;
+        // Locked now, and trusted with no task and no daemon until then.
+        assert_eq!(config_writer(&f), None);
+        assert_eq!(task_of(&f), None);
+        let steps = names(&install_plan(&f, &ALL));
+        assert!(steps.contains(&"remove_task"), "{steps:?}");
+        assert!(!steps.contains(&"start_task"), "{steps:?}");
+        assert!(!steps.contains(&"start_daemon"), "{steps:?}");
+        let note = elevation_held_back(&f).unwrap();
+        assert!(note.contains("run `daifuku install` again"), "{note}");
+        // The next install finds it locked.
+        f.config_open = false;
+        assert!(task_of(&f).is_some_and(|(elevated, _)| elevated));
+        // An open config that asks for nothing is simply kept open.
+        f.config = Some(Config::default());
+        f.config_open = true;
+        assert_eq!(elevation_held_back(&f), None);
+        assert_eq!(config_writer(&f).as_deref(), Some(SID));
     }
 
     #[test]
