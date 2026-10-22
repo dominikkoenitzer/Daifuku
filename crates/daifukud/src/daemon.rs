@@ -2122,6 +2122,51 @@ mod tests {
     }
 
     #[test]
+    fn status_lists_what_the_shown_session_last_said() {
+        use daifuku_core::state::HookEvent;
+        let mut d = daemon();
+        let event = |session: &str, name: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: name.into(),
+            ..HookEvent::default()
+        };
+        d.agents.apply(
+            5,
+            &HookEvent {
+                tool_name: Some("Bash".into()),
+                cwd: Some(r"C:\src\site".into()),
+                transcript_path: Some(r"C:\t\asks.jsonl".into()),
+                ..event("asks", "PreToolUse")
+            },
+        );
+        d.agents.apply(
+            5,
+            &HookEvent {
+                notification_type: Some("permission_prompt".into()),
+                message: Some("may I run Bash".into()),
+                ..event("asks", "Notification")
+            },
+        );
+        // A second tab in the same window, working elsewhere.
+        d.agents.apply(
+            5,
+            &HookEvent {
+                tool_name: Some("Edit".into()),
+                cwd: Some(r"C:\src\other".into()),
+                ..event("works", "PreToolUse")
+            },
+        );
+        let status = d.status();
+        let a = status.agents.iter().find(|a| a.window == 5).unwrap();
+        assert_eq!(a.state, AgentState::Waiting);
+        assert_eq!(a.session_id.as_deref(), Some("asks"));
+        assert_eq!(a.cwd.as_deref(), Some(r"C:\src\site"));
+        assert_eq!(a.last_tool.as_deref(), Some("Bash"));
+        assert_eq!(a.last_message.as_deref(), Some("may I run Bash"));
+        assert_eq!(a.transcript_path.as_deref(), Some(r"C:\t\asks.jsonl"));
+    }
+
+    #[test]
     fn a_fleet_whose_terminals_are_all_closed_is_no_longer_open() {
         let mut d = daemon();
         let mut record = OpenFleet::new("agents");
