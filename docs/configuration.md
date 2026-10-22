@@ -6,9 +6,14 @@ picks up every saved change by itself within two seconds; `daifuku reload`
 applies one at once.
 
 The folder is writable by administrators only, on purpose: the config says
-what the daemon starts and whether it runs elevated. So `daifuku config` asks
-Windows for permission before it opens the editor, unless the terminal is an
-administrator terminal already.
+what the daemon starts and whether it runs elevated. While the daemon runs
+with your own rights, install lets you, and no other user, write the config
+file itself, so `daifuku config` opens it at once. A config that sets
+`"elevated": true` is writable by administrators only, so then `daifuku
+config` asks Windows for permission before it opens the editor, unless the
+terminal is an administrator terminal already. Turning elevation on takes two
+installs: the first locks the config you wrote and starts no daemon, the
+second, after you checked it, registers the elevated one.
 
 Every key is optional. An empty file, or no file, is one fleet of six
 terminals running `claude` on the monitor turned on its side, opened by a

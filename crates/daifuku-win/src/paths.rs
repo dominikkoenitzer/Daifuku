@@ -8,6 +8,9 @@
 //! the user profile, including by deleting a protected file and putting a new
 //! one in its place, because the user owns the folder. `%ProgramData%\Daifuku`
 //! is created by the installer with write access for administrators only.
+//! So is the config in it while it asks for an elevated daemon. For an
+//! ordinary daemon the installer also lets the user who installs write that
+//! one file, which gives that user nothing their own daemon does not have.
 //!
 //! A daemon with the user's own rights cannot write there, and needs no
 //! protection from the user: it keeps its state and logs under the user's

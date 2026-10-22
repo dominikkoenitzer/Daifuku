@@ -45,9 +45,10 @@ scripted ones.
 
 Every key is optional, and the defaults work without editing. To change
 them, `daifuku config` opens `C:\ProgramData\Daifuku\daifuku.json` in your
-editor for `.json` files, or Notepad when there is none. Only administrators
-may write that folder, so from an ordinary terminal Windows asks for
-permission first. The daemon picks up every saved change within two seconds;
+editor for `.json` files, or Notepad when there is none. While the daemon
+runs with your own rights, install lets you write that file. Once it sets
+`"elevated": true` only administrators may, so from an ordinary terminal
+Windows asks for permission first. The daemon picks up every saved change within two seconds;
 `daifuku reload` from an administrator terminal applies it at once.
 
 Do not take ownership of the folder or give your account write access to it:
@@ -301,14 +302,14 @@ Windows PC without installing a runtime.
 
 ## Security
 
-The daemon runs with your own rights unless the config, which only
-administrators can write, sets `"elevated": true`. An elevated daemon runs as
+The daemon runs with your own rights unless the config sets
+`"elevated": true`. An elevated daemon runs as
 administrator, so nothing an ordinary program can change decides what it
 starts:
 
 - the binaries live in `Program Files`;
 - the config lives in a folder only administrators can write, owned by the
-  Administrators group;
+  Administrators group, and is writable by administrators only;
 - its commands arrive on a pipe only elevated processes can open;
 - Windows Terminal is found through its package and PowerShell through the
   system folders, never through `PATH`.

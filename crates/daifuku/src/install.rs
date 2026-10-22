@@ -19,7 +19,10 @@
 //! 4. Lock `%ProgramData%\Daifuku` to administrators, for the same reason
 //!    as the binaries, and write a starter config there if there is none. A
 //!    folder there that an earlier install did not lock is removed first,
-//!    config and all.
+//!    config and all. The config is the installing user's to edit while the
+//!    daemon runs with that user's rights, and administrators' alone when it
+//!    asks for an elevated one. A config that user could write and that asks
+//!    for elevation is only locked; the next install trusts it.
 //! 5. Start the daemon. By default it runs with the user's own rights and is
 //!    started on demand by the CLI or a hook, so no logon task is written and
 //!    one an earlier install left is removed. When the config says
