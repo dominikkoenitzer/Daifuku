@@ -21,6 +21,12 @@
   is doing without reading its terminal. These are `cwd`, `last_message`,
   `last_tool` and `transcript_path`, each left out until a hook of the
   session names it.
+- Other accounts on the same PC can no longer read the saved state and the
+  peers file an elevated daemon keeps in `ProgramData\Daifuku`, which name
+  your sessions, your fleets and the folders `daifuku spawn` opened. Both
+  took the access of that folder, which every user may read. The daemon now
+  writes them with an access list of their own that lets in only you,
+  SYSTEM and Administrators.
 
 ## 0.4.1, 2026-10-22
 
