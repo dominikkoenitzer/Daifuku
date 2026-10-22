@@ -700,9 +700,10 @@ fn uninstall_from_settings(purge: bool) -> ExitCode {
 }
 
 /// Opens the config in the program Windows opens `.json` files with, or in
-/// Notepad, and returns the file. Only administrators may change the config,
-/// so from a terminal that is not elevated the editor starts after the
-/// Windows prompt.
+/// Notepad, and returns the file. An elevated daemon's config only
+/// administrators may change, so from a terminal that is not elevated the
+/// editor starts after the Windows prompt; an ordinary daemon's the user may
+/// write, and the editor starts with the user's own rights.
 #[cfg(windows)]
 fn edit_config() -> anyhow::Result<std::path::PathBuf> {
     use anyhow::Context;
@@ -715,15 +716,15 @@ fn edit_config() -> anyhow::Result<std::path::PathBuf> {
             file.display()
         );
     }
-    let elevated = process::current_is_elevated();
+    let prompt = !process::current_is_elevated() && !writable(&file);
     let notepad = paths::system_dir().map(|d| d.join("notepad.exe"));
     let quoted = format!("\"{}\"", file.display());
     let mut last = None;
     for editor in elevate::opens(".json").into_iter().chain(notepad) {
-        let started = if elevated {
-            elevate::run(&editor, &quoted)
-        } else {
+        let started = if prompt {
             elevate::run_elevated(&editor, &quoted)
+        } else {
+            elevate::run(&editor, &quoted)
         };
         match started {
             Ok(()) => return Ok(file),
@@ -737,6 +738,13 @@ fn edit_config() -> anyhow::Result<std::path::PathBuf> {
         || anyhow::anyhow!("found no editor"),
         |e| anyhow::anyhow!("could not open an editor: {e}"),
     ))
+}
+
+/// Whether this process may write `file`. Opened for writing and closed
+/// again, which changes nothing in it.
+#[cfg(windows)]
+fn writable(file: &std::path::Path) -> bool {
+    std::fs::OpenOptions::new().write(true).open(file).is_ok()
 }
 
 #[cfg(not(windows))]
@@ -2195,6 +2203,25 @@ mod tests {
         assert_eq!(control_code(&denied, true), ErrorCode::Ipc);
         let busy = std::io::Error::new(std::io::ErrorKind::TimedOut, "busy");
         assert_eq!(control_code(&busy, false), ErrorCode::Ipc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_config_the_user_may_write_opens_without_a_prompt() {
+        let file = std::env::temp_dir().join(format!("daifuku-config-{}.json", std::process::id()));
+        std::fs::write(&file, "{}").unwrap();
+        assert!(writable(&file));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{}");
+        let mut read_only = std::fs::metadata(&file).unwrap().permissions();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(&file, read_only.clone()).unwrap();
+        assert!(!writable(&file));
+        // On Windows this clears the read-only attribute and nothing more.
+        #[allow(clippy::permissions_set_readonly_false)]
+        read_only.set_readonly(false);
+        std::fs::set_permissions(&file, read_only).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert!(!writable(&file));
     }
 
     #[test]
