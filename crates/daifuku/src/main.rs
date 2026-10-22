@@ -1653,14 +1653,20 @@ fn by_urgency(
 
 /// The lines under an agent in `daifuku status`: the folder it works in,
 /// and what it asks while it waits. Both are what a hook said, so their line
-/// breaks and other control characters become spaces and each stays on its
-/// line.
+/// breaks, other control characters and the bidi controls, which reorder how
+/// a line reads, become spaces and each stays on its line.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
     let one_line = |text: &str| -> String {
         let text: String = text
             .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
+            .map(|c| {
+                let bidi = matches!(
+                    c,
+                    '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                );
+                if c.is_control() || bidi { ' ' } else { c }
+            })
             .collect();
         text.trim().to_owned()
     };
@@ -1752,6 +1758,16 @@ mod tests {
         // The folder is what a hook said too, so it cannot break the listing.
         a.cwd = Some("C:\\src\nfake line\u{1b}[2J".into());
         assert_eq!(details(&a), ["in C:\\src fake line [2J"]);
+        // Nor reorder what the rest of the line reads like.
+        a.cwd = Some("C:\\src\\\u{202e}gpj.exe".into());
+        assert_eq!(details(&a), ["in C:\\src\\ gpj.exe"]);
+        for c in [
+            '\u{61c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            a.cwd = Some(format!("a{c}b"));
+            assert_eq!(details(&a), ["in a b"], "{:#x}", c as u32);
+        }
         a.cwd = None;
         assert!(details(&a).is_empty());
     }
