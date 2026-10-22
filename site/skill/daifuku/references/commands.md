@@ -58,7 +58,7 @@ Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`
 One line, for example:
 
 ```text
-daifuku 0.4.0 installed, daemon running, logon task registered, config valid (C:\ProgramData\Daifuku\daifuku.json); fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status
+daifuku 0.4.1 installed, daemon running, logon task registered, config valid (C:\ProgramData\Daifuku\daifuku.json); fleets, agents and hotkeys need an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: daifuku status
 ```
 
 With `--json`, one object: `result` (`"local_status"`), `version` (this `daifuku`), `installed`, `installed_version` (null when not known), `daemon_running` (a `daifukud.exe` process in this session), `logon_task`, `config` (the path), `config_exists`, `config_valid` (true when there is no file: the defaults apply), `config_error` (null when valid), `live_state` and `message`. Exit code 0 whatever it says. `live_state` is `"not_running"` when an ordinary daemon is installed but not running: the next agent hook or daemon command other than `status` and `stop` starts it, and `daifuku reload` does so without opening anything. Otherwise it is `"needs_administrator_terminal"`: for fleets, agents and hotkeys, give the user the command to run in an administrator terminal.
