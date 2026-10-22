@@ -378,7 +378,7 @@ footer p { margin: 0.3rem 0; }
 <div class="text">
 <p class="label">Setup</p>
 <h2>Double-click to install</h2>
-<p>Double-click daifuku.exe, press Enter and allow it. It copies itself to Program Files, lists itself in Settings, Apps and starts.</p>
+<p>Double-click daifuku.exe, press Enter and allow it. It copies itself to Program Files, lists itself in Settings, Apps and starts the daemon.</p>
 <p><code>daifuku doctor</code> checks the whole setup and says how to fix anything that is off.</p>
 </div>
 <div class="stage">
@@ -436,9 +436,9 @@ footer p { margin: 0.3rem 0; }
 <h2 id="new-h" class="vh">Details</h2>
 <div class="grid2">
 <div class="card">
-<div class="num">Version 0.4.0</div>
+<div class="num">Version 0.4.1</div>
 <h3>What's new</h3>
-<ul><li>The daemon and its fleets run with your own rights by default, and its commands work from an ordinary terminal.</li><li>Fleets that open as administrator need <code>"elevated": true</code> at the top of the config and <code>daifuku install</code> run again; <code>daifuku doctor</code> names any that lack it.</li></ul>
+<ul><li>An ordinary install writes no logon task and removes the one 0.4.0 wrote: the daemon starts with the first <code>daifuku</code> command or agent hook.</li><li>The daemon runs with your own rights even when an administrator terminal starts it, unless the config sets <code>"elevated": true</code>.</li></ul>
 </div>
 <div class="card">
 <div class="num">Requirements</div>
