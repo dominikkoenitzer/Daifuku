@@ -12,7 +12,7 @@ use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
 use daifuku_win::terminal::WINDOW_CLASS;
-use daifuku_win::{access, clock, dpi, paths, process, window};
+use daifuku_win::{access, clock, dpi, paths, process, setup, window};
 use windows::Win32::UI::Shell::{QUNS_NOT_PRESENT, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
@@ -124,6 +124,9 @@ struct Daemon {
     /// The state file versions up to 0.1.3 shared between users, read when
     /// this user's own does not exist yet.
     legacy_state_file: Option<PathBuf>,
+    /// Who may open the state and peers files: see
+    /// [`daifuku_win::setup::private_file_sddl`].
+    saved_access: String,
     /// What the last save held, apart from when it was made, and the
     /// interrupt time it was made at.
     last_saved: (String, u64),
@@ -269,6 +272,7 @@ impl Daemon {
             last_next: None,
             state_file: None,
             legacy_state_file: None,
+            saved_access: setup::private_file_sddl(setup::user_sid().as_deref(), elevated),
             last_saved: (String::new(), 0),
         }
     }
@@ -987,7 +991,7 @@ impl Daemon {
         saved.at = ticks;
         let written = serde_json::to_string(&saved)
             .map_err(std::io::Error::other)
-            .and_then(|text| replace_file(file, &text));
+            .and_then(|text| replace_file(file, &text, &self.saved_access));
         match written {
             Ok(()) => self.last_saved = (key, ticks),
             Err(e) => {
@@ -1294,7 +1298,7 @@ impl Daemon {
         };
         let written = serde_json::to_string_pretty(&kept)
             .map_err(std::io::Error::other)
-            .and_then(|text| replace_file(file, &text));
+            .and_then(|text| replace_file(file, &text, &self.saved_access));
         if let Err(e) = written {
             tracing::warn!(path = %file.display(), error = %e, "could not save the peers");
         }
@@ -2011,14 +2015,21 @@ fn state_to_read<'a>(
 }
 
 /// Writes `text` next to `path` and renames it over `path`, so a daemon that
-/// stops half way leaves the last whole save, never one cut short.
-fn replace_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+/// stops half way leaves the last whole save, never one cut short. The new
+/// file is made with the access list `sddl` and keeps it through the rename.
+fn replace_file(path: &std::path::Path, text: &str, sddl: &str) -> std::io::Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".new");
     let new = path.with_file_name(name);
+    // A save cut short left it with the access it was made with, which
+    // creating it again would keep.
+    match std::fs::remove_file(&new) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
     // On the disk before the rename, so a power cut leaves the old file or
     // the new one, never an empty one.
-    let mut f = std::fs::File::create(&new)?;
+    let mut f = setup::create_private_file(&new, sddl)?;
     std::io::Write::write_all(&mut f, text.as_bytes())?;
     f.sync_all()?;
     drop(f);
@@ -2595,7 +2606,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("peers.json");
         std::fs::write(&file, "an older save that was longer than the new one").unwrap();
-        replace_file(&file, "new").unwrap();
+        replace_file(&file, "new", &setup::private_file_sddl(None, false)).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
         let left: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -2603,6 +2614,51 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(left, [std::ffi::OsString::from("peers.json")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The owner of the file at `path`, whether its access list is
+    /// protected, and who each of its entries lets in, read back from disk.
+    fn access_of(path: &std::path::Path) -> (String, bool, Vec<String>) {
+        let sddl = setup::file_sddl(path).unwrap();
+        let (owner, dacl) = sddl.split_once("D:").unwrap();
+        let owner = owner.strip_prefix("O:").unwrap().to_owned();
+        let (flags, aces) = dacl.split_once('(').unwrap_or((dacl, ""));
+        let who = aces
+            .split('(')
+            .map(|ace| {
+                ace.trim_end_matches(')')
+                    .rsplit(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        (owner, flags.contains('P'), who)
+    }
+
+    #[test]
+    fn the_saved_state_and_peers_are_closed_to_other_users() {
+        let dir = std::env::temp_dir().join(format!("daifuku-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = setup::user_sid().unwrap();
+        let mut d = daemon();
+        d.state_file = Some(dir.join("state.json"));
+        d.peers_file = Some(dir.join("peers.json"));
+        // A save cut short before keeps its file, made with the folder's
+        // access, beside the one it was for.
+        std::fs::write(dir.join("state.json.new"), "cut short").unwrap();
+        d.save(true);
+        d.save_peers();
+        for file in ["state.json", "peers.json"] {
+            let path = dir.join(file);
+            let (owner, protected, who) = access_of(&path);
+            assert_eq!(owner, sid, "{file}");
+            assert!(protected, "{file} takes entries from its folder");
+            assert_eq!(who, ["SY", "BA", sid.as_str()], "{file}");
+            assert!(std::fs::read_to_string(&path).is_ok(), "{file}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
