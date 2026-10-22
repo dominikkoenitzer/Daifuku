@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fleets that go on the same monitor and fill the same area share one grid
+  instead of each filling all of it on top of the others. Each takes its
+  cells in the order the fleets are listed, whether the others are open or
+  not, so six terminals and four more on a portrait monitor fill it two by
+  five. A fleet that goes where the cursor is keeps a grid of its own.
 - Every terminal Daifuku places carries the window property `NoTiling` from
   the moment its window is found, and loses it when Daifuku lets it go
   while it stays open, so a tiling window manager that honours the property

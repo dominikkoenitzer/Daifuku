@@ -88,7 +88,7 @@ Every pick falls back to the primary monitor. Any other word is an error.
 | `"left"`, `"right"`, `"top"`, `"bottom"` | That half of it. |
 | `{ "x": 0.5, "y": 0, "width": 0.5, "height": 1 }` | A rectangle in fractions of the work area from its top left corner. All four keys are required, each 0 to 1; `width` and `height` more than 0; `x + width` and `y + height` at most 1. |
 
-Any other word, a missing key or a rectangle off the monitor is an error. The outer gap goes around the area. Three terminals on a half come out two over one; `"shape": { "columns": 1, "rows": 3 }` stacks them.
+Any other word, a missing key or a rectangle off the monitor is an error. The outer gap goes around the area. Three terminals on a half come out two over one; `"shape": { "columns": 1, "rows": 3 }` stacks them. Fleets on the same monitor and area share one grid, each taking its cells in the order the fleets are listed; a `"cursor"` fleet keeps its own.
 
 ## `gaps`
 

@@ -155,6 +155,14 @@ The outer gap goes around the area as it goes around the monitor, so on the
 monitor's own edges the terminals line up with a fleet that fills all of it.
 Two fleets on the two halves have twice the outer gap between them.
 
+Fleets that go on the same monitor and fill the same area share one grid,
+planned for all their terminals together. Each fleet takes its cells in the
+order the fleets are listed, whether the others are open or not, so a fleet's
+terminals do not move when another one opens: six agents and four more on
+the portrait monitor fill it two by five, the six in the top three rows. The
+first `shape` among them is the grid's shape. A fleet with
+`"monitor": "cursor"` keeps a grid of its own.
+
 ### The grid
 
 Daifuku picks the shape whose cells come closest to a terminal's natural
