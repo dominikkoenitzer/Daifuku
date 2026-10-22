@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1, 2026-10-22
 
 - The ordinary install writes no logon task, and one an earlier version
   wrote for an ordinary daemon is removed. The daemon starts on demand
