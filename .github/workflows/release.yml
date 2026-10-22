@@ -7,10 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and release, for example v0.1.0. Leave empty to build the current branch and only upload the downloads as a workflow artifact."
+        description: "Existing tag to build, for example v0.1.0. Leave empty to build the ref the workflow runs from. A release is published only from the tag itself (Use workflow from the tag) with dry_run off."
         required: false
         default: ""
         type: string
+      dry_run:
+        description: "Build and scan only, and publish nothing: no release, no tag, no draft. The downloads stay a workflow artifact."
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.tag || github.ref }}
@@ -285,6 +290,51 @@ jobs:
           [System.IO.File]::WriteAllText("$env:GITHUB_WORKSPACE/$exe.sha256", "$hash  $file`n", [System.Text.UTF8Encoding]::new($false))
           Get-Content "$exe.sha256"
 
+      # The same scan CI runs on its own builds, here on the very files this
+      # run uploads: both single downloads, both zips, and every file inside
+      # each zip, taken out of the zip itself. It is a custom scan against the
+      # signatures only, which works whether or not real-time protection is
+      # on and on ARM64 files as well, since nothing is run; it cannot say
+      # what the behaviour scanner on a user's machine will make of an
+      # install. -DisableRemediation makes it ignore Defender's exclusions
+      # and look inside archives, so a runner that excludes its drives still
+      # scans these files, and a threat is reported rather than quarantined.
+      # Exit 2 means a threat was found; 0 means clean. The engine's state is
+      # printed with the result.
+      - name: Defender scans the release files
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AMServiceEnabled, AntivirusSignatureVersion | Format-List
+          $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+          if (-not (Test-Path $mp)) { throw "MpCmdRun.exe is not at $mp" }
+          $files = @(
+              (Resolve-Path 'dist/daifuku.exe').Path,
+              (Resolve-Path 'dist/daifuku-arm64.exe').Path
+          )
+          foreach ($file in 'daifuku-windows-x64.zip', 'daifuku-windows-arm64.zip') {
+              $zip = (Resolve-Path "dist/$file").Path
+              $out = Join-Path $env:RUNNER_TEMP "scan/$($file.Replace('.zip', ''))"
+              Expand-Archive -Path $zip -DestinationPath $out -Force
+              $files += $zip
+              foreach ($exe in 'daifuku.exe', 'daifukud.exe') {
+                  if (-not (Test-Path (Join-Path $out $exe))) { throw "$file holds no $exe" }
+              }
+              $files += @(Get-ChildItem -Recurse -File -Path $out | ForEach-Object FullName)
+          }
+          foreach ($f in $files) {
+              $hash = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
+              Write-Output "scanning $f (sha256 $hash)"
+              & $mp -Scan -ScanType 3 -File $f -DisableRemediation
+              $code = $LASTEXITCODE
+              Write-Output "MpCmdRun exit $code for $f"
+              if ($code -eq 2) { throw "Defender found a threat in $f" }
+              if ($code -ne 0) { throw "the scan of $f did not finish cleanly (exit $code)" }
+          }
+          Remove-Item -Recurse -Force (Join-Path $env:RUNNER_TEMP 'scan')
+          Write-Output "Defender scan: the $($files.Count) release files carry no verdict"
+
       # Always available, so a workflow_dispatch without a tag still produces
       # downloads that can be tried.
       - name: Upload the downloads as a workflow artifact
@@ -305,11 +355,13 @@ jobs:
 
   # The only job with a token that can write, and it runs no code from the
   # repository or its dependencies: it takes the downloads the build job
-  # uploaded and publishes them. On a branch build it stops before publishing, so a
-  # dry run still proves the hand-over works.
+  # uploaded and publishes them. It runs only from a v tag and never on a dry
+  # run, so a branch build or a dispatch left at dry_run gets no write token
+  # and can create no release, tag or draft.
   publish:
     name: Publish
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
@@ -347,18 +399,19 @@ jobs:
             dist/*/daifuku.exe
             dist/*/daifukud.exe
 
-      - name: Say why there is no provenance
+      - name: Say why nothing is published
         if: inputs.tag != '' && github.ref != format('refs/tags/{0}', inputs.tag)
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-        run: echo "::warning::No provenance for $RELEASE_TAG, this run is on $GITHUB_REF. Run the workflow from the tag itself (Use workflow from $RELEASE_TAG) to attest it."
+        run: echo "::warning::Nothing published for $RELEASE_TAG, this run is on $GITHUB_REF. Run the workflow from the tag itself (Use workflow from $RELEASE_TAG) to release and attest it."
 
       # A version with a pre-release part, such as v0.2.0-rc.1, is published
       # as a pre-release, so it never becomes the latest release the README's
-      # download link leads to.
+      # download link leads to. Only the tag this run is on is published, so
+      # the release can never create a tag of its own.
       - name: Publish release
-        if: github.ref_type == 'tag' || inputs.tag != ''
+        if: github.ref == format('refs/tags/{0}', inputs.tag || github.ref_name)
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}

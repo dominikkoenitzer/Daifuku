@@ -173,8 +173,10 @@ jobs:
       # binaries before they are installed shows whether the files
       # themselves match a signature; it uses the signatures whether or not
       # real-time protection is on, and it cannot say what the behaviour
-      # scanner will make of the install. Exit 2 means a threat was found;
-      # 0 means clean. The engine's state is printed with the result.
+      # scanner will make of the install. -DisableRemediation makes it ignore
+      # Defender's exclusions, so a runner that excludes its drives still
+      # scans these files. Exit 2 means a threat was found; 0 means clean.
+      # The engine's state is printed with the result.
       - name: Defender scans the built binaries
         shell: pwsh
         run: |
@@ -192,7 +194,7 @@ jobs:
           )
           foreach ($f in $files) {
               Write-Output "scanning $f"
-              & $mp -Scan -ScanType 3 -File $f
+              & $mp -Scan -ScanType 3 -File $f -DisableRemediation
               $code = $LASTEXITCODE
               Write-Output "MpCmdRun exit $code for $f"
               if ($code -eq 2) { throw "Defender found a threat in $f" }
