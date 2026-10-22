@@ -219,12 +219,13 @@ impl Queue {
         }
     }
 
-    /// Writes [`Queue::file`].
-    pub fn save(&self) {
+    /// Writes [`Queue::file`], made with the access list `sddl` as the saved
+    /// state is.
+    pub fn save(&self, sddl: &str) {
         let Some(file) = &self.file else { return };
         let written = serde_json::to_string_pretty(&self.claims)
             .map_err(std::io::Error::other)
-            .and_then(|text| crate::daemon::replace_file(file, &text));
+            .and_then(|text| crate::daemon::replace_file(file, &text, sddl));
         if let Err(e) = written {
             tracing::warn!(path = %file.display(), error = %e, "could not save the tasks");
         }

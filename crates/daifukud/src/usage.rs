@@ -232,12 +232,13 @@ impl Book {
         self.entries = entries;
     }
 
-    /// Writes [`Book::file`].
-    pub fn save(&self) {
+    /// Writes [`Book::file`], made with the access list `sddl` as the saved
+    /// state is.
+    pub fn save(&self, sddl: &str) {
         let Some(file) = &self.file else { return };
         let written = serde_json::to_string_pretty(&self.entries)
             .map_err(std::io::Error::other)
-            .and_then(|text| crate::daemon::replace_file(file, &text));
+            .and_then(|text| crate::daemon::replace_file(file, &text, sddl));
         if let Err(e) = written {
             tracing::warn!(path = %file.display(), error = %e, "could not save the usage");
         }
@@ -480,7 +481,7 @@ mod tests {
         };
         b.note(&report(r"C:\a", Some(50), None), None, stamp(NOW));
         b.note(&report(r"C:\b", Some(5), Some(5)), None, stamp(NOW));
-        b.save();
+        b.save(&daifuku_win::setup::private_file_sddl(None, false));
         let mut again = Book {
             file: Some(file),
             ..Book::default()
