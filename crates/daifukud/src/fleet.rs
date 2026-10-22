@@ -249,7 +249,13 @@ fn start_one(
     } else {
         daifuku_win::process::shell_is_elevated().unwrap_or(false)
     };
-    Ok(wait_for_new(&before, record, expect))
+    let found = wait_for_new(&before, record, expect);
+    // Marked before it is placed, so a tiling window manager that took it on
+    // its first show lets go of it before it lands in its cell.
+    if let Some(w) = found {
+        window::set_no_tiling(w, true);
+    }
+    Ok(found)
 }
 
 /// Opens one peer as `spawn` asks, from the fleet `base`: its command,

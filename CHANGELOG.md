@@ -21,6 +21,10 @@
   is doing without reading its terminal. These are `cwd`, `last_message`,
   `last_tool` and `transcript_path`, each left out until a hook of the
   session names it.
+- Every terminal Daifuku places carries the window property `NoTiling` from
+  the moment its window is found, and loses it when Daifuku lets it go
+  while it stays open, so a tiling window manager that honours the property
+  leaves it in its cell. Terminals that only have a label never get it.
 
 ## 0.4.1, 2026-10-22
 
