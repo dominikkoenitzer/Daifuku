@@ -1137,13 +1137,24 @@ fn settled_front() -> u64 {
 /// to the front a moment after its command returned counts too.
 fn front_stays(front: u64) -> bool {
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(2) {
-        if window::foreground() != front {
+    loop {
+        let now = window::foreground();
+        if now != front {
+            let pid = window::pid(now);
+            let name = daifuku_win::process::snapshot()
+                .remove(&pid)
+                .map_or_else(|| "?".to_owned(), |p| p.name);
+            println!(
+                "e2e: the front went from {front:#x} to {now:#x}, a {:?} window of {name} (pid {pid})",
+                window::class(now)
+            );
             return false;
+        }
+        if start.elapsed() >= Duration::from_secs(2) {
+            return true;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    window::foreground() == front
 }
 
 /// A check known to fail, run and reported without failing the test, so
