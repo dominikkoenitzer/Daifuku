@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- While the daemon runs with the user's own rights, install lets the user
+  who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
+  delete it or change who may, and no other user. `daifuku config` then
+  opens the editor without asking Windows for permission. A config that
+  sets `"elevated": true` stays writable by administrators only.
+- A config the user could write that sets `"elevated": true` is only locked
+  to administrators by the install that finds it, which writes no logon
+  task and starts no daemon. Check it with `daifuku config`, then run
+  `daifuku install` again, which registers the elevated daemon.
+- `daifuku uninstall` without `--purge` takes the user's write off the
+  config it keeps. The next install still treats the file as one the user
+  could write.
+
 ## 0.4.1, 2026-10-22
 
 - The ordinary install writes no logon task, and one an earlier version
