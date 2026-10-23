@@ -129,8 +129,9 @@ enum Command {
         #[arg(long)]
         monitor: Option<String>,
         /// The part of the monitor it fills: full, left, right, top or
-        /// bottom. With neither this nor --monitor it stays where Windows
-        /// Terminal opens it.
+        /// bottom. With neither this nor --monitor it takes a free cell of
+        /// its fleet while the fleet is open, else the fleet's monitor and
+        /// area.
         #[arg(long)]
         area: Option<String>,
         /// Run it in a group at this priority, idle, below-normal or normal,
@@ -1150,6 +1151,7 @@ fn answer(reply: &str, request: &Request, json: bool) -> ExitCode {
             label,
             fleet,
             cell,
+            ..
         }) => {
             println!(
                 "{}",

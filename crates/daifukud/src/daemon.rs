@@ -127,6 +127,8 @@ struct Daemon {
     /// What the last save held, apart from when it was made, and the
     /// interrupt time it was made at.
     last_saved: (String, u64),
+    /// Where fleets and peers open and terminals come to the front.
+    desk: Box<dyn fleet::Desk>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -270,6 +272,7 @@ impl Daemon {
             state_file: None,
             legacy_state_file: None,
             last_saved: (String::new(), 0),
+            desk: Box::new(fleet::Live),
         }
     }
 
@@ -315,7 +318,7 @@ impl Daemon {
         // known only beforehand.
         let had_nothing = self.idle(action);
         let result = match action {
-            Action::Open(name) => self.open(Some(name)),
+            Action::Open(name) => self.open(Some(name), true),
             Action::Next => self.next(),
             Action::Snap => self.snap(),
             Action::Close => self.close_all(),
@@ -372,7 +375,7 @@ impl Daemon {
 
     fn control(&mut self, request: &Request) -> Response {
         match request {
-            Request::Open { fleet } => self.open(fleet.as_deref()),
+            Request::Open { fleet } => self.open(fleet.as_deref(), false),
             Request::Snap => self.snap(),
             Request::Close { fleet } => self.close(fleet.as_deref()),
             Request::CloseAll => self.close_all(),
@@ -472,7 +475,10 @@ impl Daemon {
         );
     }
 
-    fn open(&mut self, name: Option<&str>) -> Response {
+    /// Opens fleet `name`, or the first one, with the fleets it names. Only
+    /// when its key opened it, `by_key`, does a terminal come to the front:
+    /// a script that opens a fleet leaves the front as it was.
+    fn open(&mut self, name: Option<&str>, by_key: bool) -> Response {
         let fleet = match name {
             Some(n) => self.config.fleet(n).cloned(),
             None => self.config.fleets.first().cloned(),
@@ -486,7 +492,7 @@ impl Daemon {
         let mut said = Vec::new();
         let mut failed = Vec::new();
         for other in &opening_order(&self.config, fleet) {
-            match self.open_fleet(other) {
+            match self.open_fleet(other, by_key) {
                 Response::Error { message } => failed.push(message),
                 Response::Ok {
                     message: Some(message),
@@ -503,8 +509,9 @@ impl Daemon {
 
     /// Opens a fleet, or brings back the one that is open. Its record goes
     /// back into the list whatever happens, so a failure part way loses
-    /// neither the terminals that were open nor the ones just started.
-    fn open_fleet(&mut self, fleet: &daifuku_core::config::Fleet) -> Response {
+    /// neither the terminals that were open nor the ones just started. With
+    /// `front`, its first terminal then comes to the front.
+    fn open_fleet(&mut self, fleet: &daifuku_core::config::Fleet, front: bool) -> Response {
         let mut record = match self
             .fleets
             .iter()
@@ -513,7 +520,15 @@ impl Daemon {
             Some(i) => self.fleets.remove(i),
             None => OpenFleet::new(&fleet.name),
         };
-        let result = fleet::open(fleet, &self.config, &mut record, self.elevated);
+        let result = self
+            .desk
+            .open(fleet, &self.config, &mut record, self.elevated);
+        if front
+            && result.is_ok()
+            && let Some(first) = record.windows().next()
+        {
+            self.desk.focus(first);
+        }
         if record.windows().next().is_some() {
             self.fleets.push(record);
         }
@@ -546,7 +561,7 @@ impl Daemon {
         else {
             return Response::error("cannot find daifuku.exe next to the daemon");
         };
-        self.open_fleet(&fleet)
+        self.open_fleet(&fleet, false)
     }
 
     fn demo_fleet(&self) -> Option<daifuku_core::config::Fleet> {
@@ -1419,25 +1434,31 @@ impl Daemon {
         }
         // Each stays dormant until it is open, so a daemon that stops part
         // way loses none of the rest.
-        let mut peers = Vec::new();
         let waiting: Vec<Spawn> = self.dormant.iter().chain(&self.closed).cloned().collect();
-        for spawn in waiting {
-            if let Some(running) = self.running(&spawn) {
-                peers.push(listed(&spawn, None, Some(running)));
-                self.forget_waiting(&spawn);
+        let mut peers: Vec<Option<RestoredPeer>> = waiting.iter().map(|_| None).collect();
+        // Those that had a cell open first, so a peer without one cannot take it.
+        let mut order: Vec<usize> = (0..waiting.len()).collect();
+        order.sort_by_key(|&i| waiting[i].cell.is_none());
+        for i in order {
+            let spawn = &waiting[i];
+            if let Some(running) = self.running(spawn) {
+                peers[i] = Some(listed(spawn, None, Some(running)));
+                self.forget_waiting(spawn);
                 continue;
             }
-            match self.spawn(&spawn, true) {
+            match self.spawn(spawn, true) {
                 Response::Spawned { window, .. } => {
-                    peers.push(listed(&spawn, Some(window), None));
-                    self.forget_waiting(&spawn);
+                    peers[i] = Some(listed(spawn, Some(window), None));
+                    self.forget_waiting(spawn);
                 }
-                Response::Error { message } => peers.push(listed(&spawn, None, Some(message))),
+                Response::Error { message } => peers[i] = Some(listed(spawn, None, Some(message))),
                 _ => {}
             }
         }
         self.save_peers();
-        Response::Restored { peers }
+        Response::Restored {
+            peers: peers.into_iter().flatten().collect(),
+        }
     }
 
     /// Lets go of one peer waiting to be restored, dormant or closed with
@@ -1527,46 +1548,42 @@ impl Daemon {
             .flat_map(OpenFleet::windows)
             .chain(self.peers.iter().map(|p| p.window))
             .collect();
-        // A peer in a cell joins its fleet's record, open or not yet, and
-        // takes a slot of it: placed, snapped and closed with the fleet.
-        let mut joined = None;
-        if let Some(cell) = spawn.cell {
-            let mut record = self
-                .fleets
-                .iter()
-                .position(|f| f.name.eq_ignore_ascii_case(&base.name))
-                .map_or_else(|| OpenFleet::new(&base.name), |i| self.fleets.remove(i));
-            let planned = fleet::cell_for(&base, &self.config, &mut record, cell);
-            match planned {
-                Ok(Some(slot)) => joined = Some((record, slot)),
-                Ok(None) if restoring => {
-                    tracing::info!(fleet = %base.name, "no free cell for a restored peer, opening it beside");
-                    self.keep_fleet(record);
-                }
-                Ok(None) => {
-                    let message = fleet::no_free_cell(&base.name, record.slots.len());
-                    self.keep_fleet(record);
-                    return Response::error(message);
-                }
-                Err(e) => {
-                    self.keep_fleet(record);
-                    return Response::error(format!("{e:#}"));
-                }
+        // A peer in a cell joins its fleet's record, open or not yet, as does
+        // one with no place of its own while the fleet is open: it takes a
+        // slot of it, placed, snapped and closed with the fleet.
+        let mut record = self
+            .fleets
+            .iter()
+            .position(|f| f.name.eq_ignore_ascii_case(&base.name))
+            .map_or_else(|| OpenFleet::new(&base.name), |i| self.fleets.remove(i));
+        let spot = match self
+            .desk
+            .spot(&base, &self.config, spawn, restoring, &mut record)
+        {
+            Ok(Some(spot)) => spot,
+            Ok(None) => {
+                let message = fleet::no_free_cell(&base.name, record.slots.len());
+                self.keep_fleet(record);
+                return Response::error(message);
             }
+            Err(e) => {
+                self.keep_fleet(record);
+                return Response::error(format!("{e:#}"));
+            }
+        };
+        if restoring && spawn.cell.is_some() && !matches!(spot, fleet::Spot::Cell { .. }) {
+            tracing::info!(fleet = %base.name, "no free cell for a restored peer, opening it beside");
         }
-        let cell = joined.as_ref().map(|(_, slot)| *slot);
-        let opened = fleet::spawn(&base, &self.config, spawn, self.elevated, &taken, cell);
+        let opened = self.desk.spawn(&base, spawn, self.elevated, &taken, &spot);
         let mut kept = spawn.clone();
         let mut in_fleet = None;
-        if let Some((mut record, (slot, _))) = joined {
-            if let Ok(window) = opened {
-                record.slots[slot] = Some(window);
-                let number = u32::try_from(slot + 1).unwrap_or(u32::MAX);
-                kept.cell = Some(peer::Cell::At(number));
-                in_fleet = Some((record.name.clone(), number));
-            }
-            self.keep_fleet(record);
+        if let (Ok(window), fleet::Spot::Cell { slot, .. }) = (&opened, &spot) {
+            record.slots[*slot] = Some(*window);
+            let number = u32::try_from(slot + 1).unwrap_or(u32::MAX);
+            kept.cell = Some(peer::Cell::At(number));
+            in_fleet = Some((record.name.clone(), number));
         }
+        self.keep_fleet(record);
         match opened {
             Ok(window) => {
                 tracing::info!(window = format!("{window:#x}"), label = ?spawn.label, fleet = ?in_fleet, "spawned a peer");
@@ -1577,11 +1594,17 @@ impl Daemon {
                 self.save_peers();
                 self.refresh_borders();
                 let (fleet, cell) = in_fleet.unzip();
+                let (monitor, area) = match spot {
+                    fleet::Spot::Area { device, area, .. } => (Some(device), Some(area)),
+                    fleet::Spot::Cell { .. } | fleet::Spot::Loose => (None, None),
+                };
                 Response::Spawned {
                     window,
                     label: spawn.label.clone(),
                     fleet,
                     cell,
+                    monitor,
+                    area,
                 }
             }
             Err(e) => Response::error(format!("{e:#}")),
@@ -1719,8 +1742,8 @@ fn width_for(border: &Border, state: AgentState, high_contrast: bool) -> i32 {
 }
 
 /// The fleets opening `fleet` opens, in order: the ones its `with` names
-/// first, then `fleet` itself, so it ends up in front and its first terminal
-/// has the focus. The others' own `with` is not followed, and a name that is
+/// first, then `fleet` itself, so with its key it ends up in front and its
+/// first terminal has the focus. The others' own `with` is not followed, and a name that is
 /// not in the config is skipped.
 fn opening_order(
     config: &Config,
@@ -3106,5 +3129,331 @@ mod tests {
         noted = second;
         retry_once(&mut failed, &mut noted);
         assert_eq!((failed, noted), (second, None), "a new save gets its retry");
+    }
+
+    /// A desktop of one monitor where every empty cell and every peer gets a
+    /// made-up window, and the windows brought to the front and the places
+    /// peers open in are noted.
+    struct StandIn {
+        next: u64,
+        focused: std::rc::Rc<std::cell::RefCell<Vec<u64>>>,
+        spots: Noted<fleet::Spot>,
+    }
+
+    /// What a stand-in notes, shared with the test.
+    type Noted<T> = std::rc::Rc<std::cell::RefCell<Vec<T>>>;
+
+    /// The stand-in desktop's monitor.
+    fn stand_in_monitor() -> daifuku_core::monitor::MonitorInfo {
+        daifuku_core::monitor::MonitorInfo {
+            device: "DISPLAY1".into(),
+            bounds: daifuku_core::Rect::new(0, 0, 3840, 2160),
+            work: daifuku_core::Rect::new(0, 0, 3840, 2112),
+            dpi: 144,
+            primary: true,
+        }
+    }
+
+    impl StandIn {
+        fn window(&mut self) -> u64 {
+            self.next += 1;
+            self.next
+        }
+    }
+
+    impl fleet::Desk for StandIn {
+        fn open(
+            &mut self,
+            fleet: &daifuku_core::config::Fleet,
+            _: &Config,
+            record: &mut OpenFleet,
+            _: bool,
+        ) -> anyhow::Result<String> {
+            record
+                .slots
+                .resize(usize::try_from(fleet.count).unwrap(), None);
+            for slot in &mut record.slots {
+                if slot.is_none() {
+                    *slot = Some(self.window());
+                }
+            }
+            Ok(format!("opened {}", fleet.name))
+        }
+
+        fn spot(
+            &mut self,
+            base: &daifuku_core::config::Fleet,
+            config: &Config,
+            spawn: &Spawn,
+            beside: bool,
+            record: &mut OpenFleet,
+        ) -> anyhow::Result<Option<fleet::Spot>> {
+            fleet::spot_on(
+                base,
+                config,
+                spawn,
+                beside,
+                record,
+                &[stand_in_monitor()],
+                (0, 0),
+            )
+        }
+
+        fn spawn(
+            &mut self,
+            _: &daifuku_core::config::Fleet,
+            _: &Spawn,
+            _: bool,
+            _: &[u64],
+            spot: &fleet::Spot,
+        ) -> anyhow::Result<u64> {
+            self.spots.borrow_mut().push(spot.clone());
+            Ok(self.window())
+        }
+
+        fn focus(&mut self, w: u64) -> bool {
+            self.focused.borrow_mut().push(w);
+            true
+        }
+    }
+
+    /// A daemon on `config` whose desktop is a stand-in, and the windows it
+    /// brings to the front.
+    fn on_stand_in(config: &str) -> (Daemon, std::rc::Rc<std::cell::RefCell<Vec<u64>>>) {
+        let (d, focused, _) = with_spots(config);
+        (d, focused)
+    }
+
+    /// [`on_stand_in`], with the places peers open in.
+    fn with_spots(config: &str) -> (Daemon, Noted<u64>, Noted<fleet::Spot>) {
+        let mut d = daemon();
+        d.config = Config::from_json(config).unwrap();
+        let focused = std::rc::Rc::default();
+        let spots = std::rc::Rc::default();
+        d.desk = Box::new(StandIn {
+            next: 0x100,
+            focused: std::rc::Rc::clone(&focused),
+            spots: std::rc::Rc::clone(&spots),
+        });
+        (d, focused, spots)
+    }
+
+    const LEAD_AND_CREW: &str = r#"{"fleets":[
+        {"name":"lead","count":1,"with":["crew"],"hotkey":"ctrl + alt + return"},
+        {"name":"crew","count":3,"hotkey":"ctrl + alt + w"}
+    ]}"#;
+
+    #[test]
+    fn open_from_a_command_leaves_the_front_alone() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        let said = d.control(&Request::Open {
+            fleet: Some("lead".into()),
+        });
+        assert!(matches!(said, Response::Ok { .. }), "{said:?}");
+        assert_eq!(d.fleets.len(), 2);
+        // Open again, as a script does to bring a fleet back.
+        let said = d.control(&Request::Open { fleet: None });
+        assert!(matches!(said, Response::Ok { .. }), "{said:?}");
+        assert_eq!(*focused.borrow(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn spawn_leaves_the_front_alone() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        let said = d.control(&Request::Spawn(Spawn {
+            directory: std::env::current_dir().unwrap(),
+            label: Some("peer".into()),
+            ..Spawn::default()
+        }));
+        assert!(matches!(said, Response::Spawned { .. }), "{said:?}");
+        assert_eq!(*focused.borrow(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn restore_leaves_the_front_alone() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        d.dormant = vec![Spawn {
+            directory: std::env::current_dir().unwrap(),
+            resume: Some("abc".into()),
+            ..Spawn::default()
+        }];
+        let said = d.control(&Request::Restore {
+            dry_run: false,
+            forget: false,
+        });
+        let Response::Restored { peers } = said else {
+            panic!("{said:?}");
+        };
+        assert!(peers[0].window.is_some(), "{peers:?}");
+        assert_eq!(*focused.borrow(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn a_fleet_s_key_brings_its_first_terminal_to_the_front() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        d.hotkey(&Action::Open("lead".into()));
+        let lead = d.fleets.iter().find(|f| f.name == "lead").unwrap();
+        assert_eq!(focused.borrow().last(), lead.windows().next().as_ref());
+    }
+
+    const CREW: &str = r#"{"fleets":[
+        {"name":"crew","count":3,"area":"right","shape":{"columns":1,"rows":3}}
+    ]}"#;
+
+    /// A spawn into fleet `crew` with nothing else asked for but `area`.
+    fn crew_peer(area: Option<daifuku_core::config::Area>) -> Request {
+        Request::Spawn(Spawn {
+            directory: std::env::current_dir().unwrap(),
+            fleet: Some("crew".into()),
+            area,
+            ..Spawn::default()
+        })
+    }
+
+    /// Where the crew's cells are on the stand-in monitor, and its half.
+    fn crew_places(d: &Daemon) -> (Vec<daifuku_core::Rect>, fleet::Spot) {
+        use daifuku_core::config::Area;
+        use daifuku_core::grid::Grid;
+        let crew = d.config.fleet("crew").unwrap();
+        let work = stand_in_monitor().work;
+        let cells = Grid::plan(3, Area::Right.within(work), d.config.gaps, crew.shape);
+        let half = Grid::plan(1, Area::Right.within(work), d.config.gaps, None)[0];
+        let half = fleet::Spot::Area {
+            device: stand_in_monitor().device,
+            area: Area::Right,
+            rect: half,
+        };
+        (cells, half)
+    }
+
+    #[test]
+    fn a_spawn_without_a_cell_opens_in_a_free_cell_of_its_open_fleet() {
+        let (mut d, _, spots) = with_spots(CREW);
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        d.fleets[0].slots[1] = None;
+        let said = d.control(&crew_peer(None));
+        let Response::Spawned {
+            window,
+            fleet,
+            cell,
+            monitor,
+            area,
+            ..
+        } = said
+        else {
+            panic!("{said:?}");
+        };
+        assert_eq!(
+            (fleet.as_deref(), cell, monitor, area),
+            (Some("crew"), Some(2), None, None)
+        );
+        assert_eq!(d.fleets[0].slots[1], Some(window), "it joined the crew");
+        let (cells, _) = crew_places(&d);
+        assert_eq!(
+            *spots.borrow(),
+            vec![fleet::Spot::Cell {
+                slot: 1,
+                rect: cells[1]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_spawn_without_a_cell_opens_on_its_fleet_s_half_when_the_fleet_is_closed_or_full() {
+        let (mut d, _, spots) = with_spots(CREW);
+        let (_, half) = crew_places(&d);
+        let said = d.control(&crew_peer(None));
+        let Response::Spawned {
+            cell,
+            monitor,
+            area,
+            ..
+        } = said
+        else {
+            panic!("{said:?}");
+        };
+        assert_eq!(
+            (cell, monitor.as_deref(), area),
+            (
+                None,
+                Some("DISPLAY1"),
+                Some(daifuku_core::config::Area::Right)
+            )
+        );
+        assert!(d.fleets.is_empty(), "the closed crew stays closed");
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        let full = d.fleets[0].slots.clone();
+        let said = d.control(&crew_peer(None));
+        assert!(
+            matches!(said, Response::Spawned { cell: None, .. }),
+            "{said:?}"
+        );
+        assert_eq!(d.fleets[0].slots, full, "the full crew stays as it was");
+        assert_eq!(*spots.borrow(), vec![half.clone(), half]);
+    }
+
+    #[test]
+    fn a_restored_peer_without_a_cell_leaves_the_cell_another_one_had() {
+        let (mut d, _, _) = with_spots(CREW);
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        d.fleets[0].slots[0] = None;
+        let peer = |id: &str, cell| Spawn {
+            directory: std::env::current_dir().unwrap(),
+            fleet: Some("crew".into()),
+            resume: Some(id.into()),
+            cell,
+            ..Spawn::default()
+        };
+        d.dormant = vec![
+            peer("aaa", None),
+            peer("bbb", Some(daifuku_core::peer::Cell::At(1))),
+        ];
+        let said = d.control(&Request::Restore {
+            dry_run: false,
+            forget: false,
+        });
+        let Response::Restored { peers } = said else {
+            panic!("{said:?}");
+        };
+        let ids: Vec<&str> = peers.iter().map(|p| p.session_id.as_str()).collect();
+        assert_eq!(ids, ["aaa", "bbb"], "listed in the order they were saved");
+        assert_eq!(d.fleets[0].slots[0], peers[1].window, "{peers:?}");
+    }
+
+    #[test]
+    fn an_area_a_spawn_asks_for_wins_over_its_open_fleet() {
+        use daifuku_core::config::Area;
+        let (mut d, _, spots) = with_spots(CREW);
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        d.fleets[0].slots[1] = None;
+        let kept = d.fleets[0].slots.clone();
+        let said = d.control(&crew_peer(Some(Area::Left)));
+        assert!(
+            matches!(said, Response::Spawned { cell: None, .. }),
+            "{said:?}"
+        );
+        assert_eq!(d.fleets[0].slots, kept, "it stays out of the crew");
+        let left = daifuku_core::grid::Grid::plan(
+            1,
+            Area::Left.within(stand_in_monitor().work),
+            d.config.gaps,
+            None,
+        )[0];
+        assert_eq!(
+            *spots.borrow(),
+            vec![fleet::Spot::Area {
+                device: "DISPLAY1".into(),
+                area: Area::Left,
+                rect: left,
+            }]
+        );
     }
 }

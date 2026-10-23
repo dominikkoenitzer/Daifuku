@@ -124,8 +124,14 @@ one out: `elevated` is then `false`, and `hotkeys` and `peers` are empty.
 
 `window` is the new terminal's window handle, as `status` lists it. `label`
 is left out when none was given. `fleet` and `cell` say which fleet's grid
-it took a cell of, counted from 1, with `--cell`, and are left out without.
-With `--cell` and every cell taken, it fails and opens nothing.
+it took a cell of, counted from 1: with `--cell`, or without any of
+`--cell`, `--monitor` and `--area` while that fleet is open and has a free
+cell. Otherwise `monitor` and `area` say where it went instead: `monitor` is
+the device name of the monitor, and `area` the part of it the terminal
+fills, as a fleet's `area` takes it, such as `"right"`. All four are left
+out when the config has no fleet and the spawn named no monitor or area, so
+the terminal stays where Windows Terminal opens it. With `--cell` and every
+cell taken, it fails and opens nothing.
 
 `daifuku close --terminal` fails with code `daemon` when no terminal goes by
 that label or window, when a label names two, and when the terminal is

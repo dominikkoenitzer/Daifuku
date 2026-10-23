@@ -20,6 +20,10 @@
   what each peer is doing without reading its terminal. In `--json` these
   are `cwd`, `last_tool`, `last_message` and `transcript_path`, each left
   out until a hook of the session names it.
+- `daifuku open`, `spawn`, `restore` and `demo` leave the window in front
+  where it was, so a script that runs them no longer pulls a terminal to the
+  front. A fleet's key still brings its first terminal to the front, and
+  `next` its agent's.
 
 ## 0.4.1, 2026-10-22
 
