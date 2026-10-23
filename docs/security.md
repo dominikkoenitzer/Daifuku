@@ -20,11 +20,11 @@ input to ordinary windows. It cannot write where only administrators can.
 | Asset | Where | Why an ordinary process cannot change it |
 |---|---|---|
 | `daifuku.exe`, `daifukud.exe` | `C:\Program Files\Daifuku` | Program Files is writable by administrators only. The command line starts the daemon from there on demand, and a logon task does when the config asks for an elevated one. |
-| The config, which names the command every fleet terminal runs | `C:\ProgramData\Daifuku\daifuku.json` | Administrators and SYSTEM may write the folder, users may only read it. Any user may create folders in ProgramData, so the installer keeps an existing `Daifuku` folder, and the config in it, only when it is a real folder (not a link) that Administrators or SYSTEM own and no one else may change, as the installer leaves it. A folder whose owner or access list was changed since, so that someone else may change it, counts as one another program made. Anything else there is deleted without following links, and a new folder is created with its access list already in place. ProgramData itself is found on the drive Windows runs from, not through the environment, which the user can change. |
+| The config, which names the command every fleet terminal runs | `C:\ProgramData\Daifuku\daifuku.json` | Administrators and SYSTEM may write the folder, users may only read it. The config file in it is as locked while it asks for an elevated daemon. For an ordinary daemon, which runs with the installing user's rights anyway, install also lets that user write the file, without the right to delete it or change its access list, and no other user. A config that user could write and that asks for `"elevated": true` is locked by the install that finds it, which starts no daemon; the next install trusts it. Any user may create folders in ProgramData, so the installer keeps an existing `Daifuku` folder, and the config in it, only when it is a real folder (not a link) that Administrators or SYSTEM own and no one else may change, as the installer leaves it. A folder whose owner or access list was changed since, so that someone else may change it, counts as one another program made. Anything else there is deleted without following links, and a new folder is created with its access list already in place. ProgramData itself is found on the drive Windows runs from, not through the environment, which the user can change. |
 | The saved state: open fleets and what each agent is doing | `C:\ProgramData\Daifuku\state-<SID>.json`, one per user (`state.json` up to 0.1.3, read once when the user's own is missing) | In the same locked folder as the config, written by the daemon alone. It is taken back only within the same start of Windows and for five minutes after it was written, and every window in it is checked again: a fleet's must still be a Windows Terminal window, an agent's a window a hook could name. |
 | The peers `daifuku spawn` opened: folder, label, fleet, place, the cell of a fleet each is in and the last session id | `C:\ProgramData\Daifuku\peers-<SID>.json`, one per user | In the same locked folder, written by the daemon alone. `daifuku restore` puts these into command lines the elevated daemon starts, so a session id is kept only when it is letters, digits, `-` and `_`, only from a hook that ran inside that peer's terminal (below), and is checked again before it goes into a command line. Only the peers open when Windows last stopped are restored, and never a session that runs already. A peer whose terminal is still open after the daemon restarts goes back into its cell only when that window is still a Windows Terminal window of this start of Windows and the cell is free. |
 | The entry in Settings > Apps > Installed apps | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Daifuku` | Writable by administrators only. Its Uninstall runs `daifuku.exe` in Program Files, which asks for administrator rights through the normal Windows prompt. |
-| The logon task, written only for an elevated daemon, one per user | `\Daifuku\Daemon-<user SID>` in Task Scheduler | An ordinary daemon has none: it is started on demand with the signed-in user's own rights, also from an administrator terminal, so there is no auto-start to tamper with. A task is written only when the config sets `"elevated": true`, and it runs with highest privileges. Creating or changing such a task needs administrator rights, and the config that asks for one is writable by administrators only. Its definition passes through the locked data folder on the way in, never through the user's temp folder. An install removes a task an earlier version wrote for an ordinary daemon. |
+| The logon task, written only for an elevated daemon, one per user | `\Daifuku\Daemon-<user SID>` in Task Scheduler | An ordinary daemon has none: it is started on demand with the signed-in user's own rights, also from an administrator terminal, so there is no auto-start to tamper with. A task is written only when the config sets `"elevated": true`, and it runs with highest privileges. Creating or changing such a task needs administrator rights, and install writes one only from a config that administrators alone could write before it ran. Its definition passes through the locked data folder on the way in, never through the user's temp folder. An install removes a task an earlier version wrote for an ordinary daemon. |
 | Windows Terminal | its package folder under `WindowsApps` | Found through the package API, never through `PATH`, which contains folders the user can write. Only a package the system installed from a signed source counts: one registered from loose files in developer mode can live in any folder. |
 | PowerShell | `Program Files\PowerShell\7` or `System32` | Found through the known-folder API, never through `PATH` or environment variables. |
 
@@ -40,8 +40,9 @@ asked for by setting `"admin": true`; Daifuku adds nothing to it.
 
 Install adds `C:\Program Files\Daifuku`, which only administrators can
 write, to the machine `PATH`, and uninstall removes exactly that entry.
-Double-clicking `daifuku.exe`, and `daifuku config` from an ordinary
-terminal, ask for administrator rights through the normal Windows prompt.
+Double-clicking `daifuku.exe` asks for administrator rights through the
+normal Windows prompt, and so does `daifuku config` from an ordinary terminal
+when the config is writable by administrators only.
 
 ## Talking to the daemon
 
@@ -133,7 +134,9 @@ administrator terminals that result.
 ## Checked on every push
 
 CI installs Daifuku on a real Windows runner and asserts that the data folder
-is owned by Administrators and not writable by users, that the task exists,
+is owned by Administrators and not writable by users, that the config is
+writable by the installing user alone, that a config asking for elevation is
+locked first and only the next install writes the task, that the task exists,
 that a user's own hook survives next to Daifuku's, that a second install
 changes nothing, and that `uninstall --purge` removes the binaries, the task,
 the data and exactly Daifuku's hooks.

@@ -285,8 +285,8 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 | `create_folder` | install | Create the data folder, locked to administrators. |
 | `replace_folder` | install | Delete a data folder that is not locked, config and all, and create it anew. |
 | `keep_folder` | both | Keep the data folder as it is. |
-| `write_config` | install | Write the starter config. |
-| `keep_config` | install | Keep the config there is. |
+| `write_config` | install | Write the starter config; `detail` is `the starter config, writable by you` or `the starter config, writable by administrators only`. |
+| `keep_config` | both | Keep the config there is; `detail` is `writable by you` or `writable by administrators only`, and in an uninstall `no longer writable by you`. |
 | `register_task` | install | Register this user's logon task. |
 | `remove_task` | both | Remove this user's logon task, or the one task earlier installs shared. |
 | `start_task` | install | Start the daemon now. |

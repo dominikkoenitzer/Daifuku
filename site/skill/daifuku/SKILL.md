@@ -52,7 +52,7 @@ What install changes, the hook entries it writes and how to undo each part: [ref
 
 ## Configure
 
-The config is `C:\ProgramData\Daifuku\daifuku.json`, JSON, every key optional. `daifuku config` opens it in the user's editor for `.json` files (Notepad when there is none), after a Windows prompt when the terminal is not elevated; `daifuku config --path` prints the path. The daemon applies each save within two seconds; `daifuku reload` applies it at once. An invalid file never stops Daifuku: the last valid config stays in use.
+The config is `C:\ProgramData\Daifuku\daifuku.json`, JSON, every key optional. `daifuku config` opens it in the user's editor for `.json` files (Notepad when there is none), after a Windows prompt when the terminal is not elevated and only administrators may write the file, as with `"elevated": true`; `daifuku config --path` prints the path. The daemon applies each save within two seconds; `daifuku reload` applies it at once. An invalid file never stops Daifuku: the last valid config stays in use.
 
 Every key with its default: [references/configuration.md](references/configuration.md).
 
