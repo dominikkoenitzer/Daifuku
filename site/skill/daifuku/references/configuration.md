@@ -6,9 +6,9 @@ Unknown keys are errors at the top level and in `fleets[]`, `gaps`, `border`, `b
 
 ## Writing the file
 
-- Only administrators may write `C:\ProgramData\Daifuku`. `daifuku config` asks Windows for permission and opens the user's editor. From an administrator shell you may write the file directly, after the user has seen the change.
+- Only administrators may write the folder `C:\ProgramData\Daifuku`. While the daemon runs with the user's own rights, install lets the user who installed Daifuku write `daifuku.json` in it, and `daifuku config` opens the user's editor at once. A config that sets `"elevated": true` only administrators may write, so then `daifuku config` asks Windows for permission first. From a shell that may write the file you may write it directly, after the user has seen the change.
 - Never take ownership of the folder or give the user's account write access to it. The next install deletes a folder that is not locked to administrators, config included.
-- The daemon re-reads the file within two seconds of each save. `daifuku reload` applies it at once (from an administrator terminal when the daemon runs elevated). `elevated` is the exception: it takes effect only when `daifuku install` runs again.
+- The daemon re-reads the file within two seconds of each save. `daifuku reload` applies it at once (from an administrator terminal when the daemon runs elevated). `elevated` is the exception: it takes effect only when `daifuku install` runs again, and set in a file the user could write it takes two installs: the first locks the file to administrators and starts no daemon, the second, after the user checked the file, registers the elevated daemon.
 - An invalid file never takes Daifuku down. The daemon keeps the last valid config, or the defaults when it started with an invalid file. `daifuku doctor` prints `ok    config valid` or `FIX   config valid: <the error>`.
 - `daifuku schema` prints the JSON schema. Install writes `"$schema": "https://get-daifuku.vercel.app/schema.json"` into the starter config, so an editor that reads schemas completes and checks every key.
 

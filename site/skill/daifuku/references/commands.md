@@ -84,7 +84,7 @@ The program is an executable found on `PATH`, not a PowerShell line; for one, ru
 | `daifuku uninstall` | Remove the program, the `PATH` entry, the logon task and Daifuku's hooks. Keeps config, logs and saved state. | administrator terminal |
 | `daifuku uninstall --purge` | Also delete `C:\ProgramData\Daifuku` (config, logs and saved state) and `%LocalAppData%\Daifuku` (the logs and saved state of a daemon with the user's own rights). | administrator terminal |
 | `daifuku doctor` | Check the setup and print a fix for each problem. Exit code 0 when every check passes, 1 otherwise. | any terminal; for an elevated daemon, its rights and hotkey checks only from an administrator terminal |
-| `daifuku config` | Open the config file in the editor for `.json` files, or Notepad. Asks Windows for permission first when the terminal is not elevated. Fails when no config file exists yet (`daifuku install` writes one). | any terminal |
+| `daifuku config` | Open the config file in the editor for `.json` files, or Notepad. Asks Windows for permission first when the terminal is not elevated and only administrators may write the file, as with `"elevated": true`. Fails when no config file exists yet (`daifuku install` writes one). | any terminal |
 | `daifuku config --path` | Print the config file's path. | any terminal |
 | `daifuku schema` | Print the config file's JSON schema. | any terminal |
 
