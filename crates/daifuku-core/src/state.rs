@@ -75,6 +75,16 @@ pub struct HookEvent {
     /// `/compact` you ran, `auto` for one the agent started itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
+    /// The folder the session works in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The file the agent writes the session's transcript to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    /// Set on `Notification` events: the text the agent shows, such as what
+    /// it asks permission for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// When the hook started, in 100 ns ticks since Windows started, stamped
     /// by `daifuku hook` itself. Agents run their hooks in the background and
     /// they may finish out of order; this puts them back in order. Windows'
@@ -116,6 +126,33 @@ impl HookEvent {
     /// event name.
     pub fn from_hook_input(input: impl std::io::Read) -> Result<Self, serde_json::Error> {
         serde_json::from_reader(input)
+    }
+
+    /// Drops a folder, transcript path or tool name longer than any real
+    /// one, and cuts the message to [`MAX_MESSAGE`] bytes, so what the event
+    /// adds to a tracked session stays small.
+    pub fn trim(&mut self) {
+        for path in [&mut self.cwd, &mut self.transcript_path] {
+            if path.as_ref().is_some_and(|p| p.len() > MAX_PATH_LEN) {
+                *path = None;
+            }
+        }
+        if self
+            .tool_name
+            .as_ref()
+            .is_some_and(|t| t.len() > MAX_SESSION_ID)
+        {
+            self.tool_name = None;
+        }
+        if let Some(m) = &mut self.message
+            && m.len() > MAX_MESSAGE
+        {
+            let mut end = MAX_MESSAGE;
+            while !m.is_char_boundary(end) {
+                end -= 1;
+            }
+            m.truncate(end);
+        }
     }
 
     /// What this event means.
@@ -206,6 +243,48 @@ struct Session<W> {
     since: u64,
     /// The hook time of the latest event applied, when hooks stamp one.
     at: Option<u64>,
+    /// What the session last said about itself; missing from a file saved
+    /// by an older version.
+    #[serde(default)]
+    detail: Detail,
+}
+
+/// What a session last reported about itself, for `daifuku status`. Each
+/// field keeps the latest event that carried it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Detail {
+    /// The folder it works in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Its transcript file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    /// The tool it ran last, or is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<String>,
+    /// The text of its last notification, such as a permission prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<String>,
+}
+
+impl Detail {
+    /// Keeps what `event` carries, trimmed: the hook pipe takes events from
+    /// any process of the user, not only from `daifuku hook`.
+    fn note(&mut self, event: &HookEvent) {
+        let mut event = event.clone();
+        event.trim();
+        let keep = |field: &mut Option<String>, value: &Option<String>| {
+            if value.is_some() {
+                field.clone_from(value);
+            }
+        };
+        keep(&mut self.cwd, &event.cwd);
+        keep(&mut self.transcript_path, &event.transcript_path);
+        keep(&mut self.last_tool, &event.tool_name);
+        if event.hook_event_name == "Notification" {
+            keep(&mut self.last_message, &event.message);
+        }
+    }
 }
 
 impl<W> Session<W> {
@@ -232,6 +311,16 @@ const MAX_SESSION_ID: usize = 128;
 /// subagents run at a time; with [`MAX_SESSION_ID`] it bounds what made-up
 /// events can make one tracked session cost to a few kilobytes.
 const MAX_WAITING: usize = 32;
+
+/// The longest folder or transcript path [`HookEvent::trim`] keeps, in
+/// bytes. Far longer than any folder an agent works in; with
+/// [`MAX_MESSAGE`] it keeps what a session's details cost to about ten
+/// kilobytes.
+pub const MAX_PATH_LEN: usize = 4096;
+
+/// How much of a notification's text [`HookEvent::trim`] keeps, in bytes.
+/// A permission prompt names the tool and its command in a line or two.
+pub const MAX_MESSAGE: usize = 1024;
 
 impl<W: Ord + Copy> Default for Agents<W> {
     fn default() -> Self {
@@ -284,6 +373,7 @@ impl<W: Ord + Copy> Agents<W> {
                 let shown = s.shown();
                 s.waiting.remove(id);
                 s.at = s.at.max(event.daifuku_at);
+                s.detail.note(event);
                 if s.shown() != shown {
                     self.tick += 1;
                     s.since = self.tick;
@@ -299,6 +389,7 @@ impl<W: Ord + Copy> Agents<W> {
                     s.state = AgentState::Done;
                 }
                 s.at = s.at.max(event.daifuku_at);
+                s.detail.note(event);
                 if s.shown() != shown {
                     self.tick += 1;
                     s.since = self.tick;
@@ -316,6 +407,7 @@ impl<W: Ord + Copy> Agents<W> {
                         waiting: BTreeSet::new(),
                         since: tick,
                         at: None,
+                        detail: Detail::default(),
                     });
                 let shown = entry.shown();
                 let thread = event.agent_id.clone().unwrap_or_default();
@@ -340,6 +432,7 @@ impl<W: Ord + Copy> Agents<W> {
                 }
                 entry.window = window;
                 entry.at = entry.at.max(event.daifuku_at);
+                entry.detail.note(event);
             }
         }
         let changed_here = self.window_state(window) != before;
@@ -394,6 +487,13 @@ impl<W: Ord + Copy> Agents<W> {
     #[must_use]
     pub fn session_state(&self, session_id: &str) -> Option<AgentState> {
         self.sessions.get(session_id).map(Session::shown)
+    }
+
+    /// What a session last said about itself, or `None` when it is not
+    /// known.
+    #[must_use]
+    pub fn session_detail(&self, session_id: &str) -> Option<&Detail> {
+        self.sessions.get(session_id).map(|s| &s.detail)
     }
 
     /// Every session, the window it runs in and the state it shows, so a
@@ -671,6 +771,87 @@ mod tests {
         let e = HookEvent::from_hook_input(input.as_bytes()).unwrap();
         assert_eq!(e.session_id, "abc");
         assert_eq!(e.transition(), Transition::To(AgentState::Waiting));
+        assert_eq!(e.cwd.as_deref(), Some("C:\\x"));
+        assert_eq!(e.transcript_path.as_deref(), Some("t"));
+        assert_eq!(e.message.as_deref(), Some("Claude needs your permission"));
+    }
+
+    #[test]
+    fn a_session_keeps_the_latest_of_each_detail() {
+        let mut a = Agents::new();
+        a.apply(
+            1,
+            &HookEvent {
+                cwd: Some("C:\\a".into()),
+                transcript_path: Some("t".into()),
+                tool_name: Some("Bash".into()),
+                ..ev("s", "PreToolUse")
+            },
+        );
+        a.apply(
+            1,
+            &HookEvent {
+                message: Some("Claude needs your permission to use Edit".into()),
+                ..note("s", "permission_prompt")
+            },
+        );
+        // A message on any other event is not a notification's text.
+        a.apply(
+            1,
+            &HookEvent {
+                cwd: Some("C:\\b".into()),
+                message: Some("not shown".into()),
+                ..sub("s", "PostToolUse", "A")
+            },
+        );
+        let d = a.session_detail("s").unwrap();
+        assert_eq!(d.cwd.as_deref(), Some("C:\\b"));
+        assert_eq!(d.transcript_path.as_deref(), Some("t"));
+        assert_eq!(d.last_tool.as_deref(), Some("Bash"));
+        assert_eq!(
+            d.last_message.as_deref(),
+            Some("Claude needs your permission to use Edit")
+        );
+        assert_eq!(a.session_detail("other"), None);
+    }
+
+    #[test]
+    fn details_no_agent_would_send_are_cut_or_dropped() {
+        let mut a = Agents::new();
+        // Cut inside a two-byte character, it ends before it.
+        let message = format!("{}é", "x".repeat(MAX_MESSAGE - 1));
+        a.apply(
+            1,
+            &HookEvent {
+                cwd: Some("x".repeat(MAX_PATH_LEN + 1)),
+                transcript_path: Some("x".repeat(MAX_PATH_LEN)),
+                tool_name: Some("x".repeat(MAX_SESSION_ID + 1)),
+                message: Some(message),
+                ..note("s", "permission_prompt")
+            },
+        );
+        let d = a.session_detail("s").unwrap();
+        assert_eq!(d.cwd, None);
+        assert_eq!(
+            d.transcript_path.as_ref().map(String::len),
+            Some(MAX_PATH_LEN)
+        );
+        assert_eq!(d.last_tool, None);
+        assert_eq!(d.last_message, Some("x".repeat(MAX_MESSAGE - 1)));
+    }
+
+    #[test]
+    fn sessions_saved_without_details_still_load() {
+        let mut a = Agents::new();
+        a.apply(1_u64, &ev("s", "PermissionRequest"));
+        let mut saved = serde_json::to_value(&a).unwrap();
+        saved["sessions"]["s"]
+            .as_object_mut()
+            .unwrap()
+            .remove("detail");
+        let back: Agents<u64> = serde_json::from_value(saved).unwrap();
+        assert_eq!(back.window_state(1), Some(AgentState::Waiting));
+        assert_eq!(back.session_detail("s"), Some(&Detail::default()));
     }
 
     #[test]

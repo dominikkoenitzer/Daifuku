@@ -703,6 +703,10 @@ fn only_the_demos_waiting_agents_count() {
         label: None,
         fleet: None,
         session_id: None,
+        cwd: None,
+        last_tool: None,
+        last_message: None,
+        transcript_path: None,
     };
     let s = Status {
         fleets: vec![FleetStatus {

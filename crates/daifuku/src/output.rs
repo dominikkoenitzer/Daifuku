@@ -407,6 +407,10 @@ mod tests {
                 label: None,
                 fleet: None,
                 session_id: None,
+                cwd: None,
+                last_tool: None,
+                last_message: None,
+                transcript_path: None,
             }],
             peers: Vec::new(),
         };

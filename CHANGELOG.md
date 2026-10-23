@@ -14,6 +14,12 @@
 - `daifuku uninstall` without `--purge` takes the user's write off the
   config it keeps. The next install still treats the file as one the user
   could write.
+- `daifuku status` lists, for each agent, the folder its session works in,
+  the tool it ran last, the text of its last notification (what it asks
+  permission for) and its transcript file, so a coordinating agent can see
+  what each peer is doing without reading its terminal. In `--json` these
+  are `cwd`, `last_tool`, `last_message` and `transcript_path`, each left
+  out until a hook of the session names it.
 
 ## 0.4.1, 2026-10-22
 

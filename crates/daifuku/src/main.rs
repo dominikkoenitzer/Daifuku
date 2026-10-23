@@ -938,6 +938,8 @@ fn hook() {
     if event.transition() == Transition::Ignore {
         return;
     }
+    // A long notification must not make the line too long for the pipe.
+    event.trim();
     let Some((window, agent)) = console::terminal_window_of(process::current()) else {
         return;
     };
@@ -1607,6 +1609,9 @@ fn print_status(s: &daifuku_core::protocol::Status) {
             a.title,
             a.window
         );
+        for line in details(a) {
+            println!("           {line}");
+        }
     }
     if !s.peers.is_empty() {
         println!("\npeers");
@@ -1654,6 +1659,37 @@ fn by_urgency(
     sorted
 }
 
+/// The lines under an agent in `daifuku status`: the folder it works in,
+/// and what it asks while it waits. Both are what a hook said, so their line
+/// breaks, other control characters and the bidi controls, which reorder how
+/// a line reads, become spaces and each stays on its line.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
+    let one_line = |text: &str| -> String {
+        let text: String = text
+            .chars()
+            .map(|c| {
+                let bidi = matches!(
+                    c,
+                    '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                );
+                if c.is_control() || bidi { ' ' } else { c }
+            })
+            .collect();
+        text.trim().to_owned()
+    };
+    let mut lines = Vec::new();
+    if let Some(cwd) = &a.cwd {
+        lines.push(format!("in {}", one_line(cwd)));
+    }
+    if a.state == daifuku_core::state::AgentState::Waiting
+        && let Some(m) = &a.last_message
+    {
+        lines.push(format!("asks: {}", one_line(m)));
+    }
+    lines
+}
+
 /// `1 terminal`, `3 terminals`: how many terminals a fleet has.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn terminals(n: usize) -> String {
@@ -1690,6 +1726,10 @@ mod tests {
             label: None,
             fleet: None,
             session_id: None,
+            cwd: None,
+            last_tool: None,
+            last_message: None,
+            transcript_path: None,
         };
         let agents = [
             agent(1, AgentState::Done, 90),
@@ -1700,6 +1740,44 @@ mod tests {
         ];
         let order: Vec<u64> = by_urgency(&agents).iter().map(|a| a.window).collect();
         assert_eq!(order, [4, 2, 5, 3, 1]);
+    }
+
+    #[test]
+    fn status_says_where_an_agent_works_and_what_it_asks() {
+        use daifuku_core::protocol::AgentWindow;
+        use daifuku_core::state::AgentState;
+        let mut a = AgentWindow {
+            window: 1,
+            title: String::new(),
+            state: AgentState::Waiting,
+            for_seconds: 0,
+            label: None,
+            fleet: None,
+            session_id: None,
+            cwd: Some("site".into()),
+            last_tool: Some("Bash".into()),
+            last_message: Some("may I run\r\nthis? ".into()),
+            transcript_path: None,
+        };
+        assert_eq!(details(&a), ["in site", "asks: may I run  this?"]);
+        // Once it works again, the question is old news.
+        a.state = AgentState::Working;
+        assert_eq!(details(&a), ["in site"]);
+        // The folder is what a hook said too, so it cannot break the listing.
+        a.cwd = Some("C:\\src\nfake line\u{1b}[2J".into());
+        assert_eq!(details(&a), ["in C:\\src fake line [2J"]);
+        // Nor reorder what the rest of the line reads like.
+        a.cwd = Some("C:\\src\\\u{202e}gpj.exe".into());
+        assert_eq!(details(&a), ["in C:\\src\\ gpj.exe"]);
+        for c in [
+            '\u{61c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            a.cwd = Some(format!("a{c}b"));
+            assert_eq!(details(&a), ["in a b"], "{:#x}", c as u32);
+        }
+        a.cwd = None;
+        assert!(details(&a).is_empty());
     }
     use clap::CommandFactory;
 
