@@ -223,6 +223,9 @@ pub enum Step {
     RemoveBinaries { dir: PathBuf, present: bool },
     /// Take Daifuku out of Settings > Apps; `present` when it is listed.
     RemoveAppEntry { present: bool },
+    /// Take the write install gave on the config kept in the data folder
+    /// away again, leaving `owner`, the user's SID, its owner.
+    LockKeptConfig { file: PathBuf, owner: String },
     /// Delete a data folder, which holds `what`.
     RemoveData { dir: PathBuf, what: &'static str },
     /// Keep a data folder, which holds `what`.
@@ -525,6 +528,13 @@ pub fn uninstall_plan(facts: &Facts, purge: bool) -> Vec<Step> {
     steps.push(Step::RemoveAppEntry {
         present: facts.app_entry,
     });
+    // Kept, it stays the user's, so the next install trusts no elevation in it.
+    if !purge && facts.config_open {
+        steps.push(Step::LockKeptConfig {
+            file: facts.data.join("daifuku.json"),
+            owner: facts.sid.clone(),
+        });
+    }
     let folders =
         std::iter::once((&facts.data, DATA)).chain(facts.user_data.iter().map(|d| (d, USER_DATA)));
     for (dir, what) in folders {
@@ -721,6 +731,11 @@ impl Step {
                     Vec::new()
                 }
             }
+            Self::LockKeptConfig { file, .. } => vec![at(
+                "keep_config",
+                file,
+                Some("no longer writable by you".into()),
+            )],
             Self::RemoveData { dir, what } => {
                 vec![at("remove_folder", dir, Some((*what).into()))]
             }
@@ -1065,6 +1080,13 @@ fn run(step: &Step) -> anyhow::Result<()> {
             Ok(true) => println!("removed      from Settings > Apps > Installed apps"),
             Ok(false) => {}
             Err(e) => println!("left         in Settings > Apps > Installed apps ({e})"),
+        },
+        Step::LockKeptConfig { file, owner } => match setup::keep_config(file, owner) {
+            Ok(()) => println!("config       {} no longer writable by you", file.display()),
+            Err(e) => println!(
+                "config       {} still writable by you ({e})",
+                file.display()
+            ),
         },
         Step::RemoveData { dir, .. } => {
             std::fs::remove_dir_all(dir)
@@ -2241,6 +2263,42 @@ mod tests {
             purged.last(),
             Some(&("remove_folder", r"C:\ProgramData\Daifuku".to_owned()))
         );
+    }
+
+    #[test]
+    fn an_uninstall_that_keeps_the_config_takes_the_users_write_off_it() {
+        let mut f = installed();
+        f.config_open = true;
+        let config = |f: &Facts, purge| {
+            uninstall_plan(f, purge)
+                .iter()
+                .flat_map(Step::describe)
+                .filter(|s| s.action.ends_with("_config"))
+                .map(|s| (s.action, s.target, s.detail))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            config(&f, false),
+            [(
+                "keep_config",
+                r"C:\ProgramData\Daifuku\daifuku.json".to_owned(),
+                Some("no longer writable by you".to_owned())
+            )]
+        );
+        let steps = names(&uninstall_plan(&f, false));
+        assert_eq!(
+            steps[steps.len() - 3..],
+            ["remove_app_entry", "keep_config", "keep_folder"]
+        );
+        assert!(
+            uninstall_plan(&f, false)
+                .iter()
+                .any(|s| matches!(s, Step::LockKeptConfig { owner, .. } if owner == SID))
+        );
+        // A purge deletes it, and a locked one has no grant to take off.
+        assert_eq!(config(&f, true), []);
+        f.config_open = false;
+        assert_eq!(config(&f, false), []);
     }
 
     #[test]

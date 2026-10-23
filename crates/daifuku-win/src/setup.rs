@@ -158,6 +158,17 @@ pub fn config_sddl(writer: Option<&str>) -> String {
     }
 }
 
+/// The access list of a config an uninstall keeps after `owner`, that
+/// user's SID, could write it. Only SYSTEM and Administrators may change it,
+/// as an elevated daemon's, but `owner` stays its owner, so the next install
+/// still counts what is in it as that user's and trusts no elevation it asks
+/// for. The owner rights entry cuts the owner's own rights to reading, so the
+/// owner cannot give the write back to themselves.
+#[must_use]
+pub fn kept_config_sddl(owner: &str) -> String {
+    format!("O:{owner}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)(A;;0x1200a9;;;OW)")
+}
+
 /// Whether `s` reads as a SID string and nothing else, so it cannot add an
 /// entry of its own to an access list it is put into.
 fn is_sid(s: &str) -> bool {
@@ -180,15 +191,44 @@ fn is_sid(s: &str) -> bool {
 /// file, or Windows refuses the change, as it does for a process that is not
 /// elevated.
 pub fn secure_config(file: &Path, writer: Option<&str>) -> std::io::Result<()> {
-    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-    use std::os::windows::io::AsRawHandle;
-
     if writer.is_some_and(|s| !is_sid(s)) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "the writer is not a SID",
         ));
     }
+    set_security(file, &config_sddl(writer))
+}
+
+/// Gives the config at `file`, which an uninstall keeps, the owner and
+/// access list [`kept_config_sddl`] builds for `owner`, opened as
+/// [`secure_config`] opens it.
+///
+/// # Errors
+///
+/// When `owner` is not a SID, `file` cannot be opened or is not a plain
+/// file, or Windows refuses the change.
+pub fn keep_config(file: &Path, owner: &str) -> std::io::Result<()> {
+    if !is_sid(owner) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the owner is not a SID",
+        ));
+    }
+    set_security(file, &kept_config_sddl(owner))
+}
+
+/// Gives the plain file at `file` the owner and access list in `sddl`,
+/// without following a link.
+///
+/// # Errors
+///
+/// When `file` cannot be opened or is not a plain file, or Windows refuses
+/// the change.
+fn set_security(file: &Path, sddl: &str) -> std::io::Result<()> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+
     let handle = std::fs::OpenOptions::new()
         .access_mode(READ_CONTROL.0 | WRITE_DAC.0 | WRITE_OWNER.0 | FILE_READ_ATTRIBUTES.0)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
@@ -200,7 +240,7 @@ pub fn secure_config(file: &Path, writer: Option<&str>) -> std::io::Result<()> {
             file.display()
         )));
     }
-    let sddl = to_wide(&config_sddl(writer));
+    let sddl = to_wide(sddl);
     let mut sd = PSECURITY_DESCRIPTOR::default();
     // SAFETY: the string is NUL terminated; owner and dacl point into sd,
     // which is freed after the call that reads them.
@@ -807,6 +847,74 @@ mod tests {
         secure_config(&file, None).unwrap();
         assert!(config_is_locked(&file).unwrap());
         std::fs::remove_file(&file).unwrap();
+    }
+
+    /// The owner `sddl` names, as a SID string.
+    fn owner_of(sddl: &str) -> String {
+        let w = to_wide(sddl);
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: as in secure_config; the owner points into sd.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(w.as_ptr()),
+                SDDL_REVISION_1,
+                &raw mut sd,
+                None,
+            )
+            .unwrap();
+            let mut owner = PSID::default();
+            let mut defaulted = windows::core::BOOL(0);
+            GetSecurityDescriptorOwner(sd, &raw mut owner, &raw mut defaulted).unwrap();
+            let mut s = PWSTR::null();
+            ConvertSidToStringSidW(owner, &raw mut s).unwrap();
+            let out = from_wide(s.as_wide());
+            let _ = LocalFree(Some(HLOCAL(s.0.cast())));
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            out
+        }
+    }
+
+    #[test]
+    fn a_kept_config_is_writable_by_administrators_only_and_stays_its_users() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        let sddl = kept_config_sddl(sid);
+        assert!(sddl.contains("D:P"), "{sddl}");
+        assert_eq!(writers(&sddl), []);
+        assert_eq!(owner_of(&sddl), sid);
+        // The owner may read it and do nothing else.
+        assert!(sddl.ends_with("(A;;0x1200a9;;;OW)"), "{sddl}");
+        let e = keep_config(Path::new("daifuku.json"), "S-1-5-21-1)(A;;FA;;;WD").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_kept_config_is_not_locked_and_its_owner_cannot_change_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let base = std::env::temp_dir().join(format!("daifuku-kept-{}", std::process::id()));
+        std::fs::create_dir(&base).unwrap();
+        let file = base.join("daifuku.json");
+        std::fs::write(&file, "{}").unwrap();
+        keep_config(&file, &user_sid().unwrap()).unwrap();
+        // Owned by this user, so an install still counts it as theirs.
+        assert!(!config_is_locked(&file).unwrap());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{}");
+        if crate::process::current_is_elevated() {
+            secure_config(&file, None).unwrap();
+            assert!(config_is_locked(&file).unwrap());
+        } else {
+            let denied = |access: u32| {
+                std::fs::OpenOptions::new()
+                    .access_mode(access)
+                    .open(&file)
+                    .unwrap_err()
+                    .kind()
+            };
+            assert_eq!(denied(0x2), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(denied(WRITE_DAC.0), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(denied(WRITE_OWNER.0), std::io::ErrorKind::PermissionDenied);
+        }
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
