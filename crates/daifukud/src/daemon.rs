@@ -2323,25 +2323,31 @@ impl Daemon {
         }
         // Each stays dormant until it is open, so a daemon that stops part
         // way loses none of the rest.
-        let mut peers = Vec::new();
         let waiting: Vec<Spawn> = self.dormant.iter().chain(&self.closed).cloned().collect();
-        for spawn in waiting {
-            if let Some(running) = self.running(&spawn) {
-                peers.push(listed(&spawn, None, Some(running)));
-                self.forget_waiting(&spawn);
+        let mut peers: Vec<Option<RestoredPeer>> = waiting.iter().map(|_| None).collect();
+        // Those that had a cell open first, so a peer without one cannot take it.
+        let mut order: Vec<usize> = (0..waiting.len()).collect();
+        order.sort_by_key(|&i| waiting[i].cell.is_none());
+        for i in order {
+            let spawn = &waiting[i];
+            if let Some(running) = self.running(spawn) {
+                peers[i] = Some(listed(spawn, None, Some(running)));
+                self.forget_waiting(spawn);
                 continue;
             }
-            match self.spawn(&spawn, true) {
+            match self.spawn(spawn, true) {
                 Response::Spawned { window, .. } => {
-                    peers.push(listed(&spawn, Some(window), None));
-                    self.forget_waiting(&spawn);
+                    peers[i] = Some(listed(spawn, Some(window), None));
+                    self.forget_waiting(spawn);
                 }
-                Response::Error { message } => peers.push(listed(&spawn, None, Some(message))),
+                Response::Error { message } => peers[i] = Some(listed(spawn, None, Some(message))),
                 _ => {}
             }
         }
         self.save_peers();
-        Response::Restored { peers }
+        Response::Restored {
+            peers: peers.into_iter().flatten().collect(),
+        }
     }
 
     /// Lets go of one peer waiting to be restored, dormant or closed with
@@ -4871,6 +4877,36 @@ mod tests {
         );
         assert_eq!(d.fleets[0].slots, full, "the full crew stays as it was");
         assert_eq!(*spots.borrow(), vec![half.clone(), half]);
+    }
+
+    #[test]
+    fn a_restored_peer_without_a_cell_leaves_the_cell_another_one_had() {
+        let (mut d, _, _) = with_spots(CREW);
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        d.fleets[0].slots[0] = None;
+        let peer = |id: &str, cell| Spawn {
+            directory: std::env::current_dir().unwrap(),
+            fleet: Some("crew".into()),
+            resume: Some(id.into()),
+            cell,
+            ..Spawn::default()
+        };
+        d.dormant = vec![
+            peer("aaa", None),
+            peer("bbb", Some(daifuku_core::peer::Cell::At(1))),
+        ];
+        let said = d.control(&Request::Restore {
+            dry_run: false,
+            forget: false,
+        });
+        let Response::Restored { peers } = said else {
+            panic!("{said:?}");
+        };
+        let ids: Vec<&str> = peers.iter().map(|p| p.session_id.as_str()).collect();
+        assert_eq!(ids, ["aaa", "bbb"], "listed in the order they were saved");
+        assert_eq!(d.fleets[0].slots[0], peers[1].window, "{peers:?}");
     }
 
     #[test]
