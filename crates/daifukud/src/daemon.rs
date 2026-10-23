@@ -861,8 +861,16 @@ impl Daemon {
 
     /// Watches agent process `pid` for the end of `session`. A process that
     /// cannot be opened, as one that ended already, is not watched; past
-    /// [`MAX_SESSIONS`] processes, new ones are not either.
+    /// [`MAX_SESSIONS`] processes, new ones are not either. A session is
+    /// watched for the last process it reported from only: one resumed in a
+    /// new process outlives the old one.
     fn watch_agent(&mut self, pid: u32, session: &str) {
+        self.agent_processes.retain(|&other, (_, sessions)| {
+            if other != pid {
+                sessions.remove(session);
+            }
+            !sessions.is_empty()
+        });
         if let Some((_, sessions)) = self.agent_processes.get_mut(&pid) {
             if sessions.len() < MAX_SESSIONS {
                 sessions.insert(session.to_owned());
@@ -2419,6 +2427,46 @@ mod tests {
             None,
             "no agent left in the window"
         );
+        assert!(d.agent_processes.is_empty());
+    }
+
+    #[test]
+    fn a_session_reported_again_from_a_new_process_stays_when_the_old_one_ends() {
+        use daifuku_core::state::HookEvent;
+        let mut d = daemon();
+        let event = HookEvent {
+            session_id: "again".into(),
+            hook_event_name: "PermissionRequest".into(),
+            ..HookEvent::default()
+        };
+        let mut ended = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit"])
+            .spawn()
+            .unwrap();
+        let mut runs = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // Killed with its console: the window goes before a sweep sees the
+        // process end.
+        d.agents.apply(5, &event);
+        d.watch_agent(ended.id(), "again");
+        ended.wait().unwrap();
+        d.window_destroyed(5);
+        // The same session reports from another terminal before that sweep.
+        d.agents.apply(6, &event);
+        d.watch_agent(runs.id(), "again");
+        d.reap_agents();
+        assert_eq!(
+            d.agents.window_state(6),
+            Some(AgentState::Waiting),
+            "the process the session ran in before ended it"
+        );
+        let _ = runs.kill();
+        let _ = runs.wait();
+        d.reap_agents();
+        assert_eq!(d.agents.window_state(6), None);
         assert!(d.agent_processes.is_empty());
     }
 
