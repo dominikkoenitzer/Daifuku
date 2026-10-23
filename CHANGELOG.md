@@ -165,6 +165,10 @@
 - A fleet whose gaps leave its terminals no room keeps every terminal
   inside its area, with narrower gaps. Its last terminals were placed past
   the edge of the area, on another monitor or off the screen.
+- `daifuku open`, `spawn`, `restore` and `demo` leave the window in front
+  where it was, so a script that runs them no longer pulls a terminal to the
+  front. A fleet's key still brings its first terminal to the front, and
+  `next` its agent's.
 
 ## 0.4.1, 2026-10-22
 

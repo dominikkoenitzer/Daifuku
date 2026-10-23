@@ -165,6 +165,8 @@ struct Daemon {
     idle_stale: bool,
     /// When each backlog last changed, as last seen.
     backlog_stamps: HashMap<PathBuf, Option<std::time::SystemTime>>,
+    /// Where fleets and peers open and terminals come to the front.
+    desk: Box<dyn fleet::Desk>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -323,6 +325,7 @@ impl Daemon {
             idle: Vec::new(),
             idle_stale: false,
             backlog_stamps: HashMap::new(),
+            desk: Box::new(fleet::Live),
         }
     }
 
@@ -373,7 +376,7 @@ impl Daemon {
         // known only beforehand.
         let had_nothing = self.idle(action);
         let result = match action {
-            Action::Open(name) => self.open(Some(name)),
+            Action::Open(name) => self.open(Some(name), true),
             Action::Next => self.next(),
             Action::Snap => self.snap(),
             Action::Close => self.close_all(),
@@ -439,7 +442,7 @@ impl Daemon {
 
     fn control(&mut self, request: &Request) -> Response {
         match request {
-            Request::Open { fleet } => self.open(fleet.as_deref()),
+            Request::Open { fleet } => self.open(fleet.as_deref(), false),
             Request::Snap => self.snap(),
             Request::Close { fleet } => self.close(fleet.as_deref()),
             Request::CloseAll => self.close_all(),
@@ -919,7 +922,10 @@ impl Daemon {
         );
     }
 
-    fn open(&mut self, name: Option<&str>) -> Response {
+    /// Opens fleet `name`, or the first one, with the fleets it names. Only
+    /// when its key opened it, `by_key`, does a terminal come to the front:
+    /// a script that opens a fleet leaves the front as it was.
+    fn open(&mut self, name: Option<&str>, by_key: bool) -> Response {
         let fleet = match name {
             Some(n) => self.config.fleet(n).cloned(),
             None => self.config.fleets.first().cloned(),
@@ -933,7 +939,7 @@ impl Daemon {
         let mut said = Vec::new();
         let mut failed = Vec::new();
         for other in &opening_order(&self.config, fleet) {
-            match self.open_fleet(other) {
+            match self.open_fleet(other, by_key) {
                 Response::Error { message } => failed.push(message),
                 Response::Ok {
                     message: Some(message),
@@ -950,8 +956,9 @@ impl Daemon {
 
     /// Opens a fleet, or brings back the one that is open. Its record goes
     /// back into the list whatever happens, so a failure part way loses
-    /// neither the terminals that were open nor the ones just started.
-    fn open_fleet(&mut self, fleet: &daifuku_core::config::Fleet) -> Response {
+    /// neither the terminals that were open nor the ones just started. With
+    /// `front`, its first terminal then comes to the front.
+    fn open_fleet(&mut self, fleet: &daifuku_core::config::Fleet, front: bool) -> Response {
         let notes = if fleet.resume {
             self.resume_cells(fleet)
         } else {
@@ -967,7 +974,15 @@ impl Daemon {
             None => OpenFleet::new(&fleet.name),
         };
         self.opening_windows();
-        let result = fleet::open(fleet, &self.config, &mut record, self.elevated);
+        let result = self
+            .desk
+            .open(fleet, &self.config, &mut record, self.elevated);
+        if front
+            && result.is_ok()
+            && let Some(first) = record.windows().next()
+        {
+            self.desk.focus(first);
+        }
         if record.windows().next().is_some() {
             self.fleets.push(record);
         }
@@ -1001,7 +1016,7 @@ impl Daemon {
         else {
             return Response::error("cannot find daifuku.exe next to the daemon");
         };
-        self.open_fleet(&fleet)
+        self.open_fleet(&fleet, false)
     }
 
     fn demo_fleet(&self) -> Option<daifuku_core::config::Fleet> {
@@ -2464,7 +2479,9 @@ impl Daemon {
         }
         let cell = joined.as_ref().map(|(_, slot)| *slot);
         self.opening_windows();
-        let opened = fleet::spawn(&base, &self.config, spawn, self.elevated, &taken, cell);
+        let opened = self
+            .desk
+            .spawn(&base, &self.config, spawn, self.elevated, &taken, cell);
         // Kept with the fleet it took, so `restore` opens it in the same one.
         let mut kept = Spawn {
             fleet: named,
@@ -2655,8 +2672,8 @@ fn width_for(border: &Border, state: AgentState, high_contrast: bool) -> i32 {
 }
 
 /// The fleets opening `fleet` opens, in order: the ones its `with` names
-/// first, then `fleet` itself, so it ends up in front and its first terminal
-/// has the focus. The others' own `with` is not followed, and a name that is
+/// first, then `fleet` itself, so with its key it ends up in front and its
+/// first terminal has the focus. The others' own `with` is not followed, and a name that is
 /// not in the config is skipped.
 fn opening_order(
     config: &Config,
@@ -4586,5 +4603,127 @@ mod tests {
         assert_eq!(events[0].seq, 4);
         assert_eq!(last, events[MAX_EVENTS - 1].seq);
         assert_eq!(events[MAX_EVENTS - 1].seq, events[0].seq + 255);
+    }
+
+    /// A desktop where every empty cell and every peer gets a made-up
+    /// window, and the windows brought to the front are noted.
+    struct StandIn {
+        next: u64,
+        focused: std::rc::Rc<std::cell::RefCell<Vec<u64>>>,
+    }
+
+    impl StandIn {
+        fn window(&mut self) -> u64 {
+            self.next += 1;
+            self.next
+        }
+    }
+
+    impl fleet::Desk for StandIn {
+        fn open(
+            &mut self,
+            fleet: &daifuku_core::config::Fleet,
+            _: &Config,
+            record: &mut OpenFleet,
+            _: bool,
+        ) -> anyhow::Result<String> {
+            record
+                .slots
+                .resize(usize::try_from(fleet.count).unwrap(), None);
+            for slot in &mut record.slots {
+                if slot.is_none() {
+                    *slot = Some(self.window());
+                }
+            }
+            Ok(format!("opened {}", fleet.name))
+        }
+
+        fn spawn(
+            &mut self,
+            _: &daifuku_core::config::Fleet,
+            _: &Config,
+            _: &Spawn,
+            _: bool,
+            _: &[u64],
+            _: Option<(usize, daifuku_core::Rect)>,
+        ) -> anyhow::Result<u64> {
+            Ok(self.window())
+        }
+
+        fn focus(&mut self, w: u64) -> bool {
+            self.focused.borrow_mut().push(w);
+            true
+        }
+    }
+
+    /// A daemon on `config` whose desktop is a stand-in, and the windows it
+    /// brings to the front.
+    fn on_stand_in(config: &str) -> (Daemon, std::rc::Rc<std::cell::RefCell<Vec<u64>>>) {
+        let mut d = daemon();
+        d.config = Config::from_json(config).unwrap();
+        let focused = std::rc::Rc::default();
+        d.desk = Box::new(StandIn {
+            next: 0x100,
+            focused: std::rc::Rc::clone(&focused),
+        });
+        (d, focused)
+    }
+
+    const LEAD_AND_CREW: &str = r#"{"fleets":[
+        {"name":"lead","count":1,"with":["crew"],"hotkey":"ctrl + alt + return"},
+        {"name":"crew","count":3,"hotkey":"ctrl + alt + w"}
+    ]}"#;
+
+    #[test]
+    fn open_from_a_command_leaves_the_front_alone() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        let said = d.control(&Request::Open {
+            fleet: Some("lead".into()),
+        });
+        assert!(matches!(said, Response::Ok { .. }), "{said:?}");
+        assert_eq!(d.fleets.len(), 2);
+        // Open again, as a script does to bring a fleet back.
+        let said = d.control(&Request::Open { fleet: None });
+        assert!(matches!(said, Response::Ok { .. }), "{said:?}");
+        assert_eq!(*focused.borrow(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn spawn_leaves_the_front_alone() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        let said = d.control(&Request::Spawn(Spawn {
+            directory: std::env::current_dir().unwrap(),
+            label: Some("peer".into()),
+            ..Spawn::default()
+        }));
+        assert!(matches!(said, Response::Spawned { .. }), "{said:?}");
+        assert_eq!(*focused.borrow(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn restore_leaves_the_front_alone() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        d.dormant = vec![Spawn {
+            directory: std::env::current_dir().unwrap(),
+            resume: Some("abc".into()),
+            ..Spawn::default()
+        }];
+        let said = d.control(&Request::Restore {
+            dry_run: false,
+            forget: false,
+        });
+        let Response::Restored { peers } = said else {
+            panic!("{said:?}");
+        };
+        assert!(peers[0].window.is_some(), "{peers:?}");
+        assert_eq!(*focused.borrow(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn a_fleet_s_key_brings_its_first_terminal_to_the_front() {
+        let (mut d, focused) = on_stand_in(LEAD_AND_CREW);
+        d.hotkey(&Action::Open("lead".into()));
+        let lead = d.fleets.iter().find(|f| f.name == "lead").unwrap();
+        assert_eq!(focused.borrow().last(), lead.windows().next().as_ref());
     }
 }
