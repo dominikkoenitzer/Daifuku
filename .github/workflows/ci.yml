@@ -273,6 +273,23 @@ jobs:
           if ($userWrite) { throw 'ordinary users can write ProgramData\Daifuku' }
           $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           $task = "\Daifuku\Daemon-$sid"
+          # Who may write, delete or re-permission the config, by SID, apart
+          # from SYSTEM and Administrators.
+          $config = Join-Path $data 'daifuku.json'
+          $writers = {
+              @((Get-Acl $config).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+                  Where-Object {
+                      $_.AccessControlType -eq 'Allow' -and ([long]$_.FileSystemRights -band 0x500D0116) -and
+                      $_.IdentityReference.Value -notin 'S-1-5-18', 'S-1-5-32-544'
+                  })
+          }
+          # An ordinary daemon runs with the installing user's rights, so its
+          # config is that user's to edit and no other user's, while its access
+          # list and its name stay the administrators'.
+          $open = @(& $writers)
+          if ($open.Count -ne 1 -or $open[0].IdentityReference.Value -ne $sid -or ([long]$open[0].FileSystemRights -band 0x500D0000)) {
+              throw "the config should be writable by $sid alone, without delete or permission rights: $($open | Format-List | Out-String)"
+          }
           # The ordinary install writes no logon task: the daemon runs with
           # the user's own rights and the CLI starts it on demand. An auto-
           # start at logon is what the behaviour scanner reads as persistence,
@@ -305,9 +322,15 @@ jobs:
           if ((& $onPath) -ne 1) { throw "a second install left $dir on the machine PATH $(& $onPath) times" }
 
           # Elevation is the config's to ask for, and install registers the
-          # task with the highest run level only then.
-          $config = Join-Path $data 'daifuku.json'
+          # task with the highest run level only then. The user could write
+          # this config, so the first install only locks it to administrators
+          # and the next one, which finds it locked, trusts it.
           '{"elevated":true}' | Set-Content -Encoding utf8 $config
+          & (Join-Path $zip 'daifuku.exe') install --no-start --no-hooks | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "the install that locks the config exited with $LASTEXITCODE" }
+          schtasks /Query /TN $task 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw 'install trusted an elevation the user could have written' }
+          if (@(& $writers).Count -ne 0) { throw "the config that asks for elevation is still writable: $(& $writers | Format-List | Out-String)" }
           & (Join-Path $zip 'daifuku.exe') install --no-start --no-hooks | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "the install with elevation exited with $LASTEXITCODE" }
           $xml = schtasks /Query /TN $task /XML | Out-String
