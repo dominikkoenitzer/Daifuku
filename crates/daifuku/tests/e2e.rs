@@ -393,12 +393,12 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
         Duration::from_secs(15),
         || (!window::exists(second)).then_some(()),
     );
-    let front = window::foreground();
+    let front = settled_front();
     let reopened = run(&["open", "e2e"]);
     assert!(reopened.contains("opened e2e (4 terminals"), "{reopened}");
     expect_failure(
         "daifuku open leaves the window in front where it was",
-        window::foreground() == front,
+        front_stays(front),
     );
     let fleet = wait_for("the reopened fleet", Duration::from_secs(10), || {
         status()?
@@ -1117,6 +1117,35 @@ fn stop(cleanup: &mut Cleanup) {
     });
 }
 
+/// The window in front once it has stayed the same for half a second, so a
+/// switch still under way from an earlier step is not taken for the start.
+fn settled_front() -> u64 {
+    let mut front = window::foreground();
+    let mut since = Instant::now();
+    let start = Instant::now();
+    while since.elapsed() < Duration::from_millis(500) && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(50));
+        let now = window::foreground();
+        if now != front {
+            (front, since) = (now, Instant::now());
+        }
+    }
+    front
+}
+
+/// Whether `front` stays in front for two seconds, so a terminal that comes
+/// to the front a moment after its command returned counts too.
+fn front_stays(front: u64) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        if window::foreground() != front {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    window::foreground() == front
+}
+
 /// A check known to fail, run and reported without failing the test, so
 /// the suite shows the day it starts to pass.
 fn expect_failure(what: &str, passed: bool) {
@@ -1380,7 +1409,7 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         ],
     );
 
-    let front = window::foreground();
+    let front = settled_front();
     let w = spawn(&[
         "--dir",
         &work.display().to_string(),
@@ -1393,7 +1422,7 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
     ]);
     expect_failure(
         "daifuku spawn leaves the window in front where it was",
-        window::foreground() == front,
+        front_stays(front),
     );
     let first = ran_full(&dir, "");
     assert!(
@@ -1629,10 +1658,15 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
     assert!(listed["peers"][0]["window"].is_null(), "{listed}");
     steps += 1;
 
+    let front = settled_front();
     let restored = json(&run(&["restore", "--json"]));
     let again = restored["peers"][0]["window"]
         .as_u64()
         .unwrap_or_else(|| panic!("restore opened nothing: {restored}"));
+    expect_failure(
+        "daifuku restore leaves the window in front where it was",
+        front_stays(front),
+    );
     let (folder, args, _, _) = ran(&dir, "--resume-e2e-restore-1");
     assert!(same_dir(&folder, &work), "{folder}");
     assert_eq!(args, "--resume e2e-restore-1");
@@ -1681,10 +1715,16 @@ fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
     let mut steps = 0;
     let (mut cleanup, _) = start_with(&config, None, &[]);
 
+    let front = settled_front();
     let opened = run(&["open", "lead"]);
     assert!(
         opened.contains("opened crew (3 terminals") && opened.contains("opened lead (1 terminal"),
         "{opened}"
+    );
+    // Opened by a command, not by its key, so neither fleet takes the front.
+    expect_failure(
+        "daifuku open of a fleet with another leaves the window in front where it was",
+        front_stays(front),
     );
     let s = wait_for("both fleets in the status", Duration::from_secs(10), || {
         status().filter(|s| s.fleets.len() == 2)
@@ -1724,12 +1764,6 @@ fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
             .all(|c| c.left == right[0].left && c.right == right[0].right)
     );
     steps += 1;
-
-    // The lead opened last, so it should be in front.
-    expect_failure(
-        "the lead has the focus after one key opened both fleets",
-        window::foreground() == lead[0],
-    );
 
     let closed = run(&["close", "--all"]);
     assert!(closed.contains("closed 4 terminals"), "{closed}");
