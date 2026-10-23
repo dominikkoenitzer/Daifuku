@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::Area;
 use crate::peer::Spawn;
 use crate::state::{AgentState, HookEvent};
 
@@ -120,6 +121,12 @@ pub enum Response {
         /// That cell, counted from 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<u32>,
+        /// The monitor it was put on outside a grid, by device name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        monitor: Option<String>,
+        /// The part of that monitor it fills.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        area: Option<Area>,
     },
     /// It did not work.
     Error {
@@ -373,12 +380,24 @@ mod tests {
                 label: Some("site".into()),
                 fleet: Some("crew".into()),
                 cell: Some(2),
+                monitor: None,
+                area: None,
             },
             Response::Spawned {
                 window: 7,
                 label: None,
                 fleet: None,
                 cell: None,
+                monitor: Some(r"\\.\DISPLAY1".into()),
+                area: Some(Area::Right),
+            },
+            Response::Spawned {
+                window: 7,
+                label: None,
+                fleet: None,
+                cell: None,
+                monitor: None,
+                area: None,
             },
             Response::Restored {
                 peers: vec![RestoredPeer {
@@ -411,9 +430,23 @@ mod tests {
                 label: None,
                 fleet: None,
                 cell: None,
+                monitor: None,
+                area: None,
             })
             .unwrap(),
             "{\"result\":\"spawned\",\"window\":9}\n"
+        );
+        assert_eq!(
+            to_line(&Response::Spawned {
+                window: 9,
+                label: None,
+                fleet: None,
+                cell: None,
+                monitor: Some(r"\\.\DISPLAY1".into()),
+                area: Some(Area::Right),
+            })
+            .unwrap(),
+            "{\"result\":\"spawned\",\"window\":9,\"monitor\":\"\\\\\\\\.\\\\DISPLAY1\",\"area\":\"right\"}\n"
         );
     }
 
