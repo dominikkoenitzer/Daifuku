@@ -67,6 +67,64 @@ impl OpenFleet {
     }
 }
 
+/// What the daemon does on the desktop to open fleets and peers, so its
+/// tests can stand in for Windows Terminal and its windows.
+pub trait Desk {
+    /// Opens a fleet, as [`open`] does.
+    fn open(
+        &mut self,
+        fleet: &Fleet,
+        config: &Config,
+        record: &mut OpenFleet,
+        elevated: bool,
+    ) -> anyhow::Result<String>;
+
+    /// Opens one peer, as [`spawn`] does.
+    fn spawn(
+        &mut self,
+        base: &Fleet,
+        config: &Config,
+        spawn: &Spawn,
+        elevated: bool,
+        taken: &[u64],
+        cell: Option<(usize, Rect)>,
+    ) -> anyhow::Result<u64>;
+
+    /// Brings window `w` to the front, as [`window::focus`] does.
+    fn focus(&mut self, w: u64) -> bool;
+}
+
+/// The real desktop.
+pub struct Live;
+
+impl Desk for Live {
+    fn open(
+        &mut self,
+        fleet: &Fleet,
+        config: &Config,
+        record: &mut OpenFleet,
+        elevated: bool,
+    ) -> anyhow::Result<String> {
+        open(fleet, config, record, elevated)
+    }
+
+    fn spawn(
+        &mut self,
+        base: &Fleet,
+        config: &Config,
+        spawn: &Spawn,
+        elevated: bool,
+        taken: &[u64],
+        cell: Option<(usize, Rect)>,
+    ) -> anyhow::Result<u64> {
+        self::spawn(base, config, spawn, elevated, taken, cell)
+    }
+
+    fn focus(&mut self, w: u64) -> bool {
+        window::focus(w)
+    }
+}
+
 /// Where a fleet's cells are right now, with the monitor recomputed so a fleet
 /// follows a monitor that was unplugged and plugged back.
 ///
@@ -203,9 +261,6 @@ pub fn open(
     }
 
     place_all(record, &cells, true);
-    if let Some(first) = record.windows().next() {
-        window::focus(first);
-    }
     outcome(
         &fleet.name,
         &m.device,
@@ -309,7 +364,6 @@ pub fn spawn(
     {
         window::place(w, first);
     }
-    window::focus(w);
     Ok(w)
 }
 

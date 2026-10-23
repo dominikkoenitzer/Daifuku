@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `daifuku open`, `spawn`, `restore` and `demo` leave the window in front
+  where it was, so a script that runs them no longer pulls a terminal to the
+  front. A fleet's key still brings its first terminal to the front, and
+  `next` its agent's.
+
 ## 0.4.1, 2026-10-22
 
 - The ordinary install writes no logon task, and one an earlier version
