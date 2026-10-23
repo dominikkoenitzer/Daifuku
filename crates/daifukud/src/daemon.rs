@@ -741,19 +741,31 @@ impl Daemon {
             .agents
             .windows()
             .into_iter()
-            .map(|(w, state)| AgentWindow {
-                window: w,
-                title: window::title(w),
-                state,
-                for_seconds: window_since(&self.agents, &self.shown_since, w)
-                    .map_or(0, |t| t.elapsed().as_secs()),
-                label: self.label_of(w),
-                fleet: self
-                    .fleets
-                    .iter()
-                    .find(|f| f.slots.contains(&Some(w)))
-                    .map(|f| f.name.clone()),
-                session_id: shown_session(&self.agents, w, state),
+            .map(|(w, state)| {
+                let session_id = shown_session(&self.agents, w, state);
+                let detail = session_id
+                    .as_deref()
+                    .and_then(|s| self.agents.session_detail(s))
+                    .cloned()
+                    .unwrap_or_default();
+                AgentWindow {
+                    window: w,
+                    title: window::title(w),
+                    state,
+                    for_seconds: window_since(&self.agents, &self.shown_since, w)
+                        .map_or(0, |t| t.elapsed().as_secs()),
+                    label: self.label_of(w),
+                    fleet: self
+                        .fleets
+                        .iter()
+                        .find(|f| f.slots.contains(&Some(w)))
+                        .map(|f| f.name.clone()),
+                    session_id,
+                    cwd: detail.cwd,
+                    last_tool: detail.last_tool,
+                    last_message: detail.last_message,
+                    transcript_path: detail.transcript_path,
+                }
             })
             .collect();
         let fleets = self
@@ -2107,6 +2119,51 @@ mod tests {
             false,
             events::Hooks::none(),
         )
+    }
+
+    #[test]
+    fn status_lists_what_the_shown_session_last_said() {
+        use daifuku_core::state::HookEvent;
+        let mut d = daemon();
+        let event = |session: &str, name: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: name.into(),
+            ..HookEvent::default()
+        };
+        d.agents.apply(
+            5,
+            &HookEvent {
+                tool_name: Some("Bash".into()),
+                cwd: Some(r"C:\src\site".into()),
+                transcript_path: Some(r"C:\t\asks.jsonl".into()),
+                ..event("asks", "PreToolUse")
+            },
+        );
+        d.agents.apply(
+            5,
+            &HookEvent {
+                notification_type: Some("permission_prompt".into()),
+                message: Some("may I run Bash".into()),
+                ..event("asks", "Notification")
+            },
+        );
+        // A second tab in the same window, working elsewhere.
+        d.agents.apply(
+            5,
+            &HookEvent {
+                tool_name: Some("Edit".into()),
+                cwd: Some(r"C:\src\other".into()),
+                ..event("works", "PreToolUse")
+            },
+        );
+        let status = d.status();
+        let a = status.agents.iter().find(|a| a.window == 5).unwrap();
+        assert_eq!(a.state, AgentState::Waiting);
+        assert_eq!(a.session_id.as_deref(), Some("asks"));
+        assert_eq!(a.cwd.as_deref(), Some(r"C:\src\site"));
+        assert_eq!(a.last_tool.as_deref(), Some("Bash"));
+        assert_eq!(a.last_message.as_deref(), Some("may I run Bash"));
+        assert_eq!(a.transcript_path.as_deref(), Some(r"C:\t\asks.jsonl"));
     }
 
     #[test]
