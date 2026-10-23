@@ -79,6 +79,20 @@ pub trait Desk {
         elevated: bool,
     ) -> anyhow::Result<String>;
 
+    /// Where a peer goes, as [`spot`] finds it.
+    ///
+    /// # Errors
+    ///
+    /// When there is no monitor.
+    fn spot(
+        &mut self,
+        base: &Fleet,
+        config: &Config,
+        spawn: &Spawn,
+        beside: bool,
+        record: &mut OpenFleet,
+    ) -> anyhow::Result<Option<Spot>>;
+
     /// Opens one peer, as [`spawn`] does.
     fn spawn(
         &mut self,
@@ -105,6 +119,17 @@ impl Desk for Live {
         elevated: bool,
     ) -> anyhow::Result<String> {
         open(fleet, config, record, elevated)
+    }
+
+    fn spot(
+        &mut self,
+        base: &Fleet,
+        config: &Config,
+        spawn: &Spawn,
+        beside: bool,
+        record: &mut OpenFleet,
+    ) -> anyhow::Result<Option<Spot>> {
+        spot(base, config, spawn, beside, record)
     }
 
     fn spawn(
@@ -407,7 +432,7 @@ pub fn spot(
 
 /// [`spot`] on `monitors` with the cursor at `cursor`, for a record whose
 /// closed terminals are pruned already.
-fn spot_on(
+pub fn spot_on(
     base: &Fleet,
     config: &Config,
     spawn: &Spawn,

@@ -1538,7 +1538,10 @@ impl Daemon {
             .iter()
             .position(|f| f.name.eq_ignore_ascii_case(&base.name))
             .map_or_else(|| OpenFleet::new(&base.name), |i| self.fleets.remove(i));
-        let spot = match fleet::spot(&base, &self.config, spawn, restoring, &mut record) {
+        let spot = match self
+            .desk
+            .spot(&base, &self.config, spawn, restoring, &mut record)
+        {
             Ok(Some(spot)) => spot,
             Ok(None) => {
                 let message = fleet::no_free_cell(&base.name, record.slots.len());
@@ -3065,11 +3068,27 @@ mod tests {
         assert_eq!((failed, noted), (second, None), "a new save gets its retry");
     }
 
-    /// A desktop where every empty cell and every peer gets a made-up
-    /// window, and the windows brought to the front are noted.
+    /// A desktop of one monitor where every empty cell and every peer gets a
+    /// made-up window, and the windows brought to the front and the places
+    /// peers open in are noted.
     struct StandIn {
         next: u64,
         focused: std::rc::Rc<std::cell::RefCell<Vec<u64>>>,
+        spots: Noted<fleet::Spot>,
+    }
+
+    /// What a stand-in notes, shared with the test.
+    type Noted<T> = std::rc::Rc<std::cell::RefCell<Vec<T>>>;
+
+    /// The stand-in desktop's monitor.
+    fn stand_in_monitor() -> daifuku_core::monitor::MonitorInfo {
+        daifuku_core::monitor::MonitorInfo {
+            device: "DISPLAY1".into(),
+            bounds: daifuku_core::Rect::new(0, 0, 3840, 2160),
+            work: daifuku_core::Rect::new(0, 0, 3840, 2112),
+            dpi: 144,
+            primary: true,
+        }
     }
 
     impl StandIn {
@@ -3098,14 +3117,34 @@ mod tests {
             Ok(format!("opened {}", fleet.name))
         }
 
+        fn spot(
+            &mut self,
+            base: &daifuku_core::config::Fleet,
+            config: &Config,
+            spawn: &Spawn,
+            beside: bool,
+            record: &mut OpenFleet,
+        ) -> anyhow::Result<Option<fleet::Spot>> {
+            fleet::spot_on(
+                base,
+                config,
+                spawn,
+                beside,
+                record,
+                &[stand_in_monitor()],
+                (0, 0),
+            )
+        }
+
         fn spawn(
             &mut self,
             _: &daifuku_core::config::Fleet,
             _: &Spawn,
             _: bool,
             _: &[u64],
-            _: &fleet::Spot,
+            spot: &fleet::Spot,
         ) -> anyhow::Result<u64> {
+            self.spots.borrow_mut().push(spot.clone());
             Ok(self.window())
         }
 
@@ -3118,14 +3157,22 @@ mod tests {
     /// A daemon on `config` whose desktop is a stand-in, and the windows it
     /// brings to the front.
     fn on_stand_in(config: &str) -> (Daemon, std::rc::Rc<std::cell::RefCell<Vec<u64>>>) {
+        let (d, focused, _) = with_spots(config);
+        (d, focused)
+    }
+
+    /// [`on_stand_in`], with the places peers open in.
+    fn with_spots(config: &str) -> (Daemon, Noted<u64>, Noted<fleet::Spot>) {
         let mut d = daemon();
         d.config = Config::from_json(config).unwrap();
         let focused = std::rc::Rc::default();
+        let spots = std::rc::Rc::default();
         d.desk = Box::new(StandIn {
             next: 0x100,
             focused: std::rc::Rc::clone(&focused),
+            spots: std::rc::Rc::clone(&spots),
         });
-        (d, focused)
+        (d, focused, spots)
     }
 
     const LEAD_AND_CREW: &str = r#"{"fleets":[
@@ -3184,5 +3231,136 @@ mod tests {
         d.hotkey(&Action::Open("lead".into()));
         let lead = d.fleets.iter().find(|f| f.name == "lead").unwrap();
         assert_eq!(focused.borrow().last(), lead.windows().next().as_ref());
+    }
+
+    const CREW: &str = r#"{"fleets":[
+        {"name":"crew","count":3,"area":"right","shape":{"columns":1,"rows":3}}
+    ]}"#;
+
+    /// A spawn into fleet `crew` with nothing else asked for but `area`.
+    fn crew_peer(area: Option<daifuku_core::config::Area>) -> Request {
+        Request::Spawn(Spawn {
+            directory: std::env::current_dir().unwrap(),
+            fleet: Some("crew".into()),
+            area,
+            ..Spawn::default()
+        })
+    }
+
+    /// Where the crew's cells are on the stand-in monitor, and its half.
+    fn crew_places(d: &Daemon) -> (Vec<daifuku_core::Rect>, fleet::Spot) {
+        use daifuku_core::config::Area;
+        use daifuku_core::grid::Grid;
+        let crew = d.config.fleet("crew").unwrap();
+        let work = stand_in_monitor().work;
+        let cells = Grid::plan(3, Area::Right.within(work), d.config.gaps, crew.shape);
+        let half = Grid::plan(1, Area::Right.within(work), d.config.gaps, None)[0];
+        let half = fleet::Spot::Area {
+            device: stand_in_monitor().device,
+            area: Area::Right,
+            rect: half,
+        };
+        (cells, half)
+    }
+
+    #[test]
+    fn a_spawn_without_a_cell_opens_in_a_free_cell_of_its_open_fleet() {
+        let (mut d, _, spots) = with_spots(CREW);
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        d.fleets[0].slots[1] = None;
+        let said = d.control(&crew_peer(None));
+        let Response::Spawned {
+            window,
+            fleet,
+            cell,
+            monitor,
+            area,
+            ..
+        } = said
+        else {
+            panic!("{said:?}");
+        };
+        assert_eq!(
+            (fleet.as_deref(), cell, monitor, area),
+            (Some("crew"), Some(2), None, None)
+        );
+        assert_eq!(d.fleets[0].slots[1], Some(window), "it joined the crew");
+        let (cells, _) = crew_places(&d);
+        assert_eq!(
+            *spots.borrow(),
+            vec![fleet::Spot::Cell {
+                slot: 1,
+                rect: cells[1]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_spawn_without_a_cell_opens_on_its_fleet_s_half_when_the_fleet_is_closed_or_full() {
+        let (mut d, _, spots) = with_spots(CREW);
+        let (_, half) = crew_places(&d);
+        let said = d.control(&crew_peer(None));
+        let Response::Spawned {
+            cell,
+            monitor,
+            area,
+            ..
+        } = said
+        else {
+            panic!("{said:?}");
+        };
+        assert_eq!(
+            (cell, monitor.as_deref(), area),
+            (
+                None,
+                Some("DISPLAY1"),
+                Some(daifuku_core::config::Area::Right)
+            )
+        );
+        assert!(d.fleets.is_empty(), "the closed crew stays closed");
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        let full = d.fleets[0].slots.clone();
+        let said = d.control(&crew_peer(None));
+        assert!(
+            matches!(said, Response::Spawned { cell: None, .. }),
+            "{said:?}"
+        );
+        assert_eq!(d.fleets[0].slots, full, "the full crew stays as it was");
+        assert_eq!(*spots.borrow(), vec![half.clone(), half]);
+    }
+
+    #[test]
+    fn an_area_a_spawn_asks_for_wins_over_its_open_fleet() {
+        use daifuku_core::config::Area;
+        let (mut d, _, spots) = with_spots(CREW);
+        d.control(&Request::Open {
+            fleet: Some("crew".into()),
+        });
+        d.fleets[0].slots[1] = None;
+        let kept = d.fleets[0].slots.clone();
+        let said = d.control(&crew_peer(Some(Area::Left)));
+        assert!(
+            matches!(said, Response::Spawned { cell: None, .. }),
+            "{said:?}"
+        );
+        assert_eq!(d.fleets[0].slots, kept, "it stays out of the crew");
+        let left = daifuku_core::grid::Grid::plan(
+            1,
+            Area::Left.within(stand_in_monitor().work),
+            d.config.gaps,
+            None,
+        )[0];
+        assert_eq!(
+            *spots.borrow(),
+            vec![fleet::Spot::Area {
+                device: "DISPLAY1".into(),
+                area: Area::Left,
+                rect: left,
+            }]
+        );
     }
 }
