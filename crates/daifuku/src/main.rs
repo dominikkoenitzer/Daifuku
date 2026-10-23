@@ -246,8 +246,8 @@ enum Command {
         format: Format,
     },
     /// Open the config file in your editor, asking Windows for
-    /// administrator rights when this terminal has none. Every key in it is
-    /// optional.
+    /// administrator rights when this terminal may not write it. Every key in
+    /// it is optional.
     #[command(args_conflicts_with_subcommands = true)]
     Config {
         #[command(subcommand)]
