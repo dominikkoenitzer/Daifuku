@@ -116,10 +116,10 @@ jobs:
           $output = cargo test --locked -p daifuku --test e2e -- --nocapture --test-threads 1 2>&1 | Out-String
           Write-Output $output
           if ($LASTEXITCODE -ne 0) { throw "the end-to-end test failed with $LASTEXITCODE" }
-          # Ten tests, each prints its tally only when it ran to the end.
+          # Eleven tests print a tally, each only when it ran to the end.
           $ran = ([regex]::Matches($output, 'e2e: \d+ steps passed')).Count
-          if ($ran -lt 10) {
-              throw "only $ran of 10 end-to-end tests ran to the end; check the runner has a desktop and Windows Terminal"
+          if ($ran -lt 11) {
+              throw "only $ran of 11 end-to-end tests ran to the end; check the runner has a desktop and Windows Terminal"
           }
           # Checks known to fail are run and listed, not counted as failures.
           $known = [regex]::Matches($output, 'e2e: expected failure.*') | ForEach-Object Value
