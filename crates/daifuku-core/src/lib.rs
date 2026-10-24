@@ -12,8 +12,10 @@
 //! - [`path_list`] adds a folder to a `PATH` value and takes it out again.
 //! - [`peer`] is one agent terminal opened on its own with `daifuku spawn`.
 //! - [`usage`] is how much of its limits an account has used.
+//! - [`backlog`] is the markdown file of tasks a fleet works through.
 
 pub mod agents;
+pub mod backlog;
 pub mod config;
 pub mod geometry;
 pub mod grid;

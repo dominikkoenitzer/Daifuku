@@ -250,9 +250,25 @@ enum Command {
         format: Format,
     },
     /// Report one hook event, read from standard input. Agents call this;
-    /// it never prints and always exits 0, so it can never disturb one.
+    /// it always exits 0, so it can never disturb one, and prints nothing
+    /// but a task the daemon hands the agent.
     #[command(hide = true)]
-    Hook,
+    Hook {
+        /// Wait for the daemon's answer to a `Stop`, which may hand the
+        /// agent its next task. Only for an agent that reads the answer:
+        /// Claude Code, with the hook not running in the background.
+        #[arg(long)]
+        ask: bool,
+    },
+    /// The tasks fleets work through from their backlogs: what is open,
+    /// which terminal has which, and what goes out next.
+    #[command(args_conflicts_with_subcommands = true)]
+    Task {
+        #[command(subcommand)]
+        action: Option<TaskAction>,
+        #[command(flatten)]
+        format: Format,
+    },
     /// Report how much of its limits the agent's account has used, read
     /// from what Claude Code hands its status line, and print it as one
     /// line. Set it as Claude Code's status line command, or pipe your own
@@ -331,6 +347,19 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum TaskAction {
+    /// Take a task back from the terminal it went to, which then gets the
+    /// next one. While its backlog lists it open, the next idle agent gets
+    /// it.
+    Release {
+        /// The task's id, as its heading in the backlog starts.
+        id: String,
+        #[command(flatten)]
+        format: Format,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigAction {
     /// Check a config file the way the daemon reads it, without the daemon
     /// and without administrator rights. Changes nothing.
@@ -354,8 +383,8 @@ fn main() -> ExitCode {
         Err(e) => return usage_error(&e, std::env::args_os().any(|a| a == "--json")),
     };
     match cli.command {
-        Command::Hook => {
-            hook();
+        Command::Hook { ask } => {
+            hook(ask);
             ExitCode::SUCCESS
         }
         Command::StatusLine { quiet } => {
@@ -506,6 +535,11 @@ fn main() -> ExitCode {
         } => wait_cmd(&target, until, timeout, format.json),
         Command::Group { priority, command } => group_cmd(priority, false, &command),
         Command::Heavy { priority, command } => group_cmd(priority, true, &command),
+        Command::Task {
+            action: Some(TaskAction::Release { id, format }),
+            ..
+        } => control(&Request::TaskRelease { id }, format.json),
+        Command::Task { format, .. } => control(&Request::Tasks, format.json),
         Command::Reload { format } => control(&Request::Reload, format.json),
         Command::Stop { format } => control(&Request::Stop, format.json),
     }
@@ -898,12 +932,7 @@ fn doctor_cmd(json: bool) -> ExitCode {
 /// here, so the CLI leaves it to the task.
 #[cfg(windows)]
 fn config_wants_elevated() -> bool {
-    use daifuku_core::config::{self, Config};
-    daifuku_win::paths::config_file()
-        .and_then(|p| std::fs::read(&p).ok())
-        .and_then(|b| config::decode(&b).ok())
-        .and_then(|t| Config::from_json(&t).ok())
-        .is_some_and(|c| c.elevated)
+    install::config_on_disk().is_ok_and(|c| c.elevated)
 }
 
 /// Starts the daemon with the user's own rights when none is listening, for
@@ -947,8 +976,8 @@ fn start_daemon() -> bool {
 }
 
 #[cfg(windows)]
-fn hook() {
-    use daifuku_core::protocol::{HookMessage, to_line};
+fn hook(ask: bool) {
+    use daifuku_core::protocol::{HookAnswer, HookMessage, from_line, to_line};
     use daifuku_core::state::{HookEvent, Transition};
     use daifuku_win::pipe::{Pipe, send};
     use daifuku_win::{console, process};
@@ -970,6 +999,10 @@ fn hook() {
     }
     // A long notification must not make the line too long for the pipe.
     event.trim();
+    // Only the session's own stop, and only while a fleet works a backlog:
+    // otherwise there is no task to wait for.
+    let ask =
+        ask && event.hook_event_name == "Stop" && event.agent_id.is_none() && backlog_in_config();
     let Some((window, agent)) = console::terminal_window_of(process::current()) else {
         return;
     };
@@ -977,23 +1010,61 @@ fn hook() {
         window,
         event,
         pid: agent,
+        ask,
     };
     let Ok(line) = to_line(&message) else {
         return;
     };
     // A short wait: an agent that waits for its hook must never notice a
     // daemon that is busy or not running.
-    let sent = send(Pipe::Hook, &line, std::time::Duration::from_millis(100));
+    let wait = std::time::Duration::from_millis(100);
+    // An elevated agent takes words only from the elevated daemon.
+    let elevated = ask && process::current_is_elevated();
+    let deliver = |wait| {
+        if ask {
+            daifuku_win::pipe::ask(&line, wait, HOOK_ANSWER, elevated).map(Some)
+        } else {
+            send(Pipe::Hook, &line, wait).map(|_| None)
+        }
+    };
+    let mut sent = deliver(wait);
     // The default install has no logon task, so the first event of a session
     // finds no daemon: start one and let the agent carry on. Later events
     // find it running and pay nothing for this.
     if matches!(&sent, Err(e) if e.kind() == std::io::ErrorKind::NotFound) && start_daemon() {
-        let _ = send(Pipe::Hook, &line, std::time::Duration::from_secs(1));
+        sent = deliver(std::time::Duration::from_secs(1));
+    }
+    let task = sent
+        .ok()
+        .flatten()
+        .and_then(|reply| from_line::<HookAnswer>(&reply).ok())
+        .and_then(|a| a.task);
+    if let Some(task) = task {
+        println!("{}", stop_block(&task));
     }
 }
 
+/// How long a hook that asks waits for the daemon's answer: more than the
+/// daemon takes at most, so a task handed out always arrives.
+#[cfg(windows)]
+const HOOK_ANSWER: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether a fleet in the config works a backlog. The config is readable by
+/// every user; an unreadable one has none.
+#[cfg(windows)]
+fn backlog_in_config() -> bool {
+    install::config_on_disk().is_ok_and(|c| c.fleets.iter().any(|f| f.backlog.is_some()))
+}
+
+/// What a `Stop` hook prints for the agent to go on with `task` instead of
+/// stopping, in Claude Code's words.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn stop_block(task: &str) -> String {
+    serde_json::json!({ "decision": "block", "reason": task }).to_string()
+}
+
 #[cfg(not(windows))]
-fn hook() {
+fn hook(_: bool) {
     let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
 }
 
@@ -1275,6 +1346,17 @@ fn answer(reply: &str, request: &Request, json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Ok(tasks @ Response::Tasks { .. }) if json => {
+            print!(
+                "{}",
+                output::ascii_json(&to_line(&tasks).unwrap_or_default())
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(Response::Tasks { fleets }) => {
+            print!("{}", tasks_text(&fleets));
+            ExitCode::SUCCESS
+        }
         Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
         Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
     }
@@ -1366,6 +1448,8 @@ fn command_line(request: &Request, json: bool) -> String {
             (false, false) => "restore".to_owned(),
         },
         Request::Status => "status".to_owned(),
+        Request::Tasks => "task".to_owned(),
+        Request::TaskRelease { id } => format!("task release {}", shell_word(id)),
         Request::Reload => "reload".to_owned(),
         Request::Stop => "stop".to_owned(),
     };
@@ -1810,6 +1894,49 @@ fn usage_line(u: &daifuku_core::protocol::AccountUsage) -> String {
 }
 
 /// What `daifuku restore` did, one line a peer.
+/// `daifuku task`, for a person: each fleet's backlog, then its tasks, the
+/// one going out next marked.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn tasks_text(fleets: &[daifuku_core::protocol::FleetQueue]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    if fleets.is_empty() {
+        out.push_str("no fleet has a backlog; give one `backlog` in the config\n");
+    }
+    for f in fleets {
+        let _ = writeln!(out, "{}: {}", f.fleet, f.backlog);
+        if let Some(e) = &f.error {
+            let _ = writeln!(out, "  could not read it: {e}");
+            continue;
+        }
+        if let Some(why) = &f.stopped {
+            let _ = writeln!(out, "  no task goes out now: {why}");
+        }
+        if f.tasks.is_empty() {
+            out.push_str("  no open tasks\n");
+        }
+        for t in &f.tasks {
+            let mark = if f.next.as_deref() == Some(t.id.as_str()) {
+                "next "
+            } else {
+                ""
+            };
+            let _ = write!(out, "  {mark}{} {} ({})", t.id, t.title, t.status);
+            if let Some(h) = &t.handed_to {
+                let who = h
+                    .label
+                    .clone()
+                    .or_else(|| h.window.map(|w| format!("{w:#010x}")))
+                    .unwrap_or_else(|| format!("session {}, terminal closed", h.session_id));
+                let _ = write!(out, ", with {who} for {}", since(h.age_seconds));
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
 fn print_restored(peers: &[daifuku_core::protocol::RestoredPeer], request: &Request) {
     let (dry_run, forget) = match request {
         Request::Restore { dry_run, forget } => (*dry_run, *forget),
@@ -2303,6 +2430,8 @@ mod tests {
             Request::Next,
             Request::Demo,
             Request::Status,
+            Request::Tasks,
+            Request::TaskRelease { id: "C6".into() },
             Request::Reload,
             Request::Stop,
         ] {
@@ -2323,6 +2452,11 @@ mod tests {
                 Command::Next { .. } => Request::Next,
                 Command::Demo { .. } => Request::Demo,
                 Command::Status { .. } => Request::Status,
+                Command::Task {
+                    action: Some(TaskAction::Release { id, .. }),
+                    ..
+                } => Request::TaskRelease { id },
+                Command::Task { .. } => Request::Tasks,
                 Command::Reload { .. } => Request::Reload,
                 Command::Stop { .. } => Request::Stop,
                 _ => panic!("{line} is not a daemon command"),
@@ -2348,6 +2482,61 @@ mod tests {
         assert_eq!(terminals(1), "1 terminal");
         assert_eq!(terminals(0), "0 terminals");
         assert_eq!(terminals(6), "6 terminals");
+    }
+
+    #[test]
+    fn a_handed_out_task_keeps_the_agent_going() {
+        let printed: serde_json::Value =
+            serde_json::from_str(&stop_block("Daifuku hands you \"C6\"")).unwrap();
+        assert_eq!(
+            printed,
+            serde_json::json!({"decision": "block", "reason": "Daifuku hands you \"C6\""})
+        );
+    }
+
+    #[test]
+    fn the_task_list_marks_the_next_one_and_who_has_each() {
+        use daifuku_core::protocol::{FleetQueue, HandedTo, QueuedTask};
+        let task = |id: &str, handed_to| QueuedTask {
+            id: id.into(),
+            title: "Title".into(),
+            status: "open".into(),
+            handed_to,
+        };
+        let fleets = [
+            FleetQueue {
+                fleet: "crew".into(),
+                backlog: r"C:\work\BACKLOG.md".into(),
+                error: None,
+                tasks: vec![
+                    task(
+                        "A1",
+                        Some(HandedTo {
+                            window: Some(0x1234),
+                            label: Some("crew 1".into()),
+                            session_id: "s".into(),
+                            age_seconds: 90,
+                        }),
+                    ),
+                    task("A2", None),
+                ],
+                next: Some("A2".into()),
+                stopped: Some("5h 80%, stops at 75%".into()),
+            },
+            FleetQueue {
+                fleet: "solo".into(),
+                backlog: r"C:\solo\BACKLOG.md".into(),
+                error: Some("The system cannot find the file specified.".into()),
+                tasks: Vec::new(),
+                next: None,
+                stopped: None,
+            },
+        ];
+        assert_eq!(
+            tasks_text(&fleets),
+            "crew: C:\\work\\BACKLOG.md\n  no task goes out now: 5h 80%, stops at 75%\n  A1 Title (open), with crew 1 for 1m 30s\n  next A2 Title (open)\nsolo: C:\\solo\\BACKLOG.md\n  could not read it: The system cannot find the file specified.\n"
+        );
+        assert!(tasks_text(&[]).starts_with("no fleet has a backlog"));
     }
 
     #[test]
@@ -2486,10 +2675,18 @@ mod tests {
                 format,
                 ..
             }
+            | Command::Task {
+                action: Some(TaskAction::Release { format, .. }),
+                ..
+            }
+            | Command::Task {
+                action: None,
+                format,
+            }
             | Command::Doctor { format } => Some(format.json),
             Command::Install { json, .. } | Command::Uninstall { json, .. } => Some(*json),
             Command::DemoAgent { .. }
-            | Command::Hook
+            | Command::Hook { .. }
             | Command::StatusLine { .. }
             | Command::Group { .. }
             | Command::ConsoleWindow { .. }

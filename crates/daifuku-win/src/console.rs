@@ -13,7 +13,9 @@
 //! window. Measured on Windows 11 with Windows Terminal: the agent's own
 //! process (`claude.exe`) is the first ancestor whose console answers.
 
-use windows::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
+use windows::Win32::System::Console::{
+    AttachConsole, FreeConsole, GetConsoleWindow, GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOT, GW_OWNER, GetAncestor, GetWindow, IsWindowVisible,
 };
@@ -48,6 +50,25 @@ pub fn terminal_window(pid: u32) -> Option<u64> {
 /// The process is `None` when only the hook itself is on the console.
 #[must_use]
 pub fn terminal_window_of(pid: u32) -> Option<(u64, Option<u32>)> {
+    keeping_stdout(|| terminal_window_of_inner(pid))
+}
+
+/// Runs `f`, which borrows other consoles, and puts this process's standard
+/// output back as it was: borrowing a console can leave it on that console
+/// instead of the pipe the agent reads a hook's answer from.
+fn keeping_stdout<T>(f: impl FnOnce() -> T) -> T {
+    // SAFETY: reads this process's own standard handle.
+    let before = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    let result = f();
+    if let Ok(h) = before {
+        // SAFETY: puts back the handle read above, which letting go of a
+        // console does not close unless it was that console's.
+        let _ = unsafe { SetStdHandle(STD_OUTPUT_HANDLE, h) };
+    }
+    result
+}
+
+fn terminal_window_of_inner(pid: u32) -> Option<(u64, Option<u32>)> {
     let chain = ancestors(pid);
     let Some((at, w)) = chain
         .iter()

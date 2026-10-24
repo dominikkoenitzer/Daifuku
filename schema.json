@@ -386,6 +386,13 @@
         "resume": {
           "description": "Keep each terminal with the session it runs, as `daifuku spawn`\nkeeps a peer, so the fleet opens again with every cell resuming its\nlast session: after Windows restarts, and after the fleet was closed.",
           "type": "boolean"
+        },
+        "backlog": {
+          "description": "A markdown file of tasks its agents work through, by full path. Each\ntime one of them ends a turn holding no task, Daifuku hands it the\nnext open one, within its account's `stop_at`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -535,9 +542,82 @@
           "format": "uint8",
           "minimum": 0,
           "maximum": 255
+        },
+        "stop_at": {
+          "description": "When its fleets get no more tasks from their backlog: the first rule\nthat holds for a window, in the order written, says how much of it\nmay be used. A window no rule holds for has no stop. Needs\n`daifuku status-line` in Claude Code's status line; with rules but no\nnumbers reported yet, no task is handed out.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StopAt"
+          }
         }
       },
       "additionalProperties": false
+    },
+    "StopAt": {
+      "description": "One rule for when an account's fleets get no more tasks, such as\n`{ \"share\": 75, \"days\": \"mon-fri\", \"hours\": \"9-17\" }`.",
+      "type": "object",
+      "properties": {
+        "share": {
+          "description": "No task is handed out once this share of the window is used, in\npercent, 1 to 100.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "window": {
+          "description": "The window it is for, `five_hour` or `seven_day`. Left out, both.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "days": {
+          "description": "The days it holds on, in local time: `mon-fri`, `sat,sun` or one\nday. Left out, every day.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hours": {
+          "description": "The hours it holds in, in local time, from the first up to the\nsecond, 0 to 24: `8-18`, or `22-6` past midnight. Left out, all day.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_minutes": {
+          "description": "It holds only in this many minutes before the window resets.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "share"
+      ]
+    },
+    "LimitWindow": {
+      "description": "One of the two limits Claude Code reports.",
+      "oneOf": [
+        {
+          "description": "The 5-hour window.",
+          "type": "string",
+          "const": "five_hour"
+        },
+        {
+          "description": "The weekly one.",
+          "type": "string",
+          "const": "seven_day"
+        }
+      ]
     }
   }
 }

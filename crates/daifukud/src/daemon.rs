@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use daifuku_core::config::{Border, Config};
+use daifuku_core::config::{Border, Config, Fleet, LocalTime};
 use daifuku_core::peer::{self, FleetCell, Kept, KeptFile, Spawn};
 use daifuku_core::protocol::{
-    AgentWindow, FleetStatus, HookMessage, Leftover, PeerStatus, Request, Response, RestoredPeer,
-    Status, StoppedTerminal, UsageReport,
+    AgentWindow, FleetQueue, FleetStatus, HandedTo, HookAnswer, HookMessage, Leftover, PeerStatus,
+    QueuedTask, Request, Response, RestoredPeer, Status, StoppedTerminal, UsageReport,
 };
 use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
@@ -24,7 +24,7 @@ use crate::events::{self, Event};
 use crate::fleet::{self, OpenFleet};
 use crate::hotkeys::{Action, Hotkeys};
 use crate::ipc::{self, Inbound, Inbox, WM_INBOX};
-use crate::usage;
+use crate::{queue, usage};
 
 /// The most sessions tracked at once. A hook can report any session id it
 /// likes; past this, new ones are ignored instead of growing the map forever.
@@ -139,6 +139,8 @@ struct Daemon {
     /// The agent windows whose account has reached its `warn`, as the
     /// borders show them.
     warned: Vec<u64>,
+    /// The tasks handed out from the fleets' backlogs.
+    queue: queue::Queue,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -184,9 +186,11 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
         d.peers_file = Some(files.peers);
         d.legacy_state_file = files.legacy_state;
         d.usage.file = Some(files.usage);
+        d.queue.file = Some(files.tasks);
     }
     d.load_config();
     d.usage.load(wall_seconds());
+    d.queue.load();
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
         .inspect_err(|e| tracing::error!(error = %e, "no borders"))
         .ok();
@@ -286,6 +290,7 @@ impl Daemon {
             last_saved: (String::new(), 0),
             usage: usage::Book::default(),
             warned: Vec::new(),
+            queue: queue::Queue::default(),
         }
     }
 
@@ -368,7 +373,15 @@ impl Daemon {
     fn inbox(&mut self, inbox: &Inbox) {
         while let Ok(item) = inbox.receiver.try_recv() {
             match item {
-                Inbound::Hook(message, sender) => self.hook(&message, &sender),
+                Inbound::Hook(message, sender, asked) => {
+                    // A hook that gave up waiting is told nothing, so it is
+                    // handed nothing.
+                    let answering = asked.as_ref().is_some_and(|(_, c)| ipc::claim(c));
+                    let task = self.hook(&message, &sender, answering);
+                    if let Some((reply, _)) = asked {
+                        let _ = reply.send(HookAnswer { task });
+                    }
+                }
                 Inbound::Usage(report) => self.usage_report(&report),
                 Inbound::Control(request, reply, claimed) => {
                     // Withdrawn while it waited behind something long: its
@@ -402,6 +415,10 @@ impl Daemon {
             Request::Label { window, label } => self.label(*window, label.as_deref()),
             Request::Restore { dry_run, forget } => self.restore_peers(*dry_run, *forget),
             Request::Status => Response::Status(self.status()),
+            Request::Tasks => Response::Tasks {
+                fleets: self.queues(),
+            },
+            Request::TaskRelease { id } => self.release_task(id),
             Request::Reload => {
                 self.load_config();
                 self.hotkeys.register(&self.config);
@@ -425,7 +442,10 @@ impl Daemon {
     /// ancestors, as the pipe told them, which the agent's own process is
     /// trusted from: a process the message names is the agent's only when it
     /// is one of them.
-    fn hook(&mut self, message: &HookMessage, sender: &[u32]) {
+    ///
+    /// With `answering`, the hook waits for an answer: the task the agent is
+    /// handed, if any.
+    fn hook(&mut self, message: &HookMessage, sender: &[u32], answering: bool) -> Option<String> {
         // Only a live, visible top-level window gets a frame. A pseudo console
         // window, which a hook names when its terminal was not ready yet, is
         // followed to the terminal window now; anything else is a stale handle
@@ -435,7 +455,7 @@ impl Daemon {
                 window = format!("{:#x}", message.window),
                 "hook named no window to draw around"
             );
-            return;
+            return None;
         };
         if self.agents.window_state(w).is_none() {
             // The first report from a window says which window the hook
@@ -450,7 +470,7 @@ impl Daemon {
             );
         }
         if self.agents.len() >= MAX_SESSIONS && !self.agents.knows(&message.event.session_id) {
-            return;
+            return None;
         }
         // By session, not by window: a second tab that starts waiting in a
         // window that waits already changes nothing on screen, yet it is one
@@ -475,6 +495,151 @@ impl Daemon {
         if changed {
             tracing::debug!(window = format!("{w:#x}"), event = %message.event.hook_event_name, state = ?self.agents.window_state(w), "agent state");
             self.refresh_borders();
+        }
+        if answering {
+            self.hand_out(w, message, agent)
+        } else {
+            None
+        }
+    }
+
+    /// The next task of its fleet's backlog for the agent in terminal `w`,
+    /// whose main thread just stopped, and what to tell it. Only to an agent
+    /// the daemon itself finds in the terminal, which holds no task yet, and
+    /// only while its account's `stop_at` lets it work on.
+    fn hand_out(&mut self, w: u64, message: &HookMessage, agent: Option<u32>) -> Option<String> {
+        let event = &message.event;
+        if event.hook_event_name != "Stop" || event.agent_id.is_some() {
+            return None;
+        }
+        let fleet = self.config.fleet(&self.fleet_of(w)?)?.clone();
+        let path = fleet.backlog.clone()?;
+        let backlog = match queue::read(&path, self.elevated) {
+            Ok(b) => b,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "could not read a backlog");
+                return None;
+            }
+        };
+        if self.queue.settle(&path, &backlog) {
+            self.queue.save();
+        }
+        if self.queue.held(w, &event.session_id).is_some() {
+            return None;
+        }
+        if let Some(reason) = self.stop_reason(&fleet, Some(w)) {
+            tracing::info!(fleet = %fleet.name, %reason, "handed out no task");
+            return None;
+        }
+        let task = self.queue.next(&path, &backlog)?.clone();
+        // Last, as it takes a moment: the terminal's agent, not a process
+        // that only names it.
+        if !agent.is_some_and(|pid| in_terminal(pid, w)) {
+            return None;
+        }
+        let claimed = self.queue.claim(queue::Claim {
+            backlog: path.clone(),
+            id: task.id.clone(),
+            window: w,
+            session: event.session_id.clone(),
+            at: wall_seconds(),
+        });
+        if !claimed {
+            tracing::warn!("handed out no task: too many are out");
+            return None;
+        }
+        self.queue.save();
+        tracing::info!(fleet = %fleet.name, task = %task.id, window = format!("{w:#x}"), "handed out a task");
+        Some(hand_out_text(&path, &task))
+    }
+
+    /// Why agents of `fleet`, or the one in terminal `w`, get no task now,
+    /// as their account's `stop_at` says. With rules but no numbers yet,
+    /// none goes out.
+    fn stop_reason(&self, fleet: &Fleet, w: Option<u64>) -> Option<String> {
+        let folder = w
+            .and_then(|w| self.usage.folder_of(w))
+            .map(PathBuf::from)
+            .or_else(|| self.config.account_of(fleet)?.claude.clone());
+        let account = folder
+            .as_deref()
+            .and_then(|f| self.config.account_in(f))
+            .map(|(_, a)| a)
+            .or_else(|| self.config.account_of(fleet))?;
+        if account.stop_at.is_empty() {
+            return None;
+        }
+        let Some(limits) = folder.as_deref().and_then(|f| self.usage.limits(f)) else {
+            return Some("its account has reported no usage yet".to_owned());
+        };
+        limits.stopped_by(&account.stop_at, local_time())
+    }
+
+    /// Every fleet's backlog, for `daifuku task`.
+    fn queues(&mut self) -> Vec<FleetQueue> {
+        let fleets: Vec<Fleet> = self
+            .config
+            .fleets
+            .iter()
+            .filter(|f| f.backlog.is_some())
+            .cloned()
+            .collect();
+        let now = wall_seconds();
+        let mut settled = false;
+        let mut queues = Vec::new();
+        for fleet in fleets {
+            let Some(path) = fleet.backlog.clone() else {
+                continue;
+            };
+            let mut q = FleetQueue {
+                fleet: fleet.name.clone(),
+                backlog: path.display().to_string(),
+                error: None,
+                tasks: Vec::new(),
+                next: None,
+                stopped: self.stop_reason(&fleet, None),
+            };
+            match queue::read(&path, self.elevated) {
+                Ok(backlog) => {
+                    settled |= self.queue.settle(&path, &backlog);
+                    q.next = self.queue.next(&path, &backlog).map(|t| t.id.clone());
+                    for task in &backlog.tasks {
+                        let claim = self.queue.claims_in(&path).find(|c| c.id == task.id);
+                        if claim.is_none() && !task.is_open() {
+                            continue;
+                        }
+                        q.tasks.push(QueuedTask {
+                            id: task.id.clone(),
+                            title: task.title.clone(),
+                            status: task.status.clone(),
+                            handed_to: claim.map(|c| HandedTo {
+                                window: (c.window != 0).then_some(c.window),
+                                label: (c.window != 0).then(|| self.label_of(c.window)).flatten(),
+                                session_id: c.session.clone(),
+                                age_seconds: now.saturating_sub(c.at),
+                            }),
+                        });
+                    }
+                }
+                Err(error) => q.error = Some(error),
+            }
+            queues.push(q);
+        }
+        if settled {
+            self.queue.save();
+        }
+        queues
+    }
+
+    fn release_task(&mut self, id: &str) -> Response {
+        match self.queue.release(id) {
+            0 => Response::error(format!("no task `{id}` is handed out")),
+            _ => {
+                self.queue.save();
+                Response::said(format!(
+                    "took {id} back; while its backlog lists it open, the next idle agent gets it"
+                ))
+            }
         }
     }
 
@@ -1474,6 +1639,9 @@ impl Daemon {
             self.save_peers();
         }
         self.labels.remove(&w);
+        if self.queue.window_closed(w) {
+            self.queue.save();
+        }
         self.drop_closed_fleets();
         forgot
     }
@@ -2376,6 +2544,32 @@ fn inside(folder: &std::path::Path, dir: &std::path::Path) -> bool {
     }
 }
 
+/// The time now, as `stop_at` rules read it.
+fn local_time() -> LocalTime {
+    let (weekday, minute) = clock::local_day_and_minute();
+    LocalTime {
+        now: wall_seconds(),
+        weekday,
+        minute,
+    }
+}
+
+/// What an agent is told along with its task. The title is cut short, as
+/// the backlog is the user's file and may hold anything.
+fn hand_out_text(path: &std::path::Path, task: &daifuku_core::backlog::Task) -> String {
+    let title: String = task
+        .title
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect();
+    format!(
+        "Daifuku hands you the next task in {}: {}. {title}. It is yours now: read its entry in that file and work it. It stays yours until its status there starts with done.",
+        path.display(),
+        task.id,
+    )
+}
+
 /// The agent's process a hook named, when the pipe says the hook ran under
 /// it: one of the client's ancestors, not the client itself.
 fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
@@ -2504,6 +2698,8 @@ struct SavedFiles {
     peers: PathBuf,
     /// Each account's latest limits.
     usage: PathBuf,
+    /// The tasks handed out from backlogs.
+    tasks: PathBuf,
     /// The state file versions up to 0.1.3 shared between users.
     legacy_state: Option<PathBuf>,
 }
@@ -2521,6 +2717,7 @@ impl SavedFiles {
             state: dir.join(name("state")),
             peers: dir.join(name("peers")),
             usage: dir.join(name("usage")),
+            tasks: dir.join(name("tasks")),
             legacy_state: sid.map(|_| dir.join("state.json")),
         }
     }
@@ -3352,6 +3549,7 @@ mod tests {
         let b = SavedFiles::in_dir(dir, Some("S-1-5-21-1-2-3-1002"));
         assert_eq!(a.state, dir.join("state-S-1-5-21-1-2-3-1001.json"));
         assert_eq!(a.peers, dir.join("peers-S-1-5-21-1-2-3-1001.json"));
+        assert_eq!(a.tasks, dir.join("tasks-S-1-5-21-1-2-3-1001.json"));
         assert_ne!(a.state, b.state);
         assert_ne!(a.peers, b.peers);
         assert_eq!(a.legacy_state, Some(dir.join("state.json")));
