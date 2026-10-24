@@ -14,9 +14,9 @@
 //! }
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use schemars::JsonSchema;
@@ -50,6 +50,10 @@ pub struct Config {
     pub hotkeys: Hotkeys,
     /// The fleets, each with its own hotkey.
     pub fleets: Vec<Fleet>,
+    /// Accounts the agents sign in with, by a name of your own, for fleets
+    /// that should not all run on the one in your profile.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, Account>,
     /// Play Windows' Asterisk sound when an agent starts waiting for you,
     /// for when you are not looking at the screen.
     pub sound: bool,
@@ -67,9 +71,42 @@ impl Default for Config {
             border: Border::default(),
             hotkeys: Hotkeys::default(),
             fleets: vec![Fleet::default()],
+            accounts: BTreeMap::new(),
             sound: false,
             elevated: false,
         }
+    }
+}
+
+/// An account, as the folders the agents keep it in: the sign-in, settings,
+/// hooks and sessions. A fleet that names it starts its agents with these
+/// folders, so one fleet can work on one subscription and the next on
+/// another.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct Account {
+    /// Claude Code's folder, which it takes from `CLAUDE_CONFIG_DIR`. Left
+    /// out, Claude Code uses its own, `.claude` in your profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude: Option<PathBuf>,
+    /// Codex's folder, which it takes from `CODEX_HOME`. Left out, Codex
+    /// uses its own, `.codex` in your profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex: Option<PathBuf>,
+}
+
+impl Account {
+    /// The variables a terminal of this account starts with, each with the
+    /// folder it names.
+    #[must_use]
+    pub fn variables(&self) -> Vec<(&'static str, &Path)> {
+        [
+            ("CLAUDE_CONFIG_DIR", self.claude.as_deref()),
+            ("CODEX_HOME", self.codex.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, folder)| Some((name, folder?)))
+        .collect()
     }
 }
 
@@ -301,6 +338,10 @@ pub struct Fleet {
     /// terminals run as any other program.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
+    /// The account its agents sign in with, by its name under `accounts`.
+    /// Left out, they use the one in your profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 impl Default for Fleet {
@@ -319,6 +360,7 @@ impl Default for Fleet {
             hotkey: Some(HotkeyText::new("ctrl + alt + return")),
             with: Vec::new(),
             priority: None,
+            account: None,
         }
     }
 }
@@ -830,6 +872,23 @@ pub enum ConfigError {
     /// Gaps or border sizes that make no sense.
     #[error("{0}")]
     Size(String),
+    /// A fleet's account that is not under `accounts`.
+    #[error("fleet `{name}` signs in with account `{account}`, which is not under accounts")]
+    UnknownAccount {
+        /// The fleet.
+        name: String,
+        /// The account it names.
+        account: String,
+    },
+    /// An account that cannot be told apart from another, names no folder,
+    /// or names one that is not a full path.
+    #[error("account `{name}`: {reason}")]
+    Account {
+        /// The account.
+        name: String,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 /// A config file's bytes as text: UTF-8, or UTF-16 when the file starts with
@@ -929,7 +988,16 @@ impl Config {
                     reason,
                 });
             }
+            if let Some(account) = &fleet.account
+                && self.account(account).is_none()
+            {
+                return Err(ConfigError::UnknownAccount {
+                    name: fleet.name.clone(),
+                    account: account.clone(),
+                });
+            }
         }
+        self.validate_accounts()?;
         for fleet in &self.fleets {
             for other in &fleet.with {
                 let reason = if other.eq_ignore_ascii_case(&fleet.name) {
@@ -957,6 +1025,70 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Every account has a name of its own in any case, at least one folder,
+    /// and only full paths: a relative one would be read from whatever
+    /// folder the terminal starts in.
+    fn validate_accounts(&self) -> Result<(), ConfigError> {
+        let mut names = BTreeSet::new();
+        // Each variable's folder, as written in any case and with or
+        // without a separator at the end: two accounts in one folder are
+        // one sign-in.
+        let mut folders = BTreeSet::new();
+        for (name, account) in &self.accounts {
+            let problem = |reason: &str| ConfigError::Account {
+                name: name.clone(),
+                reason: reason.to_owned(),
+            };
+            if name.trim().is_empty() {
+                return Err(problem("an account needs a name"));
+            }
+            if !names.insert(name.to_ascii_lowercase()) {
+                return Err(problem("two accounts have this name"));
+            }
+            let variables = account.variables();
+            if variables.is_empty() {
+                return Err(problem("name a folder for claude, codex or both"));
+            }
+            for (variable, folder) in variables {
+                let key: Vec<_> = folder
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+                    .collect();
+                if !folders.insert((variable, key)) {
+                    return Err(ConfigError::Account {
+                        name: name.clone(),
+                        reason: format!("`{}` is another account's folder too", folder.display()),
+                    });
+                }
+                if !folder.is_absolute() {
+                    return Err(ConfigError::Account {
+                        name: name.clone(),
+                        reason: format!(
+                            "`{}` is not a full path, write it from the drive, such as C:\\Users\\you\\.claude-work",
+                            folder.display()
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An account by name, ignoring case.
+    #[must_use]
+    pub fn account(&self, name: &str) -> Option<&Account> {
+        self.accounts
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, a)| a)
+    }
+
+    /// The account `fleet` signs in with, `None` for the one in the profile.
+    #[must_use]
+    pub fn account_of(&self, fleet: &Fleet) -> Option<&Account> {
+        fleet.account.as_deref().and_then(|a| self.account(a))
     }
 
     fn all_hotkeys(&self) -> impl Iterator<Item = &HotkeyText> {
@@ -1684,9 +1816,75 @@ mod tests {
     }
 
     #[test]
+    fn a_fleet_signs_in_with_the_account_it_names() {
+        let c = Config::from_json(
+            r#"{"accounts":{"Work":{"claude":"C:\\Users\\me\\.claude-work"}},
+                "fleets":[{"name":"crew","account":"work"},{"name":"home","hotkey":"ctrl + alt + h"}]}"#,
+        )
+        .unwrap();
+        let work = c.account_of(&c.fleets[0]).unwrap();
+        assert_eq!(
+            work.variables(),
+            vec![("CLAUDE_CONFIG_DIR", Path::new(r"C:\Users\me\.claude-work"))]
+        );
+        assert!(c.account_of(&c.fleets[1]).is_none());
+        let text = serde_json::to_string(&c).unwrap();
+        assert_eq!(Config::from_json(&text).unwrap(), c);
+        let plain = serde_json::to_string(&Config::default()).unwrap();
+        assert!(!plain.contains("account"), "{plain}");
+    }
+
+    #[test]
+    fn an_account_names_both_folders_in_a_fixed_order() {
+        let a = Account {
+            codex: Some(PathBuf::from(r"D:\codex")),
+            claude: Some(PathBuf::from(r"D:\claude")),
+        };
+        let names: Vec<_> = a.variables().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, vec!["CLAUDE_CONFIG_DIR", "CODEX_HOME"]);
+    }
+
+    #[test]
+    fn a_fleet_naming_a_missing_account_is_rejected() {
+        assert_eq!(
+            Config::from_json(r#"{"fleets":[{"name":"crew","account":"work"}]}"#),
+            Err(ConfigError::UnknownAccount {
+                name: "crew".into(),
+                account: "work".into()
+            })
+        );
+    }
+
+    #[test]
+    fn accounts_need_a_name_a_folder_and_full_paths() {
+        for (text, name) in [
+            (r#"{"accounts":{"work":{}}}"#, "work"),
+            (r#"{"accounts":{" ":{"claude":"C:\\a"}}}"#, " "),
+            (r#"{"accounts":{"work":{"claude":".claude-work"}}}"#, "work"),
+            (r#"{"accounts":{"work":{"codex":"codex"}}}"#, "work"),
+            (
+                r#"{"accounts":{"Work":{"claude":"C:\\a"},"work":{"claude":"C:\\b"}}}"#,
+                "work",
+            ),
+            (
+                r#"{"accounts":{"a":{"claude":"C:\\x"},"b":{"claude":"c:\\X\\"}}}"#,
+                "b",
+            ),
+        ] {
+            assert!(
+                matches!(Config::from_json(text), Err(ConfigError::Account { name: n, .. }) if n == name),
+                "{text}"
+            );
+        }
+        assert!(
+            Config::from_json(r#"{"accounts":{"work":{"claude":"C:\\a","shell":"x"}}}"#).is_err()
+        );
+    }
+
+    #[test]
     fn the_schema_is_valid_json_naming_every_top_level_key() {
         let schema: serde_json::Value = serde_json::from_str(&Config::schema()).unwrap();
-        for key in ["gaps", "border", "hotkeys", "fleets"] {
+        for key in ["gaps", "border", "hotkeys", "fleets", "accounts"] {
             assert!(schema["properties"][key].is_object(), "{key}");
         }
     }

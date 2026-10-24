@@ -38,6 +38,15 @@ inside the terminal, from the user's own `PATH`. An administrator fleet
 therefore runs the user's `claude` as administrator, which is what the user
 asked for by setting `"admin": true`; Daifuku adds nothing to it.
 
+A fleet on an account (after 0.3.0) starts its shell with
+`CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to the folders the locked config
+names for it, before the command. Each folder is a full path, and goes in
+as a quoted PowerShell string with every quote mark doubled, the curly ones
+PowerShell also ends a string on among them, so no folder name runs as
+code. Install edits an account's settings file under the same rules as the
+one in the profile, below: only inside the profile and only with the
+user's own rights.
+
 Install adds `C:\Program Files\Daifuku`, which only administrators can
 write, to the machine `PATH`, and uninstall removes exactly that entry.
 Double-clicking `daifuku.exe` asks for administrator rights through the

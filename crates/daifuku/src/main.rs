@@ -111,7 +111,7 @@ enum Command {
         format: Format,
     },
     /// Open one agent terminal on its own, in the folder it works in, with
-    /// the command, profile and administrator setting of a fleet. The
+    /// the command, profile, account and administrator setting of a fleet. The
     /// variables an agent sets for itself are left out of its environment.
     Spawn {
         /// The folder it works in; this one when left out.
@@ -123,7 +123,8 @@ enum Command {
         /// A session to resume, by its id.
         #[arg(long)]
         resume: Option<String>,
-        /// The fleet whose command it runs; the first one when left out.
+        /// The fleet whose command it runs. Left out, the fleet of the
+        /// terminal this runs in, else the first one.
         #[arg(long)]
         fleet: Option<String>,
         /// The monitor to put it on, as a fleet's `monitor` takes it.
@@ -456,6 +457,7 @@ fn main() -> ExitCode {
                 &Request::Spawn(daifuku_core::peer::Spawn {
                     priority,
                     cell,
+                    from: spawn.fleet.is_none().then(own_terminal).flatten(),
                     ..spawn
                 }),
                 format.json,
@@ -1357,6 +1359,7 @@ fn spawn_request(
         area,
         priority: None,
         cell: None,
+        from: None,
     };
     match spawn.problem() {
         Some(problem) => Err(problem),
@@ -1390,6 +1393,40 @@ fn control_code(e: &std::io::Error, elevated: bool) -> ErrorCode {
     } else {
         ErrorCode::Ipc
     }
+}
+
+/// The terminal window this process runs in, asked of a `daifuku
+/// console-window` of its own: finding out detaches the asking process from
+/// its console, and this one still has an answer to print there.
+#[cfg(windows)]
+fn own_terminal() -> Option<u64> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut helper = std::process::Command::new(std::env::current_exe().ok()?)
+        .args(["console-window", &std::process::id().to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .ok()?;
+    let start = std::time::Instant::now();
+    while helper.try_wait().ok()?.is_none() {
+        if start.elapsed() > std::time::Duration::from_secs(2) {
+            let _ = helper.kill();
+            let _ = helper.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut helper.stdout.take()?, &mut out).ok()?;
+    out.trim().parse().ok()
+}
+
+#[cfg(not(windows))]
+fn own_terminal() -> Option<u64> {
+    None
 }
 
 /// `daifuku console-window`: prints the window `pid`'s terminal is, or
