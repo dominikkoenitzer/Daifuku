@@ -164,6 +164,8 @@ mod tests {
             last_tool: None,
             last_message: None,
             transcript_path: None,
+            account: None,
+            warning: false,
         }
     }
 

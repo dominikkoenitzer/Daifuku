@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::time::Duration;
 
-use daifuku_core::protocol::{HookMessage, Request, Response, from_line, to_line};
+use daifuku_core::protocol::{
+    HookLine, HookMessage, Request, Response, UsageReport, from_line, to_line,
+};
 use daifuku_win::pipe::{Instance, Pipe, instances};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
@@ -52,6 +54,8 @@ pub enum Inbound {
     /// ancestors were when it connected, itself first: what the daemon
     /// knows of who sent it, as the message itself can say anything.
     Hook(HookMessage, Vec<u32>),
+    /// A status line reported its account's limits.
+    Usage(UsageReport),
     /// A command, where to send the answer, and the claim on it: see
     /// [`claim`].
     Control(Request, SyncSender<Response>, Arc<AtomicBool>),
@@ -144,15 +148,16 @@ fn serve_hook(
     let Ok(line) = connection.read_line(HOOK_READ) else {
         return;
     };
-    match from_line::<HookMessage>(&line) {
-        Ok(message) => {
-            if sender.send(Inbound::Hook(message, chain)).is_ok() {
-                wake(main_thread);
-            }
-        }
+    let inbound = match from_line::<HookLine>(&line) {
+        Ok(HookLine::Event(message)) => Inbound::Hook(message, chain),
+        Ok(HookLine::Usage(report)) => Inbound::Usage(report),
         Err(error) => {
-            tracing::debug!(%error, client = connection.client, "ignored a malformed hook line")
+            tracing::debug!(%error, client = connection.client, "ignored a malformed hook line");
+            return;
         }
+    };
+    if sender.send(inbound).is_ok() {
+        wake(main_thread);
     }
 }
 
