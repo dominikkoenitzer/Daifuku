@@ -77,10 +77,11 @@ show any user, and names the command to run in an administrator terminal.
 from `daifuku status-line`. The signed-in user,
 by their own SID, may open it to read and to write data from a normal process
 (a medium label), and nothing more: not create server instances of it, so no
-other process can listen in and collect the hooks' reports. The daemon never
-writes on it, so there is nothing to read. Another person signed in at the
-same time is not let in at all. Processes below medium integrity cannot
-write to it.
+other process can listen in and collect the hooks' reports. The daemon
+writes on it only to answer a Claude Code `Stop` hook that asks, with the
+task it hands that agent from its fleet's backlog, or with nothing. Another
+person signed in at the same time is not let in at all. Processes below
+medium integrity cannot write to it.
 
 A message names a window and an event. A forged one can set the state
 Daifuku shows for any live top-level window: draw, recolour or remove its
@@ -111,6 +112,21 @@ own window. A process of the user outside the peer is not under the peer's
 agent, and one that is not elevated cannot reach an administrator peer's
 console, so neither can choose the session `daifuku restore` resumes.
 
+A task goes out on the same terms: only to a hook that ran under the agent
+of a fleet terminal, as the pipe says, and only when that agent is in the
+terminal's console. A forged ask can at most take a task off the queue for
+a terminal whose agent did not ask; `daifuku task` shows it and
+`daifuku task release` frees it. The backlog is the user's file, so the
+daemon reads it, and the `claims` folder beside it, with the user's own
+rights, borrowed from the desktop shell when the daemon runs elevated, and
+never writes there: a link in it leads nowhere the user could not read
+anyway. It reads at most 4 MiB, takes ids of at most 32 letters, digits,
+`-` and `_`, and cuts a title to 200 characters without control characters.
+An agent reads a task as it reads any file of the user's, and nothing in a
+backlog runs. An elevated hook takes an answer only from the elevated
+daemon, so a process that took the pipe's name while no daemon ran cannot
+put words to an administrator agent.
+
 Both pipes are created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, allow exactly
 as many instances as the daemon creates, and keep them for the daemon's whole
 life, so the name is never free for another process to take between two
@@ -119,7 +135,9 @@ can learn who the client is, never act as it. Remote clients are rejected.
 
 Every exchange has a deadline. A hook has half a second from connecting to
 deliver its line, a command client five seconds to send its request and five
-to read the reply; past that the daemon hangs up. A process that opens every
+to read the reply; past that the daemon hangs up. A hook that asks for a
+task waits at most five seconds for the answer, and the daemon answers
+within four or not at all. A process that opens every
 hook instance and says nothing therefore holds them for a moment, not for
 ever. One that keeps reconnecting can still crowd hooks out while it runs,
 which keeps borders from updating and does nothing more. A hook gives up

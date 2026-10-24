@@ -38,6 +38,17 @@
   Scheduler could not be asked, as with its service stopped. They stop
   with "could not remove the logon task" and the reason, as for a task
   that could not be deleted.
+- A fleet's `backlog` names a markdown file of tasks, and its Claude Code
+  agents work through it: when an agent's main thread stops and its
+  terminal holds no task, Daifuku hands it the next open one, and the
+  agent goes on with it instead of stopping. A task stays with its
+  terminal, or its session, until the file marks it done or closed.
+  An account's `stop_at` rules say how much of each limit its agents may
+  use before no more tasks go out, by window, day, hour, or the minutes
+  before a reset. `daifuku task` lists each backlog's open tasks, who has
+  which and what goes out next, and `daifuku task release <id>` takes one
+  back. Claude Code's `Stop` hook now waits for the daemon so that it can
+  hand over a task: run `daifuku install` again to update it.
 - A fleet can sign its agents in to an account other than the one in your
   profile: `accounts` names each by a name of your own, with the folder
   Claude Code takes from `CLAUDE_CONFIG_DIR`, the one Codex takes from
