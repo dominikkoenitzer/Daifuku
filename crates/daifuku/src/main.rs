@@ -1000,9 +1000,13 @@ fn hook(ask: bool) {
     // A long notification must not make the line too long for the pipe.
     event.trim();
     // Only the session's own stop, and only while a fleet works a backlog:
-    // otherwise there is no task to wait for.
-    let ask =
-        ask && event.hook_event_name == "Stop" && event.agent_id.is_none() && backlog_in_config();
+    // otherwise there is no task to wait for. Never for an elevated agent,
+    // as any process of the user's can write the backlog.
+    let ask = ask
+        && event.hook_event_name == "Stop"
+        && event.agent_id.is_none()
+        && !process::current_is_elevated()
+        && backlog_in_config();
     let Some((window, agent)) = console::terminal_window_of(process::current()) else {
         return;
     };
@@ -1018,11 +1022,9 @@ fn hook(ask: bool) {
     // A short wait: an agent that waits for its hook must never notice a
     // daemon that is busy or not running.
     let wait = std::time::Duration::from_millis(100);
-    // An elevated agent takes words only from the elevated daemon.
-    let elevated = ask && process::current_is_elevated();
     let deliver = |wait| {
         if ask {
-            daifuku_win::pipe::ask(&line, wait, HOOK_ANSWER, elevated).map(Some)
+            daifuku_win::pipe::ask(&line, wait, HOOK_ANSWER).map(Some)
         } else {
             send(Pipe::Hook, &line, wait).map(|_| None)
         }

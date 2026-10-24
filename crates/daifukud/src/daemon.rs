@@ -376,7 +376,7 @@ impl Daemon {
                 Inbound::Hook(message, sender, asked) => {
                     // A hook that gave up waiting is told nothing, so it is
                     // handed nothing.
-                    let answering = asked.as_ref().is_some_and(|(_, c)| ipc::claim(c));
+                    let answering = asked.as_ref().map(|(_, a)| a.as_ref()).filter(|a| a.take());
                     let task = self.hook(&message, &sender, answering);
                     if let Some((reply, _)) = asked {
                         let _ = reply.send(HookAnswer { task });
@@ -445,7 +445,12 @@ impl Daemon {
     ///
     /// With `answering`, the hook waits for an answer: the task the agent is
     /// handed, if any.
-    fn hook(&mut self, message: &HookMessage, sender: &[u32], answering: bool) -> Option<String> {
+    fn hook(
+        &mut self,
+        message: &HookMessage,
+        sender: &[u32],
+        answering: Option<&ipc::Asking>,
+    ) -> Option<String> {
         // Only a live, visible top-level window gets a frame. A pseudo console
         // window, which a hook names when its terminal was not ready yet, is
         // followed to the terminal window now; anything else is a stale handle
@@ -496,18 +501,21 @@ impl Daemon {
             tracing::debug!(window = format!("{w:#x}"), event = %message.event.hook_event_name, state = ?self.agents.window_state(w), "agent state");
             self.refresh_borders();
         }
-        if answering {
-            self.hand_out(w, message, agent)
-        } else {
-            None
-        }
+        self.hand_out(w, message, agent, answering?)
     }
 
     /// The next task of its fleet's backlog for the agent in terminal `w`,
     /// whose main thread just stopped, and what to tell it. Only to an agent
     /// the daemon itself finds in the terminal, which holds no task yet, and
-    /// only while its account's `stop_at` lets it work on.
-    fn hand_out(&mut self, w: u64, message: &HookMessage, agent: Option<u32>) -> Option<String> {
+    /// only while its account's `stop_at` lets it work on, and only while the
+    /// hook still waits to be told.
+    fn hand_out(
+        &mut self,
+        w: u64,
+        message: &HookMessage,
+        agent: Option<u32>,
+        asking: &ipc::Asking,
+    ) -> Option<String> {
         let event = &message.event;
         if event.hook_event_name != "Stop" || event.agent_id.is_some() {
             return None;
@@ -535,6 +543,10 @@ impl Daemon {
         // Last, as it takes a moment: the terminal's agent, not a process
         // that only names it.
         if !agent.is_some_and(|pid| in_terminal(pid, w)) {
+            return None;
+        }
+        if !asking.answer() {
+            tracing::info!(fleet = %fleet.name, "handed out no task: its hook stopped waiting");
             return None;
         }
         let claimed = self.queue.claim(queue::Claim {
@@ -2557,16 +2569,11 @@ fn local_time() -> LocalTime {
 /// What an agent is told along with its task. The title is cut short, as
 /// the backlog is the user's file and may hold anything.
 fn hand_out_text(path: &std::path::Path, task: &daifuku_core::backlog::Task) -> String {
-    let title: String = task
-        .title
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(200)
-        .collect();
     format!(
-        "Daifuku hands you the next task in {}: {}. {title}. It is yours now: read its entry in that file and work it. It stays yours until its status there starts with done.",
+        "Daifuku hands you the next task in {}: {}. {}. It is yours now: read its entry in that file and work it. It stays yours until its status there starts with done.",
         path.display(),
         task.id,
+        task.title,
     )
 }
 

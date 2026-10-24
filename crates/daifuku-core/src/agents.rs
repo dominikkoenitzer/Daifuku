@@ -111,10 +111,15 @@ fn fit_codex_limits(event: &str, hook: &mut Value) -> bool {
     changed
 }
 
+/// The shortest a Claude Code `Stop` hook that asks may run, in seconds:
+/// enough for the five it waits for the daemon's answer.
+const ASK_TIMEOUT: u64 = 10;
+
 /// Makes a Claude Code `Stop` hook as an earlier install wrote it, in the
 /// background with `hook` alone, wait for the agent and ask for its next
-/// task: only a hook the agent waits for can keep it going. One the user
-/// changed stays. Says whether anything changed.
+/// task: only a hook the agent waits for can keep it going. A timeout below
+/// [`ASK_TIMEOUT`] is raised to it, so the answer is not cut off. One whose
+/// arguments the user changed stays. Says whether anything changed.
 fn fit_claude_stop(event: &str, hook: &mut Value) -> bool {
     let Some(hook) = hook.as_object_mut() else {
         return false;
@@ -124,6 +129,13 @@ fn fit_claude_stop(event: &str, hook: &mut Value) -> bool {
     }
     hook.insert("args".to_owned(), json!(["hook", "--ask"]));
     hook.shift_remove("async");
+    let too_short = hook
+        .get("timeout")
+        .and_then(Value::as_u64)
+        .is_some_and(|t| t < ASK_TIMEOUT);
+    if too_short {
+        hook.insert("timeout".to_owned(), json!(ASK_TIMEOUT));
+    }
     true
 }
 
@@ -567,6 +579,21 @@ mod tests {
         // One the user changed stays as they have it.
         s["hooks"]["Stop"][0]["hooks"][0]["args"] = json!(["hook", "--quiet"]);
         assert_eq!(update_hooks(&mut s, EXE), 0);
+    }
+
+    #[test]
+    fn an_asking_stop_hook_gets_time_for_its_answer() {
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": EXE, "args": ["hook"], "async": true, "timeout": 3}
+        ]}]}});
+        assert_eq!(update_hooks(&mut s, EXE), 1);
+        assert_eq!(s["hooks"]["Stop"][0]["hooks"][0]["timeout"], ASK_TIMEOUT);
+        // A longer one stays.
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": EXE, "args": ["hook"], "async": true, "timeout": 30}
+        ]}]}});
+        assert_eq!(update_hooks(&mut s, EXE), 1);
+        assert_eq!(s["hooks"]["Stop"][0]["hooks"][0]["timeout"], 30);
     }
 
     #[test]
