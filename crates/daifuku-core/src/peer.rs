@@ -574,6 +574,16 @@ mod tests {
             // No agent to be found: at the end, as before.
             ("my-agent --flag", "my-agent --flag --resume abc-1"),
             ("npx some-tool", "npx some-tool --resume abc-1"),
+            // A word after a program that runs no package is no agent.
+            (
+                "Write-Host claude; codex",
+                "Write-Host claude; codex resume abc-1",
+            ),
+            // Nor is a variable set the way other shells write it.
+            (
+                r"CLAUDE_CONFIG_DIR=C:\claude claude",
+                r"CLAUDE_CONFIG_DIR=C:\claude claude --resume abc-1",
+            ),
         ] {
             assert_eq!(resume_command(command, "abc-1"), resumed, "{command}");
         }
@@ -626,6 +636,11 @@ mod tests {
             ..ok.clone()
         };
         assert!(long.problem().is_some());
+        let longest = Spawn {
+            label: Some("x".repeat(MAX_LABEL)),
+            ..ok.clone()
+        };
+        assert_eq!(longest.problem(), None);
         let id = Spawn {
             resume: Some("a;b".into()),
             ..ok

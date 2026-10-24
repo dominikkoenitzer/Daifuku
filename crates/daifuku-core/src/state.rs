@@ -726,10 +726,63 @@ mod tests {
     }
 
     #[test]
+    fn every_ended_session_turns_its_late_events_away() {
+        let mut a = Agents::new();
+        a.apply(1, &at(ev("s", "SessionEnd"), 30));
+        a.apply(1, &at(ev("t", "SessionEnd"), 40));
+        assert!(!a.apply(1, &at(ev("s", "PostToolUse"), 20)));
+        assert!(!a.apply(1, &at(ev("t", "PostToolUse"), 20)));
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn an_event_stamped_with_the_same_time_as_the_last_is_not_late() {
+        let mut a = Agents::new();
+        a.apply(1, &at(ev("s", "PreToolUse"), 10));
+        assert!(a.apply(1, &at(ev("s", "PermissionRequest"), 10)));
+        assert_eq!(a.window_state(1), Some(AgentState::Waiting));
+    }
+
+    #[test]
+    fn forgetting_a_session_says_whether_it_was_known() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "PreToolUse"));
+        assert!(!a.forget_session("t"));
+        assert!(a.forget_session("s"));
+        assert!(!a.knows("s"));
+        assert!(!a.forget_session("s"));
+    }
+
+    #[test]
+    fn a_failure_left_when_a_subagent_ends_its_question_counts_from_then() {
+        let mut a = Agents::new();
+        a.apply(1, &sub("s", "PermissionRequest", "A"));
+        a.apply(1, &ev("s", "StopFailure"));
+        a.apply(2, &ev("t", "StopFailure"));
+        a.apply(1, &sub("s", "SubagentStop", "A"));
+        assert_eq!(a.window_state(1), Some(AgentState::Failed));
+        assert_eq!(a.needs_you(), vec![2, 1]);
+    }
+
+    #[test]
+    fn a_failure_left_when_the_prompt_goes_idle_counts_from_then() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "StopFailure"));
+        a.apply(1, &ev("s", "PermissionRequest"));
+        a.apply(2, &ev("t", "StopFailure"));
+        a.apply(1, &note("s", "idle_prompt"));
+        assert_eq!(a.window_state(1), Some(AgentState::Failed));
+        assert_eq!(a.needs_you(), vec![2, 1]);
+    }
+
+    #[test]
     fn made_up_subagents_cannot_grow_a_session_without_end() {
         let mut a = Agents::new();
         let long = "x".repeat(MAX_SESSION_ID + 1);
         assert!(!a.apply(1, &sub("s", "PermissionRequest", &long)));
+        let longest = "x".repeat(MAX_SESSION_ID);
+        assert!(a.apply(1, &sub("s", "PermissionRequest", &longest)));
+        a.apply(1, &sub("s", "SubagentStop", &longest));
         for i in 0..(MAX_WAITING * 4) {
             a.apply(1, &sub("s", "PermissionRequest", &i.to_string()));
         }
@@ -818,8 +871,7 @@ mod tests {
     #[test]
     fn details_no_agent_would_send_are_cut_or_dropped() {
         let mut a = Agents::new();
-        // Cut inside a two-byte character, it ends before it.
-        let message = format!("{}é", "x".repeat(MAX_MESSAGE - 1));
+        let message = "x".repeat(MAX_MESSAGE + 1);
         a.apply(
             1,
             &HookEvent {
@@ -837,7 +889,38 @@ mod tests {
             Some(MAX_PATH_LEN)
         );
         assert_eq!(d.last_tool, None);
-        assert_eq!(d.last_message, Some("x".repeat(MAX_MESSAGE - 1)));
+        assert_eq!(d.last_message, Some("x".repeat(MAX_MESSAGE)));
+    }
+
+    #[test]
+    fn a_message_cut_inside_a_character_ends_before_it() {
+        // On its own thread, so a cut that never ends fails instead of hanging the run.
+        let (sent, cut) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut e = HookEvent {
+                message: Some(format!("{}€", "x".repeat(MAX_MESSAGE - 2))),
+                ..note("s", "permission_prompt")
+            };
+            e.trim();
+            let _ = sent.send(e.message);
+        });
+        let message = cut
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the cut ends");
+        assert_eq!(message, Some("x".repeat(MAX_MESSAGE - 2)));
+    }
+
+    #[test]
+    fn details_at_their_limits_are_kept_whole() {
+        let mut e = HookEvent {
+            cwd: Some("x".repeat(MAX_PATH_LEN)),
+            tool_name: Some("x".repeat(MAX_SESSION_ID)),
+            message: Some("x".repeat(MAX_MESSAGE)),
+            ..note("s", "permission_prompt")
+        };
+        let whole = e.clone();
+        e.trim();
+        assert_eq!(e, whole);
     }
 
     #[test]
