@@ -371,7 +371,7 @@ pub fn config_is_locked(file: &Path) -> std::io::Result<bool> {
 }
 
 /// The owner and access list of the file or folder at `path`, in the SDDL
-/// form [`private_file_sddl`] writes them in. Reads, changes nothing.
+/// form [`canonical_sddl`] gives. Reads, changes nothing.
 ///
 /// # Errors
 ///
@@ -384,15 +384,13 @@ pub fn file_sddl(path: &Path) -> std::io::Result<String> {
         .access_mode(READ_CONTROL.0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
         .open(path)?;
-    let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     let mut sd = PSECURITY_DESCRIPTOR::default();
-    // SAFETY: the handle is open for the call; sd and the string are freed
-    // after the last use of either.
+    // SAFETY: the handle is open for the call; sd is freed after its last use.
     unsafe {
         let r = GetSecurityInfo(
             HANDLE(file.as_raw_handle()),
             SE_FILE_OBJECT,
-            info,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             None,
             None,
             None,
@@ -404,16 +402,44 @@ pub fn file_sddl(path: &Path) -> std::io::Result<String> {
                 i32::try_from(r.0).unwrap_or(-1),
             ));
         }
-        let mut s = PWSTR::null();
-        let r = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        let out = owner_and_access(sd);
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        out
+    }
+}
+
+/// `sddl` as [`file_sddl`] reads it back from a file that carries it. Windows
+/// writes some accounts by a short name, such as `LA` for the built-in
+/// Administrator, whatever form they were given in.
+///
+/// # Errors
+///
+/// When `sddl` is not a valid descriptor.
+pub fn canonical_sddl(sddl: &str) -> std::io::Result<String> {
+    with_descriptor(sddl, |attributes| {
+        // SAFETY: attributes points at a live descriptor for the call.
+        unsafe { owner_and_access(PSECURITY_DESCRIPTOR((*attributes).lpSecurityDescriptor)) }
+    })
+}
+
+/// The owner and access list of the descriptor `sd` as SDDL.
+///
+/// # Safety
+///
+/// `sd` points at a valid security descriptor.
+unsafe fn owner_and_access(sd: PSECURITY_DESCRIPTOR) -> std::io::Result<String> {
+    let mut s = PWSTR::null();
+    // SAFETY: sd is valid as the caller promises; the string is freed after
+    // its last use.
+    unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
             sd,
             SDDL_REVISION_1,
-            info,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &raw mut s,
             None,
-        );
-        let _ = LocalFree(Some(HLOCAL(sd.0)));
-        r.map_err(std::io::Error::other)?;
+        )
+        .map_err(std::io::Error::other)?;
         let out = from_wide(s.as_wide());
         let _ = LocalFree(Some(HLOCAL(s.0.cast())));
         Ok(out)
@@ -1068,6 +1094,17 @@ mod tests {
     }
 
     #[test]
+    fn an_access_list_reads_back_with_the_short_names_windows_writes() {
+        // CI runs as the built-in Administrator, which Windows writes as LA
+        // even when it was given by its full SID.
+        let short = "O:LAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)";
+        assert_eq!(canonical_sddl(short).unwrap(), short);
+        let once = canonical_sddl(&private_file_sddl(user_sid().as_deref(), false)).unwrap();
+        assert_eq!(canonical_sddl(&once).unwrap(), once);
+        assert!(canonical_sddl("O:nobody").is_err());
+    }
+
+    #[test]
     fn a_private_file_takes_nothing_from_a_folder_every_user_may_read() {
         let dir = std::env::temp_dir().join(format!("daifuku-readable-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1088,11 +1125,12 @@ mod tests {
         let mut f = create_private_file(&private, &sddl).unwrap();
         std::io::Write::write_all(&mut f, b"{}").unwrap();
         drop(f);
-        assert_eq!(file_sddl(&private).unwrap(), sddl);
+        let written = canonical_sddl(&sddl).unwrap();
+        assert_eq!(file_sddl(&private).unwrap(), written);
         assert_eq!(std::fs::read_to_string(&private).unwrap(), "{}");
         // Moved over another file, as a save is, it keeps its own list.
         std::fs::rename(&private, &plain).unwrap();
-        assert_eq!(file_sddl(&plain).unwrap(), sddl);
+        assert_eq!(file_sddl(&plain).unwrap(), written);
         assert_eq!(
             create_private_file(&plain, &sddl).unwrap_err().kind(),
             std::io::ErrorKind::AlreadyExists
@@ -1103,7 +1141,7 @@ mod tests {
             let given = dir.join("elevated.json");
             let sddl = private_file_sddl(Some(&sid), true);
             drop(create_private_file(&given, &sddl).unwrap());
-            assert_eq!(file_sddl(&given).unwrap(), sddl);
+            assert_eq!(file_sddl(&given).unwrap(), canonical_sddl(&sddl).unwrap());
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

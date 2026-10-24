@@ -2651,12 +2651,14 @@ mod tests {
         std::fs::write(dir.join("state.json.new"), "cut short").unwrap();
         d.save(true);
         d.save_peers();
+        let access = setup::canonical_sddl(&setup::private_file_sddl(Some(&sid), false)).unwrap();
         for file in ["state.json", "peers.json"] {
             let path = dir.join(file);
+            assert_eq!(setup::file_sddl(&path).unwrap(), access, "{file}");
             let (owner, protected, who) = access_of(&path);
-            assert_eq!(owner, sid, "{file}");
             assert!(protected, "{file} takes entries from its folder");
-            assert_eq!(who, ["SY", "BA", sid.as_str()], "{file}");
+            assert_eq!(who[..2], ["SY", "BA"], "{file}");
+            assert_eq!(who[2..], [owner], "{file}");
             assert!(std::fs::read_to_string(&path).is_ok(), "{file}");
         }
         let _ = std::fs::remove_dir_all(&dir);
