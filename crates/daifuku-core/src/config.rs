@@ -93,6 +93,12 @@ pub struct Account {
     /// uses its own, `.codex` in your profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<PathBuf>,
+    /// Warn once its agents' status lines report this share of the 5-hour
+    /// or the weekly limit used, in percent, 1 to 100: the borders of its
+    /// terminals turn the warning colour until the window resets. Needs
+    /// `daifuku status-line` in Claude Code's status line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warn: Option<u8>,
 }
 
 impl Account {
@@ -165,6 +171,7 @@ impl Border {
             waiting: own.waiting.unwrap_or(palette.waiting),
             done: own.done.unwrap_or(palette.done),
             failed: own.failed.unwrap_or(palette.failed),
+            warning: own.warning.unwrap_or(palette.warning),
         }
     }
 
@@ -194,11 +201,13 @@ impl Border {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Palette {
-    /// Catppuccin Mocha: blue, yellow, green and red.
+    /// Catppuccin Mocha: blue, yellow, green and red, and peach for an
+    /// account's warning.
     #[default]
     Catppuccin,
-    /// Okabe-Ito: sky blue, orange, bluish green and vermilion, chosen to stay
-    /// distinct for deuteranopia, protanopia and tritanopia.
+    /// Okabe-Ito: sky blue, orange, bluish green and vermilion, and reddish
+    /// purple for an account's warning, chosen to stay distinct for
+    /// deuteranopia, protanopia and tritanopia.
     Colorblind,
 }
 
@@ -212,12 +221,14 @@ impl Palette {
                 waiting: Colour::new(0xf9, 0xe2, 0xaf),
                 done: Colour::new(0xa6, 0xe3, 0xa1),
                 failed: Colour::new(0xf3, 0x8b, 0xa8),
+                warning: Colour::new(0xfa, 0xb3, 0x87),
             },
             Self::Colorblind => StateColours {
                 working: Colour::new(0x56, 0xb4, 0xe9),
                 waiting: Colour::new(0xe6, 0x9f, 0x00),
                 done: Colour::new(0x00, 0x9e, 0x73),
                 failed: Colour::new(0xd5, 0x5e, 0x00),
+                warning: Colour::new(0xcc, 0x79, 0xa7),
             },
         }
     }
@@ -240,6 +251,9 @@ pub struct OwnColours {
     /// The turn ended on an error.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<Colour>,
+    /// Working or done on an account that has reached its `warn`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<Colour>,
 }
 
 /// A colour for each agent state, as drawn.
@@ -253,6 +267,8 @@ pub struct StateColours {
     pub done: Colour,
     /// The turn ended on an error. Red.
     pub failed: Colour,
+    /// Working or done on an account that has reached its `warn`. Peach.
+    pub warning: Colour,
 }
 
 impl StateColours {
@@ -1065,12 +1081,11 @@ impl Config {
             if variables.is_empty() {
                 return Err(problem("name a folder for claude, codex or both"));
             }
+            if account.warn.is_some_and(|w| !(1..=100).contains(&w)) {
+                return Err(problem("warn is a percentage from 1 to 100"));
+            }
             for (variable, folder) in variables {
-                let key: Vec<_> = folder
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
-                    .collect();
-                if !folders.insert((variable, key)) {
+                if !folders.insert((variable, folder_key(folder))) {
                     return Err(ConfigError::Account {
                         name: name.clone(),
                         reason: format!("`{}` is another account's folder too", folder.display()),
@@ -1105,6 +1120,17 @@ impl Config {
         fleet.account.as_deref().and_then(|a| self.account(a))
     }
 
+    /// The account whose Claude Code folder is `folder`, in any case and
+    /// with or without a separator at the end, with its name.
+    #[must_use]
+    pub fn account_in(&self, folder: &Path) -> Option<(&str, &Account)> {
+        let key = folder_key(folder);
+        self.accounts
+            .iter()
+            .find(|(_, a)| a.claude.as_deref().is_some_and(|c| folder_key(c) == key))
+            .map(|(n, a)| (n.as_str(), a))
+    }
+
     fn all_hotkeys(&self) -> impl Iterator<Item = &HotkeyText> {
         self.hotkeys
             .next_waiting
@@ -1128,6 +1154,16 @@ impl Config {
         let schema = schemars::schema_for!(Config);
         serde_json::to_string_pretty(&schema).unwrap_or_default() + "\n"
     }
+}
+
+/// A folder as accounts are told apart by: each part in lower case, so
+/// `C:\Users\Me\.claude\` and `c:\users\me\.claude` are one.
+#[must_use]
+pub fn folder_key(folder: &Path) -> Vec<String> {
+    folder
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1863,6 +1899,7 @@ mod tests {
         let a = Account {
             codex: Some(PathBuf::from(r"D:\codex")),
             claude: Some(PathBuf::from(r"D:\claude")),
+            warn: None,
         };
         let names: Vec<_> = a.variables().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, vec!["CLAUDE_CONFIG_DIR", "CODEX_HOME"]);
@@ -1903,6 +1940,28 @@ mod tests {
         assert!(
             Config::from_json(r#"{"accounts":{"work":{"claude":"C:\\a","shell":"x"}}}"#).is_err()
         );
+        for warn in ["0", "101"] {
+            let text = format!(r#"{{"accounts":{{"work":{{"claude":"C:\\a","warn":{warn}}}}}}}"#);
+            assert!(
+                matches!(Config::from_json(&text), Err(ConfigError::Account { reason, .. }) if reason.contains("warn")),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_account_is_found_by_its_folder_in_any_case() {
+        let c = Config::from_json(
+            r#"{"accounts":{"work":{"claude":"C:\\Users\\Me\\.claude-work","warn":77},
+                "codex-only":{"codex":"C:\\Users\\Me\\.claude"}}}"#,
+        )
+        .unwrap();
+        let (name, work) = c
+            .account_in(Path::new(r"c:\users\me\.CLAUDE-WORK\"))
+            .unwrap();
+        assert_eq!((name, work.warn), ("work", Some(77)));
+        // Only Claude Code's folder counts: the status line is Claude Code's.
+        assert!(c.account_in(Path::new(r"C:\Users\Me\.claude")).is_none());
     }
 
     #[test]
