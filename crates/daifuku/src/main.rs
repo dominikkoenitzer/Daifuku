@@ -269,6 +269,19 @@ enum Command {
         #[command(flatten)]
         format: Format,
     },
+    /// What happened to the accounts and fleets since the daemon started:
+    /// a window reached its stop, started over or may take more, or an
+    /// agent finished its turn while its backlog has a task for it.
+    Events {
+        /// Print each new event as it comes, until stopped.
+        #[arg(long)]
+        follow: bool,
+        /// Only the events numbered above this one.
+        #[arg(long)]
+        after: Option<u64>,
+        #[command(flatten)]
+        format: Format,
+    },
     /// Report how much of its limits the agent's account has used, read
     /// from what Claude Code hands its status line, and print it as one
     /// line. Set it as Claude Code's status line command, or pipe your own
@@ -540,6 +553,11 @@ fn main() -> ExitCode {
             ..
         } => control(&Request::TaskRelease { id }, format.json),
         Command::Task { format, .. } => control(&Request::Tasks, format.json),
+        Command::Events {
+            follow,
+            after,
+            format,
+        } => events_cmd(after, follow, format.json),
         Command::Reload { format } => control(&Request::Reload, format.json),
         Command::Stop { format } => control(&Request::Stop, format.json),
     }
@@ -1359,6 +1377,17 @@ fn answer(reply: &str, request: &Request, json: bool) -> ExitCode {
             print!("{}", tasks_text(&fleets));
             ExitCode::SUCCESS
         }
+        Ok(events @ Response::Events { .. }) if json => {
+            print!(
+                "{}",
+                output::ascii_json(&to_line(&events).unwrap_or_default())
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(Response::Events { events, .. }) => {
+            print!("{}", events_text(&events));
+            ExitCode::SUCCESS
+        }
         Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
         Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
     }
@@ -1452,6 +1481,8 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Status => "status".to_owned(),
         Request::Tasks => "task".to_owned(),
         Request::TaskRelease { id } => format!("task release {}", shell_word(id)),
+        Request::Events { after: 0 } => "events".to_owned(),
+        Request::Events { after } => format!("events --after {after}"),
         Request::Reload => "reload".to_owned(),
         Request::Stop => "stop".to_owned(),
     };
@@ -1787,6 +1818,74 @@ fn wait_cmd(_: &str, _: wait::Until, _: u64, json: bool) -> ExitCode {
     control(&Request::Status, json)
 }
 
+/// `daifuku events`: the events logged after `after`, or with `follow`
+/// each new one as it comes, looking as often as the daemon does. Without
+/// `after`, following starts from now. A daemon that started anew numbers
+/// its events from 1 again, so then all of its are new.
+#[cfg(windows)]
+fn events_cmd(after: Option<u64>, follow: bool, json: bool) -> ExitCode {
+    use daifuku_core::protocol::Response;
+
+    if !follow {
+        return control(
+            &Request::Events {
+                after: after.unwrap_or(0),
+            },
+            json,
+        );
+    }
+    let fail = |code: ErrorCode, message: &str| {
+        if json {
+            fail_json(code, message)
+        } else {
+            eprintln!("daifuku: {message}");
+            ExitCode::FAILURE
+        }
+    };
+    let mut after = after;
+    let mut daemon = None;
+    loop {
+        let request = Request::Events {
+            after: after.unwrap_or(0),
+        };
+        let (events, last, started_at) = match ask(&request, json) {
+            Ok(Response::Events {
+                events,
+                last,
+                started_at,
+            }) => (events, last, started_at),
+            Ok(Response::Error { message }) => return fail(ErrorCode::Daemon, &message),
+            Ok(_) => return fail(ErrorCode::Ipc, "the daemon did not answer with its events"),
+            Err((code, message)) => return fail(code, &message),
+        };
+        if daemon.replace(started_at).is_some_and(|d| d != started_at) {
+            after = Some(0);
+            continue;
+        }
+        if after.is_some() {
+            for e in &events {
+                if json {
+                    println!("{}", output::ascii_json(&output::to_json(e)));
+                } else {
+                    println!("{}", e.event.line());
+                }
+            }
+        }
+        after = Some(last);
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+#[cfg(not(windows))]
+fn events_cmd(after: Option<u64>, _: bool, json: bool) -> ExitCode {
+    control(
+        &Request::Events {
+            after: after.unwrap_or(0),
+        },
+        json,
+    )
+}
+
 #[cfg(not(windows))]
 fn control(_: &Request, json: bool) -> ExitCode {
     if json {
@@ -1937,6 +2036,18 @@ fn tasks_text(fleets: &[daifuku_core::protocol::FleetQueue]) -> String {
         }
     }
     out
+}
+
+/// `daifuku events` for a person: each event and how long ago it was.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn events_text(events: &[daifuku_core::protocol::LoggedEvent]) -> String {
+    if events.is_empty() {
+        return "no events\n".to_owned();
+    }
+    events
+        .iter()
+        .map(|e| format!("{} ({} ago)\n", e.event.line(), since(e.age_seconds)))
+        .collect()
 }
 
 fn print_restored(peers: &[daifuku_core::protocol::RestoredPeer], request: &Request) {
@@ -2434,6 +2545,8 @@ mod tests {
             Request::Status,
             Request::Tasks,
             Request::TaskRelease { id: "C6".into() },
+            Request::Events { after: 0 },
+            Request::Events { after: 7 },
             Request::Reload,
             Request::Stop,
         ] {
@@ -2459,6 +2572,9 @@ mod tests {
                     ..
                 } => Request::TaskRelease { id },
                 Command::Task { .. } => Request::Tasks,
+                Command::Events { after, .. } => Request::Events {
+                    after: after.unwrap_or(0),
+                },
                 Command::Reload { .. } => Request::Reload,
                 Command::Stop { .. } => Request::Stop,
                 _ => panic!("{line} is not a daemon command"),
@@ -2685,6 +2801,7 @@ mod tests {
                 action: None,
                 format,
             }
+            | Command::Events { format, .. }
             | Command::Doctor { format } => Some(format.json),
             Command::Install { json, .. } | Command::Uninstall { json, .. } => Some(*json),
             Command::DemoAgent { .. }
@@ -2793,6 +2910,8 @@ mod tests {
             &["spawn", "--dir", "x", "--label", "a b", "--json"],
             &["reload", "--json"],
             &["stop", "--json"],
+            &["events", "--json"],
+            &["events", "--follow", "--after", "3", "--json"],
             &["install", "--dry-run", "--json"],
             &["install", "--json", "--dry-run", "--no-hooks"],
             &["uninstall", "--dry-run", "--json"],

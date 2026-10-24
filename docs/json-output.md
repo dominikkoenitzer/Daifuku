@@ -4,6 +4,8 @@ The `daifuku` commands that report state or act take `--json` after the
 command's name, as in `daifuku status --json`. With it, `daifuku` prints
 exactly one JSON document on standard output and nothing else there, errors
 included, so a script or an assistant can read every answer the same way.
+`daifuku events --follow --json` is the one that goes on: it prints one
+document per line, an event each, until it is stopped or fails.
 `install` and `uninstall` take it only with `--dry-run`; the hidden commands
 do not take it.
 
@@ -40,13 +42,15 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku wait <window or label> [--until state] [--timeout seconds] --json` | the terminal once it got there, below |
 | `daifuku task --json` | every fleet's backlog, below |
 | `daifuku task release <id> --json` | `{"ok": true}` |
+| `daifuku events [--after n] --json` | the events logged, below |
+| `daifuku events --follow [--after n] --json` | each new event on a line of its own, below |
 | `daifuku reload --json` | `{"ok": true}` |
 | `daifuku stop --json` | `{"ok": true}` |
 | `daifuku install --dry-run --json` | the plan, below |
 | `daifuku uninstall --dry-run --json` | the plan, below |
 
 A command that worked exits with 0. The commands that talk to the daemon
-(`status`, `open`, `snap`, `next`, `close`, `stop-agents`, `demo`, `spawn`, `restore`, `label`, `wait`, `task`, `reload` and `stop`) work
+(`status`, `open`, `snap`, `next`, `close`, `stop-agents`, `demo`, `spawn`, `restore`, `label`, `wait`, `task`, `events`, `reload` and `stop`) work
 from any of your terminals when the daemon runs with your own rights, the
 default. With `"elevated": true` in the config they need an administrator
 terminal, with `--json` too. That is on purpose: an elevated daemon's
@@ -277,6 +281,53 @@ terminal ([configuration](configuration.md)).
 | `fleets[].tasks[].handed_to` | object | Who has it; left out when nobody does. `window` and `label` are the terminal and its label, left out once it closed; `session_id` is the session it went to, and `age_seconds` how long ago. |
 | `fleets[].next` | string | The task that goes out next; left out when there is none. |
 | `fleets[].stopped` | string | Why no task goes out now, as the account's `stop_at` says, such as `5h 80%, stops at 75%`; left out while tasks go out. |
+
+### `events`
+
+What the daemon noticed since it started, the newest 256 kept: a window of
+an account reached the share its `stop_at` stops at, started over, or may
+take more as its stop rose; or an agent in a fleet terminal finished its
+turn holding no task while its backlog has one for it, which it gets only
+when it stops again. A window's first sight after a start of the daemon
+tells nothing.
+
+```json
+{
+  "result": "events",
+  "events": [
+    { "seq": 1, "age_seconds": 640, "event": "limit", "account": "work", "folder": "C:\\Users\\you\\.claude-work", "limit": "five_hour", "used": 76, "share": 75 },
+    { "seq": 2, "age_seconds": 80, "event": "top-up", "account": "work", "folder": "C:\\Users\\you\\.claude-work", "limit": "five_hour", "used": 76, "share": 91, "resets_in_seconds": 3540 },
+    { "seq": 3, "age_seconds": 78, "event": "idle", "window": 1050190, "label": "crew 1", "fleet": "crew", "task": "A2" }
+  ],
+  "last": 3,
+  "started_at": 1792500000
+}
+```
+
+| Field | Type | |
+|---|---|---|
+| `events` | array of objects | The events numbered above `--after`, all without it, oldest first. |
+| `events[].seq` | number | The event's number, counted from 1 since the daemon started. |
+| `events[].age_seconds` | number | How long ago it happened. |
+| `events[].event` | string | `limit`, `reset`, `top-up` or `idle`. |
+| `events[].account` | string | `limit`, `reset`, `top-up`: the account's name under `accounts`; left out for a folder none names. |
+| `events[].folder` | string | `limit`, `reset`, `top-up`: the account's folder. |
+| `events[].limit` | string | `limit`, `reset`, `top-up`: the window, `five_hour` or `seven_day`. |
+| `events[].used` | number | `limit`, `top-up`: its share used, in percent. `reset`: the new window's, once a status line reported it, else left out. |
+| `events[].share` | number | `limit`: the share it stops at. `top-up`: the one it stops at now, left out when nothing stops it. |
+| `events[].resets_in_seconds` | number | `top-up`: how long until the window starts over. |
+| `events[].window` | number | `idle`: the terminal's window. |
+| `events[].label` | string | `idle`: its label, else its fleet and number. |
+| `events[].fleet` | string | `idle`: its fleet. |
+| `events[].task` | string | `idle`: the id of the task it would get. |
+| `last` | number | The number of the latest event, 0 while there is none. Pass it as `--after` to get only the ones that come after. |
+| `started_at` | number | When the daemon started, in seconds since 1970. A new value is a new daemon, whose events are numbered from 1 again. |
+
+With `--follow`, each line is one of `events[]` as it comes, starting from
+now, or after `--after` when it is given. It asks the daemon every two
+seconds and starts over from 1 when the daemon did, so a restart loses
+nothing that the new daemon logged. When the daemon cannot be asked, it
+prints the error and exits.
 
 ### `status` from a terminal that is not elevated, when the daemon does not answer it
 

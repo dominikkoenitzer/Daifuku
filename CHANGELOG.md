@@ -38,6 +38,12 @@
   Scheduler could not be asked, as with its service stopped. They stop
   with "could not remove the logon task" and the reason, as for a task
   that could not be deleted.
+- `daifuku events` lists what the daemon noticed since it started: an
+  account that reached its `stop_at`, a window that started over or whose
+  stop rose so it may take more, and an agent in a fleet terminal that
+  finished its turn holding no task while its backlog has one for it.
+  `--follow` prints each new one as it comes, one JSON object per line
+  with `--json`, and `--after` picks up from an event's number.
 - A fleet's `backlog` names a markdown file of tasks, and its Claude Code
   agents work through it: when an agent's main thread stops and its
   terminal holds no task, Daifuku hands it the next open one, and the

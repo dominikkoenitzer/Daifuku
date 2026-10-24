@@ -7,9 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
-use daifuku_core::config::{Config, folder_key};
-use daifuku_core::protocol::{AccountUsage, UsageReport, WindowUsage};
-use daifuku_core::usage::{FIVE_HOURS, Limits, SEVEN_DAYS, Window};
+use daifuku_core::config::{Config, LimitWindow, LocalTime, folder_key};
+use daifuku_core::protocol::{AccountUsage, FleetEvent, UsageReport, WindowUsage};
+use daifuku_core::usage::{Change, FIVE_HOURS, Limits, SEVEN_DAYS, Seen, Window};
 use serde::{Deserialize, Serialize};
 
 /// The most accounts kept: more than anyone signs in with, few enough that
@@ -40,6 +40,8 @@ pub struct Book {
     entries: Vec<Entry>,
     /// Terminal windows and their account's folder, least recent first.
     windows: Vec<(u64, String)>,
+    /// What [`Book::watch`] last saw of each account's windows.
+    seen: Vec<(Vec<String>, LimitWindow, Seen)>,
     /// Where the numbers are kept across a restart, `None` when they are
     /// not, as for the daemon's other state.
     pub file: Option<PathBuf>,
@@ -143,6 +145,64 @@ impl Book {
                 }
             })
             .collect()
+    }
+
+    /// What changed in each account's windows since the last look: one
+    /// reached its stop, started over or may take more. Nothing on the
+    /// first look at a window, as after a restart.
+    pub fn watch(&mut self, config: &Config, time: LocalTime) -> Vec<FleetEvent> {
+        let mut seen = Vec::new();
+        let mut events = Vec::new();
+        for e in &self.entries {
+            let folder = Path::new(&e.folder);
+            let key = folder_key(folder);
+            let account = config.account_in(folder);
+            let rules = account.map_or(&[][..], |(_, a)| a.stop_at.as_slice());
+            for (kind, w) in [
+                (LimitWindow::FiveHour, e.limits.five_hour),
+                (LimitWindow::SevenDay, e.limits.seven_day),
+            ] {
+                let Some(w) = w else { continue };
+                let before = self
+                    .seen
+                    .iter()
+                    .find(|(k, x, _)| *k == key && *x == kind)
+                    .map(|(_, _, s)| *s);
+                let (now, change) = w.watch(kind, rules, time, before);
+                seen.push((key.clone(), kind, now));
+                let account = account.map(|(n, _)| n.to_owned());
+                let folder = e.folder.clone();
+                events.extend(change.map(|c| match c {
+                    Change::Limit { used, share } => FleetEvent::Limit {
+                        account,
+                        folder,
+                        limit: kind,
+                        used,
+                        share,
+                    },
+                    Change::Reset { used } => FleetEvent::Reset {
+                        account,
+                        folder,
+                        limit: kind,
+                        used,
+                    },
+                    Change::TopUp {
+                        used,
+                        share,
+                        resets_in_seconds,
+                    } => FleetEvent::TopUp {
+                        account,
+                        folder,
+                        limit: kind,
+                        used,
+                        share,
+                        resets_in_seconds,
+                    },
+                }));
+            }
+        }
+        self.seen = seen;
+        events
     }
 
     /// Reads [`Book::file`]. An account whose windows have all reset since
@@ -296,6 +356,68 @@ mod tests {
         assert_eq!(b.status(&config(), NOW).len(), MAX_ACCOUNTS);
         assert!(b.folder_of(99).is_some());
         assert!(!b.note(&report("  ", Some(1), None), None, NOW));
+    }
+
+    #[test]
+    fn each_account_s_windows_are_watched_by_its_own_rules() {
+        let config = Config::from_json(
+            r#"{"accounts":{"work":{"claude":"C:\\Users\\me\\.claude-work",
+                "stop_at":[{"share":75}]}}}"#,
+        )
+        .unwrap();
+        let at = |now| LocalTime {
+            now,
+            weekday: 0,
+            minute: 600,
+        };
+        let mut b = Book::default();
+        b.note(
+            &report(r"C:\Users\me\.claude-work", Some(70), Some(20)),
+            None,
+            NOW,
+        );
+        b.note(&report(r"C:\Users\me\.claude", Some(90), None), None, NOW);
+        assert!(
+            b.watch(&config, at(NOW)).is_empty(),
+            "nothing on first sight"
+        );
+        b.note(
+            &report(r"c:\users\me\.claude-work", Some(80), Some(21)),
+            None,
+            NOW + 1,
+        );
+        assert_eq!(
+            b.watch(&config, at(NOW + 1)),
+            [FleetEvent::Limit {
+                account: Some("work".into()),
+                folder: r"c:\users\me\.claude-work".into(),
+                limit: LimitWindow::FiveHour,
+                used: 80,
+                share: 75,
+            }]
+        );
+        assert!(b.watch(&config, at(NOW + 2)).is_empty(), "told once");
+        // An hour on both 5-hour windows have started over; the account
+        // without rules has no stop to reach, but its reset is told.
+        let mut events = b.watch(&config, at(NOW + 3600));
+        events.sort_by_key(|e| format!("{e:?}"));
+        assert_eq!(
+            events,
+            [
+                FleetEvent::Reset {
+                    account: None,
+                    folder: r"C:\Users\me\.claude".into(),
+                    limit: LimitWindow::FiveHour,
+                    used: None,
+                },
+                FleetEvent::Reset {
+                    account: Some("work".into()),
+                    folder: r"c:\users\me\.claude-work".into(),
+                    limit: LimitWindow::FiveHour,
+                    used: None,
+                },
+            ]
+        );
     }
 
     #[test]
