@@ -1602,13 +1602,7 @@ fn print_status(s: &daifuku_core::protocol::Status) {
     // Most urgent first and the title before the handle, so a screen reader
     // reaches the agent that needs you in the first words it reads.
     for a in by_urgency(&s.agents) {
-        println!(
-            "  {:<8} {:>8}  {}  ({:#010x})",
-            a.state.name(),
-            since(a.for_seconds),
-            a.title,
-            a.window
-        );
+        println!("  {}", heading(a));
         for line in details(a) {
             println!("           {line}");
         }
@@ -1659,25 +1653,26 @@ fn by_urgency(
     sorted
 }
 
+/// An agent's line in `daifuku status`: its state, for how long, the window
+/// title and the handle. Any program can set the title, so it goes on one
+/// line like the details below it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn heading(a: &daifuku_core::protocol::AgentWindow) -> String {
+    format!(
+        "{:<8} {:>8}  {}  ({:#010x})",
+        a.state.name(),
+        since(a.for_seconds),
+        one_line(&a.title),
+        a.window
+    )
+}
+
 /// The lines under an agent in `daifuku status`: the folder it works in,
 /// and what it asks while it waits. Both are what a hook said, so their line
 /// breaks, other control characters and the bidi controls, which reorder how
 /// a line reads, become spaces and each stays on its line.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
-    let one_line = |text: &str| -> String {
-        let text: String = text
-            .chars()
-            .map(|c| {
-                let bidi = matches!(
-                    c,
-                    '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-                );
-                if c.is_control() || bidi { ' ' } else { c }
-            })
-            .collect();
-        text.trim().to_owned()
-    };
     let mut lines = Vec::new();
     if let Some(cwd) = &a.cwd {
         lines.push(format!("in {}", one_line(cwd)));
@@ -1688,6 +1683,24 @@ fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
         lines.push(format!("asks: {}", one_line(m)));
     }
     lines
+}
+
+/// `text` on one line: line breaks, other control characters and the bidi
+/// controls, which reorder how a line reads, become spaces, and the ends are
+/// trimmed.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn one_line(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .map(|c| {
+            let bidi = matches!(
+                c,
+                '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            );
+            if c.is_control() || bidi { ' ' } else { c }
+        })
+        .collect();
+    text.trim().to_owned()
 }
 
 /// `1 terminal`, `3 terminals`: how many terminals a fleet has.
@@ -1766,6 +1779,16 @@ mod tests {
         // The folder is what a hook said too, so it cannot break the listing.
         a.cwd = Some("C:\\src\nfake line\u{1b}[2J".into());
         assert_eq!(details(&a), ["in C:\\src fake line [2J"]);
+        // Any program can set a window title, so it cannot break the listing either.
+        a.title = "claude\r\nfake line\u{1b}]0;x\u{7}".into();
+        assert_eq!(
+            heading(&a),
+            "working        0s  claude  fake line ]0;x  (0x00000001)"
+        );
+        // The JSON a script reads keeps every field as it came.
+        let json = output::ascii_json(&daifuku_core::protocol::to_line(&a).unwrap());
+        assert!(json.contains(r#""title":"claude\r\nfake line\u001b]0;x\u0007""#));
+        assert!(json.contains(r#""cwd":"C:\\src\nfake line\u001b[2J""#));
         // Nor reorder what the rest of the line reads like.
         a.cwd = Some("C:\\src\\\u{202e}gpj.exe".into());
         assert_eq!(details(&a), ["in C:\\src\\ gpj.exe"]);
