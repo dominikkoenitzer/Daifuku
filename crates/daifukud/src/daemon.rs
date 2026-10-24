@@ -1760,7 +1760,15 @@ impl Daemon {
         if let Some(problem) = spawn.problem() {
             return Response::error(problem);
         }
-        let base = match &spawn.fleet {
+        // Unnamed, the fleet of the terminal the request came from, so an
+        // agent's peer signs in where the agent did.
+        let named = spawn.fleet.clone().or_else(|| {
+            spawn
+                .from
+                .and_then(|w| self.fleet_of(w))
+                .filter(|name| self.config.fleet(name).is_some())
+        });
+        let base = match &named {
             Some(name) => match self.config.fleet(name).cloned() {
                 Some(f) => f,
                 None => {
@@ -1815,7 +1823,12 @@ impl Daemon {
         }
         let cell = joined.as_ref().map(|(_, slot)| *slot);
         let opened = fleet::spawn(&base, &self.config, spawn, self.elevated, &taken, cell);
-        let mut kept = spawn.clone();
+        // Kept with the fleet it took, so `restore` opens it in the same one.
+        let mut kept = Spawn {
+            fleet: named,
+            from: None,
+            ..spawn.clone()
+        };
         let mut in_fleet = None;
         if let Some((mut record, (slot, _))) = joined {
             if let Ok(window) = opened {
@@ -1845,6 +1858,21 @@ impl Daemon {
             }
             Err(e) => Response::error(format!("{e:#}")),
         }
+    }
+
+    /// The fleet window `w` is a terminal of, or the one the peer in it was
+    /// opened for.
+    fn fleet_of(&self, w: u64) -> Option<String> {
+        self.fleets
+            .iter()
+            .find(|f| f.slots.contains(&Some(w)))
+            .map(|f| f.name.clone())
+            .or_else(|| {
+                self.peers
+                    .iter()
+                    .find(|p| p.window == w)
+                    .and_then(|p| p.spawn.fleet.clone())
+            })
     }
 
     /// Puts a fleet's record back among the open fleets, when it has a
@@ -2822,6 +2850,29 @@ mod tests {
         assert_eq!(d.label_of(9), None);
         d.labels.insert(3, "lead".into());
         assert_eq!(d.label_of(3).as_deref(), Some("lead"));
+    }
+
+    #[test]
+    fn a_terminal_s_fleet_is_the_one_it_is_a_cell_of_or_its_peer_was_opened_for() {
+        let mut d = daemon();
+        let mut record = OpenFleet::new("crew");
+        record.slots = vec![Some(1), None];
+        d.fleets.push(record);
+        d.peers.push(Peer {
+            window: 7,
+            spawn: Spawn {
+                fleet: Some("site".into()),
+                ..Spawn::default()
+            },
+        });
+        d.peers.push(Peer {
+            window: 8,
+            spawn: Spawn::default(),
+        });
+        assert_eq!(d.fleet_of(1).as_deref(), Some("crew"));
+        assert_eq!(d.fleet_of(7).as_deref(), Some("site"));
+        assert_eq!(d.fleet_of(8), None);
+        assert_eq!(d.fleet_of(9), None);
     }
 
     #[test]
