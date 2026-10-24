@@ -206,6 +206,9 @@ A lead with a crew: with a fleet `crew` of three stacked on the right half,
 `--cell` puts each spawned terminal in the next free cell of its grid, where
 `snap` and `close crew` treat it as one of the crew, also after the daemon
 restarts, and `restore` puts it back in the same cell. `close --terminal` closes one when its work is done.
+A fleet with `"resume": true` keeps every one of its terminals that way, so
+its key opens each back in its cell, resuming, after Windows restarts or
+the fleet was closed.
 
 ```powershell
 daifuku spawn --fleet crew --cell --dir C:\src\site --label site --json
