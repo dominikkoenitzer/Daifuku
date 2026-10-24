@@ -152,12 +152,12 @@
       "description": "A named set of state colours.",
       "oneOf": [
         {
-          "description": "Catppuccin Mocha: blue, yellow, green and red.",
+          "description": "Catppuccin Mocha: blue, yellow, green and red, and peach for an\naccount's warning.",
           "type": "string",
           "const": "catppuccin"
         },
         {
-          "description": "Okabe-Ito: sky blue, orange, bluish green and vermilion, chosen to stay\ndistinct for deuteranopia, protanopia and tritanopia.",
+          "description": "Okabe-Ito: sky blue, orange, bluish green and vermilion, and reddish\npurple for an account's warning, chosen to stay distinct for\ndeuteranopia, protanopia and tritanopia.",
           "type": "string",
           "const": "colorblind"
         }
@@ -202,6 +202,17 @@
         },
         "failed": {
           "description": "The turn ended on an error.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Colour"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warning": {
+          "description": "Working or done on an account that has reached its `warn`.",
           "anyOf": [
             {
               "$ref": "#/$defs/Colour"
@@ -514,6 +525,16 @@
             "string",
             "null"
           ]
+        },
+        "warn": {
+          "description": "Warn once its agents' status lines report this share of the 5-hour\nor the weekly limit used, in percent, 1 to 100: the borders of its\nterminals turn the warning colour until the window resets. Needs\n`daifuku status-line` in Claude Code's status line.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
         }
       },
       "additionalProperties": false

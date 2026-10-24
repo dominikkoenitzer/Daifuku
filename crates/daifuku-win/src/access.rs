@@ -64,7 +64,8 @@ fn system(index: SYS_COLOR_INDEX) -> Colour {
 
 /// The border colours for the current high contrast theme: its highlight for
 /// waiting, the one state that asks for you; hyperlink for working; body text
-/// for failed; disabled text for done.
+/// for failed and for an account's warning, told apart by their widths;
+/// disabled text for done.
 #[must_use]
 pub fn high_contrast_colours() -> StateColours {
     StateColours {
@@ -72,6 +73,7 @@ pub fn high_contrast_colours() -> StateColours {
         waiting: system(COLOR_HIGHLIGHT),
         done: system(COLOR_GRAYTEXT),
         failed: system(COLOR_WINDOWTEXT),
+        warning: system(COLOR_WINDOWTEXT),
     }
 }
 

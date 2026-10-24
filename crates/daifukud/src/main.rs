@@ -28,6 +28,8 @@ mod ipc;
 mod logging;
 #[cfg(all(windows, test))]
 mod test_support;
+#[cfg(windows)]
+mod usage;
 
 fn main() {
     if std::env::args()

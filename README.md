@@ -143,7 +143,8 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku close --all` | close every open fleet |
 | `daifuku close --terminal <window or label>` | close one terminal |
 | `daifuku stop-agents [--dry-run]` | close every agent terminal, keep its session for `restore`, end what the agents left running |
-| `daifuku status` | fleets, agents and hotkeys |
+| `daifuku status` | fleets, agents, hotkeys and each account's use of its limits |
+| `daifuku status-line [--quiet]` | report an account's limits from Claude Code's status line |
 | `daifuku demo` | six scripted agents |
 | `daifuku spawn [--dir] [--label] [--resume] [--cell]` | one agent terminal on its own, in a folder, or in a cell of a fleet |
 | `daifuku restore [--dry-run] [--forget]` | open the spawned terminals from before Windows restarted again |
@@ -208,7 +209,10 @@ A lead with a crew: with a fleet `crew` of three stacked on the right half,
 restarts, and `restore` puts it back in the same cell. `close --terminal` closes one when its work is done.
 A fleet with `"resume": true` keeps every one of its terminals that way, so
 its key opens each back in its cell, resuming, after Windows restarts or
-the fleet was closed.
+the fleet was closed. With `daifuku status-line` as Claude Code's status
+line, `daifuku status` shows how much of its limits each account has used,
+and an account's `warn` colours its terminals' borders as it nears a cap
+([usage](docs/configuration.md#usage)).
 
 ```powershell
 daifuku spawn --fleet crew --cell --dir C:\src\site --label site --json

@@ -604,6 +604,153 @@ fn a_fleet_on_an_account_signs_every_terminal_in_to_it_and_no_other_fleet() {
     println!("e2e: {steps} steps passed");
 }
 
+/// What Claude Code hands its status line: the account has used `five_hour`
+/// percent of a 5-hour window an hour from its reset, and 35 of its week.
+fn status_line_input(dir: &Path, name: &str, five_hour: f64) -> PathBuf {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let file = dir.join(format!("{name}.json"));
+    let json = serde_json::json!({
+        "session_id": "e2e",
+        "model": { "id": "e2e" },
+        "rate_limits": {
+            "five_hour": { "used_percentage": five_hour, "resets_at": now + 3600 },
+            "seven_day": { "used_percentage": 35, "resets_at": now + 3 * 86_400 }
+        }
+    });
+    std::fs::write(&file, json.to_string()).unwrap();
+    file
+}
+
+#[test]
+fn an_account_s_status_line_shows_its_use_and_warns_on_its_borders() {
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    let dir = scratch();
+    let config = dir.join("daifuku.json");
+    let account = dir.join("work account");
+    std::fs::create_dir_all(&account).unwrap();
+    let json = serde_json::json!({
+        "accounts": { "work": { "claude": account, "warn": 77 } },
+        "fleets": [{ "name": "e2e", "hotkey": null }],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, json.to_string()).unwrap();
+    let mut steps = 0;
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let (mut cleanup, first) = start_with(&config, Some(&state), &[]);
+    assert!(first.usage.is_empty());
+    steps += 1;
+
+    // An agent's console on the account: its hook says it works, then its
+    // status line reports 80 % of the 5-hour window, past the warn at 77.
+    let tag = format!("daifuku-e2e-usage-{}", std::process::id());
+    let printed = dir.join("line.txt");
+    let script = format!(
+        "title {tag} & \"{h}\" hook < \"{k}\" & \"{h}\" status-line < \"{s}\" > \"{p}\" & ping -n 60 127.0.0.1 >nul",
+        h = cli().display(),
+        k = event(&dir, "PreToolUse").display(),
+        s = status_line_input(&dir, "high", 80.4).display(),
+        p = printed.display(),
+    );
+    let console = Command::new("cmd.exe")
+        .args(["/d", "/s", "/c"])
+        .raw_arg(format!("\"{script}\""))
+        .env("CLAUDE_CONFIG_DIR", &account)
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .unwrap();
+    cleanup.0.push(console);
+
+    let agent = wait_for(
+        "the agent to show its account's warning",
+        Duration::from_secs(20),
+        || {
+            status()?
+                .agents
+                .into_iter()
+                .find(|a| a.title.contains(&tag) && a.warning)
+        },
+    );
+    assert_eq!(agent.account.as_deref(), Some("work"));
+    assert_eq!(agent.state.name(), "working");
+    steps += 1;
+
+    let s = status().unwrap();
+    let [usage] = s.usage.as_slice() else {
+        panic!("one account, not {:?}", s.usage)
+    };
+    assert_eq!(usage.account.as_deref(), Some("work"));
+    assert!(same_dir(&usage.folder, &account), "{}", usage.folder);
+    assert_eq!(usage.warn, Some(77));
+    assert!(usage.warning);
+    let five = usage.five_hour.unwrap();
+    assert_eq!(five.used, 80);
+    assert!(
+        five.resets_in_seconds
+            .is_some_and(|s| s > 3000 && s <= 3600),
+        "{five:?}"
+    );
+    // An hour from the end of five: 80 % gone by, so on pace give or take.
+    assert!(five.pace.is_some_and(|p| p.abs() <= 2), "{five:?}");
+    assert_eq!(usage.seven_day.unwrap().used, 35);
+    steps += 1;
+
+    // The status line itself printed the same numbers, as one line.
+    let line = wait_for("the status line to print", Duration::from_secs(5), || {
+        std::fs::read_to_string(&printed)
+            .ok()
+            .filter(|t| t.ends_with('\n'))
+    });
+    assert!(
+        line.starts_with("5h 80% (") && line.contains(", week 35% ("),
+        "{line}"
+    );
+    let shown = run(&["status"]);
+    assert!(
+        shown.contains("\nusage\n  work  5h 80%,") && shown.contains("past its warn at 77%"),
+        "{shown}"
+    );
+    steps += 1;
+
+    // A later report under the warn, from anywhere on the account, takes the
+    // warning off its agents; quiet, it prints nothing.
+    let quiet = Command::new(cli())
+        .args(["status-line", "--quiet"])
+        .env("CLAUDE_CONFIG_DIR", &account)
+        .stdin(std::fs::File::open(status_line_input(&dir, "low", 10.0)).unwrap())
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    assert!(quiet.stdout.is_empty(), "{quiet:?}");
+    wait_for("the warning to go", Duration::from_secs(10), || {
+        let s = status()?;
+        let agent = s.agents.iter().find(|a| a.title.contains(&tag))?;
+        (!agent.warning && s.usage.iter().all(|u| !u.warning)).then_some(())
+    });
+    steps += 1;
+
+    // The numbers outlive the daemon.
+    let mut console = cleanup.0.pop().unwrap();
+    let _ = console.kill();
+    let _ = console.wait();
+    stop(&mut cleanup);
+    let (mut cleanup, again) = start_with(&config, Some(&state), &[]);
+    let usage = again.usage.first().expect("the account's use was kept");
+    assert_eq!(usage.five_hour.unwrap().used, 10);
+    assert!(!usage.warning);
+    steps += 1;
+
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
+
 /// A window as a line: handle, class, title and, for the foreground, which
 /// of its children has the keyboard and whether it is in a menu.
 fn describe(w: u64) -> String {
@@ -852,6 +999,8 @@ fn only_the_demos_waiting_agents_count() {
         last_tool: None,
         last_message: None,
         transcript_path: None,
+        account: None,
+        warning: false,
     };
     let s = Status {
         fleets: vec![FleetStatus {

@@ -2,9 +2,10 @@
 //!
 //! There are two pipes because there are two kinds of caller:
 //!
-//! - **The hook pipe** takes [`HookMessage`] from agent hooks, which run at
-//!   whatever integrity the agent runs at. The worst a message can do is
-//!   colour a border, so any process of the signed-in user may write to it.
+//! - **The hook pipe** takes [`HookLine`] from agent hooks and status lines,
+//!   which run at whatever integrity the agent runs at. The worst a message
+//!   can do is colour a border or show a wrong number in `daifuku status`,
+//!   so any process of the signed-in user may write to it.
 //! - **The control pipe** takes [`Request`] from the command line. A request
 //!   can open a fleet of administrator terminals when the daemon runs
 //!   elevated, so then only an elevated process may connect; letting an
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::peer::Spawn;
 use crate::state::{AgentState, HookEvent};
+use crate::usage::Limits;
 
 /// One hook call, as the hook sends it to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +32,30 @@ pub struct HookMessage {
     /// open. Left out by hooks older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+}
+
+/// What an agent's status line reports: how much of its limits the account
+/// it runs on has used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageReport {
+    /// Both windows, as Claude Code last told the status line.
+    pub usage: Limits,
+    /// The folder of the account the agent runs on, as it was given in
+    /// `CLAUDE_CONFIG_DIR`, else the `.claude` folder in the profile.
+    pub folder: String,
+    /// The agent's terminal window, when the status line could find it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+}
+
+/// One line on the hook pipe: an agent's event, or its account's usage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HookLine {
+    /// From a hook.
+    Event(HookMessage),
+    /// From a status line.
+    Usage(UsageReport),
 }
 
 /// A command for the daemon.
@@ -191,6 +217,53 @@ pub struct Status {
     /// Every terminal `daifuku spawn` opened that is still open.
     #[serde(default)]
     pub peers: Vec<PeerStatus>,
+    /// Each account's use of its limits, as its agents' status lines last
+    /// reported it.
+    #[serde(default)]
+    pub usage: Vec<AccountUsage>,
+}
+
+/// One account's use of its limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountUsage {
+    /// Its name under `accounts`; left out for the account in the profile
+    /// and for a folder no account names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// Its folder.
+    pub folder: String,
+    /// How long ago a status line last reported it, in seconds.
+    pub age_seconds: u64,
+    /// The 5-hour window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five_hour: Option<WindowUsage>,
+    /// The weekly window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seven_day: Option<WindowUsage>,
+    /// The account's `warn`, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn: Option<u8>,
+    /// Whether a window has reached `warn`, so the borders of the account's
+    /// terminals show it.
+    #[serde(default)]
+    pub warning: bool,
+}
+
+/// One window of an account's limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowUsage {
+    /// The share used, in percent, when it was reported.
+    pub used: u8,
+    /// When the window starts over, in seconds since 1970.
+    pub resets_at: u64,
+    /// How long until then, in seconds; left out once it has, when `used`
+    /// no longer holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_in_seconds: Option<u64>,
+    /// How far use is ahead of an even spread over the window, in
+    /// percentage points; negative is to spare. Left out once it has reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace: Option<i32>,
 }
 
 /// One peer `daifuku restore` looked at.
@@ -320,6 +393,13 @@ pub struct AgentWindow {
     /// Its transcript file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
+    /// The account it runs on, by its name under `accounts`, once its
+    /// status line has reported or its fleet names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// Whether its account has reached its `warn`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warning: bool,
 }
 
 /// Encodes one message as a line.
@@ -439,12 +519,28 @@ mod tests {
                 last_tool: Some("Bash".into()),
                 last_message: Some("Claude needs your permission to use Bash".into()),
                 transcript_path: Some(r"C:\t\abc.jsonl".into()),
+                account: Some("work".into()),
+                warning: true,
             }],
             peers: vec![PeerStatus {
                 window: 3,
                 label: Some("site".into()),
                 directory: r"C:\src\site".into(),
                 session_id: None,
+            }],
+            usage: vec![AccountUsage {
+                account: Some("work".into()),
+                folder: r"C:\Users\me\.claude-work".into(),
+                age_seconds: 12,
+                five_hour: Some(WindowUsage {
+                    used: 80,
+                    resets_at: 1_792_548_000,
+                    resets_in_seconds: Some(600),
+                    pace: Some(-3),
+                }),
+                seven_day: None,
+                warn: Some(77),
+                warning: true,
             }],
         };
         for r in [
@@ -550,6 +646,32 @@ mod tests {
             from_line::<Request>("{\"command\":\"stop-agents\"}").unwrap(),
             Request::StopAgents { dry_run: false }
         );
+    }
+
+    #[test]
+    fn the_hook_pipe_tells_an_event_from_a_usage_report() {
+        let event = r#"{"window":5,"event":{"session_id":"s","hook_event_name":"Stop"}}"#;
+        assert!(matches!(
+            from_line::<HookLine>(event).unwrap(),
+            HookLine::Event(_)
+        ));
+        let report = HookLine::Usage(UsageReport {
+            usage: Limits {
+                five_hour: Some(crate::usage::Window {
+                    used: 12,
+                    resets_at: 99,
+                }),
+                seven_day: None,
+            },
+            folder: r"C:\Users\me\.claude".into(),
+            window: Some(5),
+        });
+        let line = to_line(&report).unwrap();
+        assert_eq!(from_line::<HookLine>(&line).unwrap(), report);
+        // An event with a window but no event, or a report with no usage,
+        // is neither.
+        assert!(from_line::<HookLine>(r#"{"window":5}"#).is_err());
+        assert!(from_line::<HookLine>(r#"{"folder":"C:\\x"}"#).is_err());
     }
 
     #[test]
