@@ -82,6 +82,14 @@ pub enum Request {
         #[serde(default)]
         forget: bool,
     },
+    /// Stop every agent at once: close every fleet's terminals and every
+    /// peer, keep each session for `daifuku restore`, and end what the
+    /// agents started that outlives its terminal.
+    StopAgents {
+        /// Only say what it would close, keep and end.
+        #[serde(default)]
+        dry_run: bool,
+    },
     /// What the daemon knows.
     Status,
     /// Re-read the config file.
@@ -106,6 +114,17 @@ pub enum Response {
     Restored {
         /// Each peer and what became of it.
         peers: Vec<RestoredPeer>,
+    },
+    /// The answer to [`Request::StopAgents`].
+    Stopped {
+        /// Whether it only said what it would do.
+        #[serde(default)]
+        dry_run: bool,
+        /// Each terminal it closed, or would close.
+        terminals: Vec<StoppedTerminal>,
+        /// Each process an agent started that it ended, or would end if it
+        /// were still running once its terminal went.
+        leftovers: Vec<Leftover>,
     },
     /// The answer to [`Request::Spawn`]: the terminal that opened.
     Spawned {
@@ -191,6 +210,52 @@ pub struct RestoredPeer {
     /// Why it did not open, when it did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// One terminal `daifuku stop-agents` closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoppedTerminal {
+    /// Its window.
+    pub window: u64,
+    /// What to call it, as `daifuku status` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The fleet it was in, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet: Option<String>,
+    /// Its cell in that fleet, counted from 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<u32>,
+    /// The session its agent last reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The folder that session works in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    /// Whether `daifuku restore` opens it again, resuming that session.
+    pub kept: bool,
+    /// Whether it closed; false on a dry run, and when Windows Terminal
+    /// kept it open.
+    pub closed: bool,
+}
+
+/// One process an agent started, which `daifuku stop-agents` ends when it
+/// outlives the agent's terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Leftover {
+    /// Its id.
+    pub pid: u32,
+    /// Its executable's file name.
+    pub name: String,
+    /// The terminal whose agent started it.
+    pub window: u64,
+    /// Whether it was ended here; false on a dry run, and for one that
+    /// ended by itself with its terminal.
+    pub ended: bool,
+    /// Why it still runs when it was not ended: it shows a window of its
+    /// own, which may be one of yours now, or Windows refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// One terminal `daifuku spawn` opened.
@@ -339,6 +404,8 @@ mod tests {
                 window: 5,
                 label: None,
             },
+            Request::StopAgents { dry_run: true },
+            Request::StopAgents { dry_run: false },
             Request::Status,
             Request::Reload,
             Request::Stop,
@@ -406,6 +473,26 @@ mod tests {
                     error: None,
                 }],
             },
+            Response::Stopped {
+                dry_run: false,
+                terminals: vec![StoppedTerminal {
+                    window: 4,
+                    label: Some("crew 2".into()),
+                    fleet: Some("crew".into()),
+                    cell: Some(2),
+                    session_id: Some("abc".into()),
+                    directory: Some(r"C:\src".into()),
+                    kept: true,
+                    closed: true,
+                }],
+                leftovers: vec![Leftover {
+                    pid: 4242,
+                    name: "node.exe".into(),
+                    window: 4,
+                    ended: false,
+                    reason: Some("access is denied".into()),
+                }],
+            },
         ] {
             let line = to_line(&r).unwrap();
             assert_eq!(from_line::<Response>(&line).unwrap(), r);
@@ -449,6 +536,20 @@ mod tests {
         // A hook from before the field still reads.
         let old = r#"{"window":5,"event":{"session_id":"s","hook_event_name":"Stop"}}"#;
         assert_eq!(from_line::<HookMessage>(old).unwrap().pid, None);
+    }
+
+    #[test]
+    fn stop_agents_reads_as_its_command_name() {
+        assert_eq!(
+            to_line(&Request::StopAgents { dry_run: true }).unwrap(),
+            "{\"command\":\"stop-agents\",\"dry_run\":true}\n"
+        );
+        // A caller that leaves the flag out stops for real, as the command
+        // line does without --dry-run.
+        assert_eq!(
+            from_line::<Request>("{\"command\":\"stop-agents\"}").unwrap(),
+            Request::StopAgents { dry_run: false }
+        );
     }
 
     #[test]
