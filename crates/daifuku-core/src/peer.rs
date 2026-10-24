@@ -398,11 +398,18 @@ pub struct KeptFile {
     pub peers: Vec<Kept>,
 }
 
-/// The peers file, read leniently: a file that does not read holds no
-/// peers, and an entry whose session id is not one keeps no session.
-#[must_use]
-pub fn read_kept(text: &str) -> KeptFile {
-    let mut file: KeptFile = serde_json::from_str(text).unwrap_or_default();
+/// The peers file. One that does not read is an error, not an empty file,
+/// so it is never saved over; an empty file holds no peers. An entry whose
+/// session id is not one keeps no session.
+///
+/// # Errors
+///
+/// When the text is not a peers file this version reads.
+pub fn read_kept(text: &str) -> Result<KeptFile, serde_json::Error> {
+    if text.trim().is_empty() {
+        return Ok(KeptFile::default());
+    }
+    let mut file: KeptFile = serde_json::from_str(text)?;
     for k in &mut file.peers {
         if k.spawn
             .resume
@@ -412,7 +419,7 @@ pub fn read_kept(text: &str) -> KeptFile {
             k.spawn.resume = None;
         }
     }
-    file
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -509,20 +516,23 @@ mod tests {
     }
 
     #[test]
-    fn the_kept_file_reads_leniently_and_drops_ids_that_are_not_ids() {
+    fn the_kept_file_drops_ids_that_are_not_ids_and_refuses_what_does_not_read() {
         let file = KeptFile {
             boot: 1_000,
             dormant_boot: 500,
             peers: vec![kept(Some("abc-1"), 7, 1_000), kept(Some("a;rm"), 8, 1_000)],
         };
-        let read = read_kept(&serde_json::to_string(&file).unwrap());
+        let read = read_kept(&serde_json::to_string(&file).unwrap()).unwrap();
         assert_eq!((read.boot, read.dormant_boot), (1_000, 500));
         assert_eq!(read.peers[0], kept(Some("abc-1"), 7, 1_000));
         assert_eq!(read.peers[1].spawn.resume, None);
-        assert!(read_kept("not json").peers.is_empty());
-        assert!(read_kept("").peers.is_empty());
-        // The list alone, as no released version wrote, is no peers.
-        assert!(read_kept("[]").peers.is_empty());
+        assert!(read_kept("").unwrap().peers.is_empty());
+        assert!(read_kept(" \n").unwrap().peers.is_empty());
+        // Saving over any of these would lose the peers in them.
+        assert!(read_kept("not json").is_err());
+        assert!(read_kept(r#"{"boot": 1, "peers": ["#).is_err());
+        // The list alone, as no released version wrote.
+        assert!(read_kept("[]").is_err());
     }
 
     #[test]

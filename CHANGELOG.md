@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The daemon no longer saves over its peers file when it cannot read it at
+  start, such as one a later version wrote. It logs a warning, keeps the
+  terminals of this run in memory only and leaves the file as it is, so the
+  next start still reads the terminals in it for `daifuku restore`. A file
+  another program holds for a moment after signing in is read again for up
+  to half a second.
 - While the daemon runs with the user's own rights, install lets the user
   who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
   delete it or change who may, and no other user. `daifuku config` then
