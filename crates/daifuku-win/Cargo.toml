@@ -12,7 +12,6 @@ publish.workspace = true
 daifuku-core = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-core = { workspace = true }
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
