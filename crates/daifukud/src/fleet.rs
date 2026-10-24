@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow};
 use daifuku_core::Rect;
 use daifuku_core::config::{Config, Fleet, MonitorPick};
-use daifuku_core::grid::Grid;
+use daifuku_core::grid::{Grid, Shape};
 use daifuku_core::monitor::{MonitorInfo, pick};
 use daifuku_core::peer::{Cell, Spawn, resume_command};
 use daifuku_win::terminal::{self, Launch, WINDOW_CLASS};
@@ -98,13 +98,44 @@ fn plan(
     cursor: (i32, i32),
 ) -> Option<(MonitorInfo, Vec<Rect>)> {
     let m = pick(monitors, &home_pick(&fleet.monitor, stay_on), cursor)?.clone();
-    let cells = Grid::plan(
-        fleet.count,
-        fleet.area.within(m.work),
-        config.gaps,
-        fleet.shape,
-    );
+    let (before, total, shape) = shared_grid(fleet, config);
+    let cells = Grid::plan(total, fleet.area.within(m.work), config.gaps, shape)
+        .into_iter()
+        .skip(before as usize)
+        .take(fleet.count as usize)
+        .collect();
     Some((m, cells))
+}
+
+/// The grid `fleet` shares with every other fleet of `config` that goes on
+/// the same monitor and fills the same area of it, so they tile it together
+/// instead of each filling all of it on top of the others: how many of its
+/// cells come before `fleet`'s, how many there are, and its shape. The
+/// fleets take their cells in config order, whichever of them are open, so a
+/// fleet's cells do not move when another opens. A fleet that goes where the
+/// cursor is shares with none, as where the others' cursor was is not known,
+/// and neither does one that is not in the config as it stands, such as the
+/// one-terminal fleet a peer is placed by.
+fn shared_grid(fleet: &Fleet, config: &Config) -> (u32, u32, Option<Shape>) {
+    let alone = (0, fleet.count, fleet.shape);
+    if fleet.monitor == MonitorPick::Cursor || !config.fleets.contains(fleet) {
+        return alone;
+    }
+    let mut before = 0;
+    let mut total = 0;
+    let mut shape = None;
+    for f in config
+        .fleets
+        .iter()
+        .filter(|f| f.monitor == fleet.monitor && f.area == fleet.area)
+    {
+        if f == fleet {
+            before = total;
+        }
+        total += f.count;
+        shape = shape.or(f.shape);
+    }
+    (before, total, shape)
 }
 
 /// Whether the monitors going from `before` to `now` moved an open fleet's
@@ -249,7 +280,13 @@ fn start_one(
     } else {
         daifuku_win::process::shell_is_elevated().unwrap_or(false)
     };
-    Ok(wait_for_new(&before, record, expect))
+    let found = wait_for_new(&before, record, expect);
+    // Marked before it is placed, so a tiling window manager that took it on
+    // its first show lets go of it before it lands in its cell.
+    if let Some(w) = found {
+        window::set_no_tiling(w, true);
+    }
+    Ok(found)
 }
 
 /// Opens one peer as `spawn` asks, from the fleet `base`: its command,
@@ -969,6 +1006,71 @@ mod tests {
                 Rect::new(1944, 718, 3816, 1393),
                 Rect::new(1944, 1413, 3816, 2088),
             ]
+        );
+    }
+
+    #[test]
+    fn two_fleets_on_one_monitor_and_area_share_one_grid_without_overlap() {
+        use daifuku_core::config::Area;
+        use daifuku_core::grid::Grid;
+        let text = r#"{"fleets":[
+            {"name":"agents","count":6,"monitor":"portrait","hotkey":"ctrl + alt + return"},
+            {"name":"lead","count":1,"monitor":"landscape","area":"left","hotkey":null},
+            {"name":"work","count":4,"monitor":"portrait","hotkey":null},
+            {"name":"near","count":2,"monitor":"cursor","hotkey":null},
+            {"name":"also","count":2,"monitor":"cursor","hotkey":null}
+        ]}"#;
+        let config = Config::from_json(text).unwrap();
+        let landscape = MonitorInfo {
+            device: r"\\.\DISPLAY1".into(),
+            bounds: Rect::new(0, 0, 3840, 2160),
+            work: Rect::new(0, 0, 3840, 2112),
+            dpi: 144,
+            primary: true,
+        };
+        let portrait = MonitorInfo {
+            device: r"\\.\DISPLAY2".into(),
+            bounds: Rect::new(3840, -400, 4920, 1520),
+            work: Rect::new(3840, -400, 4920, 1472),
+            dpi: 96,
+            primary: false,
+        };
+        let monitors = [landscape.clone(), portrait.clone()];
+        let cells = |name| {
+            let fleet = config.fleet(name).unwrap();
+            plan(fleet, &config, None, &monitors, (0, 0)).unwrap().1
+        };
+        let shared = Grid::plan(10, portrait.work, config.gaps, None);
+        assert_eq!(cells("agents"), shared[..6]);
+        assert_eq!(cells("work"), shared[6..]);
+        let all: Vec<Rect> = cells("agents").into_iter().chain(cells("work")).collect();
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                let apart = a.right <= b.left
+                    || b.right <= a.left
+                    || a.bottom <= b.top
+                    || b.bottom <= a.top;
+                assert!(apart, "{a:?} overlaps {b:?}");
+            }
+        }
+        // Another area, and fleets that follow the cursor, keep their own grid.
+        assert_eq!(
+            cells("lead"),
+            Grid::plan(1, Area::Left.within(landscape.work), config.gaps, None)
+        );
+        assert_eq!(
+            cells("near"),
+            Grid::plan(2, landscape.work, config.gaps, None)
+        );
+        // A one-off fleet built from a shared one, as a peer's placement is,
+        // is not one of them.
+        let alone = Fleet {
+            count: 1,
+            ..config.fleet("work").unwrap().clone()
+        };
+        assert_eq!(
+            plan(&alone, &config, None, &monitors, (0, 0)).unwrap().1,
+            Grid::plan(1, portrait.work, config.gaps, None)
         );
     }
 
