@@ -158,6 +158,11 @@ mod tests {
         assert_eq!(task_users(named), [r"PC\O'Neill & co"]);
         assert!(task_users("<Task></Task>").is_empty());
         assert!(task_users("<UserId>cut short").is_empty());
+        // A name shorter than the closing tag, twice.
+        assert_eq!(
+            task_users(r"<UserId>PC\me</UserId><UserId>PC\me</UserId>"),
+            [r"PC\me", r"PC\me"]
+        );
     }
 
     #[test]
