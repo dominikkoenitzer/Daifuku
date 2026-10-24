@@ -24,7 +24,8 @@ daifuku: Daifuku is not running; `daifuku doctor` says why
 | `daifuku restore [--dry-run] [--forget]` | Open again the spawned terminals that were open when Windows last stopped, and the ones closed with their fleet by `close` or the close key, each resuming its last session in its own folder (`--resume <id>` for Claude Code, `codex resume <id>` for Codex). One that had a cell goes back to it, or beside its fleet when the cell is taken. Never a session that runs already. `--dry-run` lists them, `--forget` drops them. Opening a fleet with `resume` does this for its own terminals first. |
 | `daifuku label <window> [label]` | Give a terminal a label, which `status` shows and `wait` takes; without a label, take it away. |
 | `daifuku wait <window or label> [--until turn\|stopped\|done\|waiting\|failed] [--timeout S]` | Wait for an agent. `turn`, the default, is the end of its next turn: working first, then anything else. Prints the state reached, `exited` when the agent ended in a terminal that stays open, `closed` when the terminal closed. Exit 1 with code `timeout` after `--timeout` seconds (3600). |
-| `daifuku status` | Show the daemon version, whether it runs elevated, the config in use, every hotkey (refused ones included), open fleets and every agent. |
+| `daifuku status` | Show the daemon version, whether it runs elevated, the config in use, every hotkey (refused ones included), open fleets, every agent, and each account's use of its limits. |
+| `daifuku status-line [--quiet]` | Claude Code's status line command: reads its status JSON on stdin, reports the account's 5-hour and weekly use to the daemon (the account is `CLAUDE_CONFIG_DIR`, else `.claude` in the profile) and prints one line such as `5h 48% (2h 14m left), week 35% (3d 4h left)`; `--quiet` prints nothing, for piping a status line script's input into it. Always exits 0, also without a daemon. Set it as `{"statusLine":{"type":"command","command":"daifuku status-line"}}` in each account's `settings.json`. |
 | `daifuku status --json` | The same as the raw JSON reply, for scripts. |
 | `daifuku reload` | Re-read the config file now. |
 | `daifuku stop` | Take the borders down and stop the daemon. |
@@ -45,7 +46,12 @@ agents
   <state>  <time in state>  <window title>  (<window handle>)
              in <the folder its session works in>
              asks: <what it asks, while it waits>
+
+usage
+  <account or folder>  5h <used>%, <n> over pace, <time> left; week <used>%, <n> under pace, <time> left; <age> ago; warns at <warn>%
 ```
+
+`usage` lists each account a status line reported for, most recent first, and is left out when none has. Pace is how far use is ahead of an even spread over the window. A window that has reset since reads `reset since`. `past its warn at 77%` means the account's terminals show the warning border colour.
 
 Agents are listed most urgent first: waiting, failed, working, done, and within each state the one in it longest first. Times read `41s`, `3m 12s`, `2h 5m`. `none open` and `none reporting` mean there is nothing in that list. The `in` and `asks:` lines appear only when the agent's hooks reported them. A hotkey another program holds ends in `: refused, another program holds it`.
 
@@ -53,7 +59,7 @@ Agents are listed most urgent first: waiting, failed, working, done, and within 
 
 Prints one JSON object. Every character past ASCII is written as a `\u` escape, so it reads the same in any console code page. Check the exit code first: 0 only when the reply is not an error.
 
-Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`, and when known `label`, `fleet`, `session_id`, `cwd` (the session's folder), `last_tool`, `last_message` (its last notification's text, such as what it asks permission for) and `transcript_path`), `peers` (each `window`, `label`, `directory`, `session_id`: the terminals `spawn` opened). An error reply is `{"result":"error","message":"..."}`.
+Fields of a status reply: `result` (`"status"`), `version`, `config`, `elevated`, `hotkeys` (list of strings), `fleets` (each `name`, `monitor`, `windows`: window handles in cell order), `agents` (each `window`, `title`, `state`: one of `done`, `working`, `failed`, `waiting`, `for_seconds`, and when known `label`, `fleet`, `session_id`, `cwd` (the session's folder), `last_tool`, `last_message` (its last notification's text, such as what it asks permission for) and `transcript_path`), `peers` (each `window`, `label`, `directory`, `session_id`: the terminals `spawn` opened), `usage` (each `account` when the config names it, `folder`, `age_seconds`, `five_hour` and `seven_day` each with `used`, `resets_at` in seconds since 1970, and until it resets `resets_in_seconds` and `pace`, then `warn` and `warning`). Agents also carry `account` and `warning` when known. An error reply is `{"result":"error","message":"..."}`.
 
 ### `daifuku status` from a terminal that is not elevated, when the daemon does not answer it
 

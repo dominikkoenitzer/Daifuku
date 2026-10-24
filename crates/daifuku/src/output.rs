@@ -411,8 +411,11 @@ mod tests {
                 last_tool: None,
                 last_message: None,
                 transcript_path: None,
+                account: None,
+                warning: false,
             }],
             peers: Vec::new(),
+            usage: Vec::new(),
         };
         let line = to_line(&Response::Status(status)).unwrap();
         let read: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -427,6 +430,7 @@ mod tests {
                 "fleets": [{"name": "agents", "monitor": "portrait", "windows": [1, 2]}],
                 "agents": [{"window": 1, "title": "claude", "state": "waiting", "for_seconds": 73}],
                 "peers": [],
+                "usage": [],
             })
         );
     }
@@ -441,7 +445,7 @@ mod tests {
         let line = to_line(&Response::Status(status)).unwrap();
         assert_eq!(
             line,
-            "{\"result\":\"status\",\"version\":\"0.0.9\",\"config\":\"c\",\"elevated\":false,\"hotkeys\":[],\"fleets\":[],\"agents\":[],\"peers\":[]}\n"
+            "{\"result\":\"status\",\"version\":\"0.0.9\",\"config\":\"c\",\"elevated\":false,\"hotkeys\":[],\"fleets\":[],\"agents\":[],\"peers\":[],\"usage\":[]}\n"
         );
     }
 }

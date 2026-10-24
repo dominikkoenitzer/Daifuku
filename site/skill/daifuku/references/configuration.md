@@ -101,6 +101,7 @@ An object from a name of the user's own, not case sensitive, to the folders that
 |---|---|---|
 | `claude` | string | Claude Code's folder for the account, set as `CLAUDE_CONFIG_DIR`. A full path. |
 | `codex` | string | Codex's folder for the account, set as `CODEX_HOME`. A full path. |
+| `warn` | integer | A share of the 5-hour or weekly limit, 1 to 100. Once a window reaches it, the account's working and done terminals get the `warning` border colour until that window resets. Needs `daifuku status-line` as the account's Claude Code status line. |
 
 An account needs at least one of them; two accounts cannot share a name or a folder. Run `daifuku install` again after adding one, once the agent has signed in there, so the hooks go into that folder too. `daifuku uninstall` removes hooks only from the accounts in the config, so run it before taking an account out. A fleet on an account with `command: null` opens PowerShell, not its profile's shell. `daifuku spawn` without `--fleet` takes the fleet, and so the account, of the terminal it runs in. A `restore` resumes in the fleet's account as it is then, so change an account only once its spawned terminals are done.
 
@@ -124,7 +125,7 @@ An account needs at least one of them; two accounts cannot share a name or a fol
 | `width` | integer | `4` | Thickness in physical pixels, 1 to 64; 0 draws as 1. |
 | `offset` | integer | `0` | How far outside the window edge the border sits, -64 to 64; negative overlaps the window. |
 | `palette` | string | `"catppuccin"` | `"catppuccin"` or `"colorblind"` (Okabe-Ito). |
-| `colours` | object | the palette's | Own colours for any of `working`, `waiting`, `done`, `failed`, as `"#rrggbb"`. A state left out keeps the palette's colour. |
+| `colours` | object | the palette's | Own colours for any of `working`, `waiting`, `done`, `failed` and `warning` (an account past its `warn`), as `"#rrggbb"`. A key left out keeps the palette's colour. |
 | `state_widths` | bool | `true` | Each state at its own width, so it reads without colour. Always on with a high contrast theme. |
 | `pulse` | bool | `true` | The waiting border breathes between 70 % and full brightness. Off anyway when Windows shows no animations or a high contrast theme is on. |
 
@@ -136,6 +137,7 @@ Palette colours:
 | waiting | `#f9e2af` | `#e69f00` |
 | done | `#a6e3a1` | `#009e73` |
 | failed | `#f38ba8` | `#d55e00` |
+| warning | `#fab387` | `#cc79a7` |
 
 With `state_widths` on and `width` 4, the widths are done 2, working 4, failed 6, waiting 8. Each state is thicker than the one before it at any width. With a high contrast theme the borders take the theme's colours and nothing breathes. A maximised terminal gets no border.
 

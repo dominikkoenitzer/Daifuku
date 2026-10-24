@@ -11,6 +11,7 @@
 //! - [`saved`] is what the daemon keeps across a restart.
 //! - [`path_list`] adds a folder to a `PATH` value and takes it out again.
 //! - [`peer`] is one agent terminal opened on its own with `daifuku spawn`.
+//! - [`usage`] is how much of its limits an account has used.
 
 pub mod agents;
 pub mod config;
@@ -24,5 +25,6 @@ pub mod protocol;
 pub mod saved;
 pub mod state;
 pub mod task;
+pub mod usage;
 
 pub use geometry::Rect;

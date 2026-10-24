@@ -60,6 +60,13 @@
   when it was closed, each in its own cell resuming its session, and then
   starts the cells left afresh, so a lead, its crew and a fleet on another
   account come back as they were on one key. It needs a `command`.
+- `daifuku status-line`, set as Claude Code's status line, reports how much
+  of its 5-hour and weekly limits the agent's account has used and shows
+  it as one line; `--quiet` only reports, for a status line of your own.
+  `daifuku status` then lists each account's use, reset times, pace and
+  how old the numbers are, and an account's `warn` turns the borders of its
+  working and done terminals the new `warning` colour once either window
+  reaches that share, until it resets.
 
 ## 0.4.1, 2026-10-22
 
