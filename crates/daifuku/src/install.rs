@@ -154,6 +154,9 @@ pub struct HookFacts {
     pub agent_installed: bool,
     /// The file the agent reads instead, when its variable points elsewhere.
     pub instead: Option<PathBuf>,
+    /// The account under `accounts` in the config the file belongs to;
+    /// `None` for the one in the profile.
+    pub account: Option<String>,
     /// Install's edit: hooks updated and added, or why the file stays as it is.
     pub install: Result<(usize, usize), String>,
     /// Uninstall's edit: hooks removed, or why the file stays as it is.
@@ -266,36 +269,47 @@ impl Facts {
         let exe = to.join("daifuku.exe").to_string_lossy().into_owned();
         let hooks = hook_files()
             .into_iter()
-            .map(|(agent, file)| {
-                let instead = read_instead(&file, std::env::var_os(folder_variable(agent)));
-                let agent_installed = file.parent().is_some_and(Path::is_dir)
-                    || instead
-                        .as_deref()
-                        .and_then(Path::parent)
-                        .is_some_and(Path::is_dir);
-                let mut updated = 0;
-                let install = predict_edit(&file, shell, profile.as_deref(), |s| {
-                    updated = agents::update_hooks(s, &exe);
-                    agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))
-                })
-                .map(|added| (updated, added));
-                let uninstall = if file.is_file() {
-                    predict_edit(&file, shell, profile.as_deref(), |s| {
-                        Ok(agents::remove_hooks(s))
+            .map(
+                |HookFile {
+                     agent,
+                     file,
+                     account,
+                 }| {
+                    let instead = if account.is_some() {
+                        None
+                    } else {
+                        read_instead(&file, std::env::var_os(folder_variable(agent)))
+                    };
+                    let agent_installed = file.parent().is_some_and(Path::is_dir)
+                        || instead
+                            .as_deref()
+                            .and_then(Path::parent)
+                            .is_some_and(Path::is_dir);
+                    let mut updated = 0;
+                    let install = predict_edit(&file, shell, profile.as_deref(), |s| {
+                        updated = agents::update_hooks(s, &exe);
+                        agent.add_hooks(s, &exe).map_err(|e| anyhow!(e))
                     })
-                } else {
-                    Ok(0)
-                };
-                HookFacts {
-                    agent,
-                    exists: file.is_file(),
-                    agent_installed,
-                    instead,
-                    install,
-                    uninstall,
-                    file,
-                }
-            })
+                    .map(|added| (updated, added));
+                    let uninstall = if file.is_file() {
+                        predict_edit(&file, shell, profile.as_deref(), |s| {
+                            Ok(agents::remove_hooks(s))
+                        })
+                    } else {
+                        Ok(0)
+                    };
+                    HookFacts {
+                        agent,
+                        exists: file.is_file(),
+                        agent_installed,
+                        instead,
+                        account,
+                        install,
+                        uninstall,
+                        file,
+                    }
+                },
+            )
             .collect();
         let config_exists = data.join("daifuku.json").is_file();
         let kept = config_exists && data_locked == Some(true);
@@ -480,8 +494,9 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
     if !options.no_hooks {
         let exe = facts.to.join("daifuku.exe").to_string_lossy().into_owned();
         for h in &facts.hooks {
-            // Codex only if it is installed.
-            if h.agent.name == CODEX.name && !h.agent_installed {
+            // Codex only if it is installed, and an account's folder only
+            // once the agent has made it, signing in.
+            if (h.agent.name == CODEX.name || h.account.is_some()) && !h.agent_installed {
                 continue;
             }
             steps.push(Step::Hooks {
@@ -1318,11 +1333,29 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
     // In the file the agent reads, which its variable may move out of the
     // one install writes.
     let profile = paths::profile_dir();
-    for (agent, file) in hook_files() {
+    for HookFile {
+        agent,
+        file,
+        account,
+    } in hook_files()
+    {
         let variable = folder_variable(agent);
-        let instead = read_instead(&file, std::env::var_os(variable));
+        // A fleet on an account sets the variable itself.
+        let instead = account
+            .is_none()
+            .then(|| read_instead(&file, std::env::var_os(variable)))
+            .flatten();
         let read = instead.as_deref().unwrap_or(&file);
-        if agent.name == CODEX.name && !read.parent().is_some_and(Path::is_dir) {
+        if (agent.name == CODEX.name || account.is_some())
+            && !read.parent().is_some_and(Path::is_dir)
+        {
+            if let Some(account) = &account {
+                doctor.note(&format!(
+                    "{} has not signed in to account `{account}` yet: {} is not there",
+                    agent.name,
+                    read.parent().unwrap_or(read).display()
+                ));
+            }
             continue;
         }
         let fix = hooks_fix(agent, read, &exe, profile.as_deref()).map(|fix| match &instead {
@@ -1334,11 +1367,14 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
             ),
             None => fix,
         });
-        doctor.check(
-            fix.is_none(),
-            &format!("{} hooks present and current", agent.name),
-            fix.as_deref().unwrap_or_default(),
-        );
+        let label = match &account {
+            Some(account) => format!(
+                "{} hooks present and current for account `{account}`",
+                agent.name
+            ),
+            None => format!("{} hooks present and current", agent.name),
+        };
+        doctor.check(fix.is_none(), &label, fix.as_deref().unwrap_or_default());
     }
 
     let running = send(Pipe::Hook, "{}\n", Duration::from_millis(200)).is_ok();
@@ -1704,14 +1740,59 @@ fn retrying(to: &Path, mut write: impl FnMut() -> std::io::Result<()>) -> anyhow
     }
 }
 
-/// Every agent and the file its hooks live in.
-fn hook_files() -> Vec<(&'static Agent, PathBuf)> {
-    let mut out = Vec::new();
-    if let Some(p) = paths::claude_settings() {
-        out.push((&CLAUDE, p));
-    }
-    if let Some(p) = paths::codex_hooks() {
-        out.push((&CODEX, p));
+/// A file an agent's hooks live in.
+struct HookFile {
+    agent: &'static Agent,
+    file: PathBuf,
+    /// The account it belongs to, `None` for the one in the profile.
+    account: Option<String>,
+}
+
+/// Every agent and the file its hooks live in: the one in the profile, then
+/// one in each account the config names a folder for.
+fn hook_files() -> Vec<HookFile> {
+    let config = paths::config_file()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| config::decode(&b).ok())
+        .and_then(|text| Config::from_json(&text).ok())
+        .unwrap_or_default();
+    files_for(paths::claude_settings(), paths::codex_hooks(), &config)
+}
+
+/// [`hook_files`] given the files in the profile and the config: those
+/// first, then each account's. An account folder that is the profile's own
+/// adds nothing.
+fn files_for(claude: Option<PathBuf>, codex: Option<PathBuf>, config: &Config) -> Vec<HookFile> {
+    let profile: Vec<_> = [(&CLAUDE, claude), (&CODEX, codex)]
+        .into_iter()
+        .filter_map(|(agent, file)| Some((agent, file?)))
+        .collect();
+    let mut out: Vec<HookFile> = profile
+        .iter()
+        .map(|(agent, file)| HookFile {
+            agent,
+            file: file.clone(),
+            account: None,
+        })
+        .collect();
+    for (name, account) in &config.accounts {
+        for (variable, folder) in account.variables() {
+            let Some((agent, default)) = profile
+                .iter()
+                .find(|(agent, _)| folder_variable(agent) == variable)
+            else {
+                continue;
+            };
+            if let Some(file) = read_instead(default, Some(folder.as_os_str().to_owned()))
+                && !out.iter().any(|h| h.file == file)
+            {
+                out.push(HookFile {
+                    agent,
+                    file,
+                    account: Some(name.clone()),
+                });
+            }
+        }
     }
     out
 }
@@ -1926,6 +2007,7 @@ mod tests {
                     exists: true,
                     agent_installed: true,
                     instead: None,
+                    account: None,
                     install: Ok((0, 5)),
                     uninstall: Ok(0),
                 },
@@ -1935,6 +2017,7 @@ mod tests {
                     exists: false,
                     agent_installed: true,
                     instead: None,
+                    account: None,
                     install: Ok((0, 4)),
                     uninstall: Ok(0),
                 },
@@ -2219,6 +2302,72 @@ mod tests {
         let plan = actions(&install_plan(&f, &ALL));
         assert!(!plan.iter().any(|(_, t)| t.contains(".codex")), "{plan:?}");
         assert!(plan.iter().any(|(_, t)| t.contains(".claude")), "{plan:?}");
+    }
+
+    #[test]
+    fn each_account_folder_gets_hooks_once_its_agent_has_signed_in() {
+        let config = Config::from_json(
+            r#"{"accounts":{
+                "work":{"claude":"C:\\Users\\u\\.claude-work","codex":"C:\\Users\\u\\.codex"},
+                "again":{"claude":"C:\\Users\\u\\.claude-work\\"}}}"#,
+        )
+        .unwrap();
+        let files = files_for(
+            Some(PathBuf::from(r"C:\Users\u\.claude\settings.json")),
+            Some(PathBuf::from(r"C:\Users\u\.codex\hooks.json")),
+            &config,
+        );
+        let found: Vec<_> = files
+            .iter()
+            .map(|h| {
+                (
+                    h.agent.name,
+                    h.file.to_string_lossy().into_owned(),
+                    h.account.as_deref(),
+                )
+            })
+            .collect();
+        // The profile's own Codex folder and a second name for the same
+        // folder add nothing.
+        assert_eq!(
+            found,
+            [
+                (
+                    CLAUDE.name,
+                    r"C:\Users\u\.claude\settings.json".to_owned(),
+                    None
+                ),
+                (CODEX.name, r"C:\Users\u\.codex\hooks.json".to_owned(), None),
+                (
+                    CLAUDE.name,
+                    r"C:\Users\u\.claude-work\settings.json".to_owned(),
+                    Some("again")
+                ),
+            ]
+        );
+
+        let mut f = fresh();
+        f.hooks.push(HookFacts {
+            agent: &CLAUDE,
+            file: PathBuf::from(r"C:\Users\u\.claude-work\settings.json"),
+            exists: false,
+            agent_installed: false,
+            instead: None,
+            account: Some("work".into()),
+            install: Ok((0, 5)),
+            uninstall: Ok(0),
+        });
+        let plan = actions(&install_plan(&f, &ALL));
+        assert!(
+            !plan.iter().any(|(_, t)| t.contains(".claude-work")),
+            "{plan:?}"
+        );
+        f.hooks[2].agent_installed = true;
+        let plan = actions(&install_plan(&f, &ALL));
+        assert!(
+            plan.iter().any(|(_, t)| t.contains(".claude-work")),
+            "{plan:?}"
+        );
     }
 
     #[test]
