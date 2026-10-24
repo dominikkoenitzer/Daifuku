@@ -247,8 +247,11 @@ has which, and the one that goes out next; `daifuku task release <id>`
 takes a task back, so the terminal that had it can get another. Tasks go
 out only as agents stop: one that stopped while none could go out, or
 while Daifuku answered four others at once, waits for you and gets one at
-the end of its next turn. An elevated agent gets no tasks, as any program
-of yours can write the backlog it would take them from.
+the end of its next turn. `daifuku events` says when that happens, and
+when an account reaches its stop, starts over or may take more, so a
+script or an agent that runs the fleet can act on it; `--follow` prints
+each as it comes. An elevated agent gets no tasks, as any program of yours
+can write the backlog it would take them from.
 
 The hook that hands out tasks is Claude Code's `Stop` hook, which then
 waits for Daifuku instead of running in the background. Run

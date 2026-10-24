@@ -154,6 +154,8 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku restore [--dry-run] [--forget]` | open the spawned terminals from before Windows restarted again |
 | `daifuku label <window> [label]` | give an agent's terminal a label |
 | `daifuku wait <window or label> [--until done]` | wait until an agent stops working, or reaches one state |
+| `daifuku task [release <id>]` | each backlog's open tasks and who has which, or take one back |
+| `daifuku events [--follow]` | limits reached or reset, and agents idle while a task waits |
 | `daifuku group [--priority] -- <program>` | run a program and all it starts at one priority, ending together |
 | `daifuku heavy -- <program>` | run a build at idle priority, one at a time with the other heavy jobs |
 | `daifuku reload` | re-read the config |

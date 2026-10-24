@@ -16,9 +16,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::LimitWindow;
 use crate::peer::Spawn;
 use crate::state::{AgentState, HookEvent};
-use crate::usage::Limits;
+use crate::usage::{Limits, span};
 
 /// One hook call, as the hook sends it to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,12 +137,18 @@ pub enum Request {
     Status,
     /// Each backlog's open and handed-out tasks, and what goes out next.
     Tasks,
-    /// Take a task back from the terminal it was handed to, which then gets
-    /// the next one. While its backlog still lists it open, the next idle
-    /// agent gets it.
+    /// Take a task back from the terminal it was handed to, so it can get
+    /// another. While its backlog still lists it open, the next agent to
+    /// stop gets it.
     TaskRelease {
         /// Its id.
         id: String,
+    },
+    /// The events the daemon logged after the one numbered `after`.
+    Events {
+        /// The number of the last event already seen, 0 for all.
+        #[serde(default)]
+        after: u64,
     },
     /// Re-read the config file.
     Reload,
@@ -181,6 +188,16 @@ pub enum Response {
     Tasks {
         /// Each fleet's queue, in the config's order.
         fleets: Vec<FleetQueue>,
+    },
+    /// The answer to [`Request::Events`].
+    Events {
+        /// The events asked for, oldest first.
+        events: Vec<LoggedEvent>,
+        /// The number of the latest event logged, 0 while there is none.
+        last: u64,
+        /// When this daemon started, in seconds since 1970: a new value is a
+        /// new daemon, whose events are numbered from 1 again.
+        started_at: u64,
     },
     /// The answer to [`Request::Spawn`]: the terminal that opened.
     Spawned {
@@ -343,6 +360,151 @@ pub struct HandedTo {
     pub session_id: String,
     /// How long ago, in seconds.
     pub age_seconds: u64,
+}
+
+/// One event as the daemon logged it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoggedEvent {
+    /// Its number, counted from 1 since the daemon started.
+    pub seq: u64,
+    /// How long ago it happened, in seconds.
+    pub age_seconds: u64,
+    /// What happened.
+    #[serde(flatten)]
+    pub event: FleetEvent,
+}
+
+/// Something about the fleets' accounts and agents worth acting on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "kebab-case")]
+pub enum FleetEvent {
+    /// A window of an account used the share its `stop_at` stops at: its
+    /// fleets' agents get no more tasks.
+    Limit {
+        /// Its name under `accounts`; left out for a folder none names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Its folder.
+        folder: String,
+        /// The window.
+        limit: LimitWindow,
+        /// Its share used, in percent.
+        used: u8,
+        /// The share it stops at.
+        share: u8,
+    },
+    /// A window of an account started over.
+    Reset {
+        /// Its name under `accounts`; left out for a folder none names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Its folder.
+        folder: String,
+        /// The window.
+        limit: LimitWindow,
+        /// The new window's share used, once a status line reported it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        used: Option<u8>,
+    },
+    /// The stop of a window that has not started over rose or went, as when
+    /// a rule for its last hour takes over: it may take more than it could.
+    TopUp {
+        /// Its name under `accounts`; left out for a folder none names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Its folder.
+        folder: String,
+        /// The window.
+        limit: LimitWindow,
+        /// Its share used, in percent.
+        used: u8,
+        /// The share it stops at now; left out when nothing stops it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        share: Option<u8>,
+        /// How long until it starts over, in seconds.
+        resets_in_seconds: u64,
+    },
+    /// A fleet terminal's agent finished its turn holding no task while its
+    /// backlog has one for it: it gets that only when it stops again.
+    Idle {
+        /// Its window.
+        window: u64,
+        /// Its label, else its fleet and number.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Its fleet.
+        fleet: String,
+        /// The id of the task it would get.
+        task: String,
+    },
+}
+
+impl FleetEvent {
+    /// One line for a person, such as `limit work: 5h 76%, stops at 75%`.
+    #[must_use]
+    pub fn line(&self) -> String {
+        let name = |account: &Option<String>, folder: &str| {
+            account.clone().unwrap_or_else(|| folder.to_owned())
+        };
+        let window = |limit: &LimitWindow| match limit {
+            LimitWindow::FiveHour => "5h",
+            LimitWindow::SevenDay => "week",
+        };
+        match self {
+            Self::Limit {
+                account,
+                folder,
+                limit,
+                used,
+                share,
+            } => format!(
+                "limit {}: {} {used}%, stops at {share}%",
+                name(account, folder),
+                window(limit)
+            ),
+            Self::Reset {
+                account,
+                folder,
+                limit,
+                used,
+            } => {
+                let now = used.map(|u| format!(", now {u}%")).unwrap_or_default();
+                format!(
+                    "reset {}: {} started over{now}",
+                    name(account, folder),
+                    window(limit)
+                )
+            }
+            Self::TopUp {
+                account,
+                folder,
+                limit,
+                used,
+                share,
+                resets_in_seconds,
+            } => {
+                let stop = share.map_or_else(
+                    || "no stop now".to_owned(),
+                    |s| format!("stops at {s}% now"),
+                );
+                format!(
+                    "top-up {}: {} {used}%, {stop}, {} left",
+                    name(account, folder),
+                    window(limit),
+                    span(*resets_in_seconds)
+                )
+            }
+            Self::Idle {
+                window,
+                label,
+                fleet,
+                task,
+            } => {
+                let who = label.clone().unwrap_or_else(|| format!("{window:#010x}"));
+                format!("idle {who}: done, while {task} of {fleet}'s backlog waits for it")
+            }
+        }
+    }
 }
 
 /// One peer `daifuku restore` looked at.
@@ -566,12 +728,21 @@ mod tests {
             Request::StopAgents { dry_run: true },
             Request::StopAgents { dry_run: false },
             Request::Status,
+            Request::Tasks,
+            Request::TaskRelease { id: "C6".into() },
+            Request::Events { after: 0 },
+            Request::Events { after: 12 },
             Request::Reload,
             Request::Stop,
         ] {
             let line = to_line(&r).unwrap();
             assert_eq!(from_line::<Request>(&line).unwrap(), r);
         }
+        // An older caller that leaves the number out asks for all.
+        assert_eq!(
+            from_line::<Request>(r#"{"command":"events"}"#).unwrap(),
+            Request::Events { after: 0 }
+        );
     }
 
     #[test]
@@ -668,10 +839,80 @@ mod tests {
                     reason: Some("access is denied".into()),
                 }],
             },
+            Response::Events {
+                events: events(),
+                last: 4,
+                started_at: 1_792_500_000,
+            },
         ] {
             let line = to_line(&r).unwrap();
             assert_eq!(from_line::<Response>(&line).unwrap(), r);
         }
+    }
+
+    fn events() -> Vec<LoggedEvent> {
+        let folder = || r"C:\Users\me\.claude-work".to_owned();
+        [
+            FleetEvent::Limit {
+                account: Some("work".into()),
+                folder: folder(),
+                limit: LimitWindow::FiveHour,
+                used: 76,
+                share: 75,
+            },
+            FleetEvent::Reset {
+                account: None,
+                folder: folder(),
+                limit: LimitWindow::SevenDay,
+                used: Some(2),
+            },
+            FleetEvent::TopUp {
+                account: Some("work".into()),
+                folder: folder(),
+                limit: LimitWindow::FiveHour,
+                used: 26,
+                share: Some(91),
+                resets_in_seconds: 49 * 60,
+            },
+            FleetEvent::Idle {
+                window: 0x0010_064e,
+                label: Some("crew 2".into()),
+                fleet: "crew".into(),
+                task: "C6".into(),
+            },
+        ]
+        .into_iter()
+        .zip(1..)
+        .map(|(event, seq)| LoggedEvent {
+            seq,
+            age_seconds: 5,
+            event,
+        })
+        .collect()
+    }
+
+    #[test]
+    fn an_event_is_one_flat_object_and_one_line_for_a_person() {
+        let events = events();
+        assert_eq!(
+            serde_json::to_value(&events[0]).unwrap(),
+            serde_json::json!({
+                "seq": 1, "age_seconds": 5, "event": "limit", "account": "work",
+                "folder": r"C:\Users\me\.claude-work", "limit": "five_hour",
+                "used": 76, "share": 75
+            })
+        );
+        assert_eq!(serde_json::to_value(&events[2]).unwrap()["event"], "top-up");
+        let lines: Vec<String> = events.iter().map(|e| e.event.line()).collect();
+        assert_eq!(
+            lines,
+            [
+                "limit work: 5h 76%, stops at 75%",
+                r"reset C:\Users\me\.claude-work: week started over, now 2%",
+                "top-up work: 5h 26%, stops at 91% now, 49m left",
+                "idle crew 2: done, while C6 of crew's backlog waits for it",
+            ]
+        );
     }
 
     #[test]
