@@ -325,9 +325,8 @@ tells nothing.
 
 With `--follow`, each line is one of `events[]` as it comes, starting from
 now, or after `--after` when it is given. It asks the daemon every two
-seconds and starts over from 1 when the daemon did, so a restart loses
-nothing that the new daemon logged. When the daemon cannot be asked, it
-prints the error and exits.
+seconds, and when a new daemon answered since, it prints all of that one's
+events. When the daemon cannot be asked, it prints the error and exits.
 
 ### `status` from a terminal that is not elevated, when the daemon does not answer it
 
