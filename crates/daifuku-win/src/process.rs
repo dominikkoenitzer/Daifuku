@@ -173,7 +173,8 @@ unsafe fn started_at(h: HANDLE) -> Option<u64> {
 }
 
 /// Every process in `all` that one of `roots` started, or one of those, and
-/// so on down, the roots first, each with when it started by `started`.
+/// so on down, the roots first, each with when it started by `started`. A
+/// process `spare` names is listed, but not what it started.
 ///
 /// As in [`ancestors`], a child counts only if it started after its parent:
 /// the parent id of a process whose parent ended may name a later one.
@@ -181,6 +182,7 @@ unsafe fn started_at(h: HANDLE) -> Option<u64> {
 pub fn descendants(
     all: &HashMap<u32, Proc>,
     started: impl Fn(u32) -> Option<u64>,
+    spare: impl Fn(u32) -> bool,
     roots: &[u32],
 ) -> Vec<(Proc, u64)> {
     let mut children: HashMap<u32, Vec<&Proc>> = HashMap::new();
@@ -203,6 +205,9 @@ pub fn descendants(
     while at < out.len() {
         let (pid, when) = (out[at].0.pid, out[at].1);
         at += 1;
+        if spare(pid) {
+            continue;
+        }
         let mut found: Vec<&Proc> = children.get(&pid).cloned().unwrap_or_default();
         found.sort_by_key(|c| c.pid);
         for child in found {
@@ -218,6 +223,26 @@ pub fn descendants(
         }
     }
     out
+}
+
+/// Whether process `pid` is still the one that started at `started` and has
+/// not ended. Unlike [`started`], not fooled by a process that ended while
+/// someone still holds a handle to it.
+#[must_use]
+pub fn runs(pid: u32, started: u64) -> bool {
+    // SAFETY: the handle is closed below.
+    unsafe {
+        let Ok(h) = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        ) else {
+            return false;
+        };
+        let runs = started_at(h) == Some(started) && WaitForSingleObject(h, 0) != WAIT_OBJECT_0;
+        let _ = CloseHandle(h);
+        runs
+    }
 }
 
 /// Ends process `pid` if it is still the one that started at `started`, and
@@ -741,7 +766,7 @@ mod tests {
             50 => Some(50),
             _ => None,
         };
-        let found: Vec<(u32, u64)> = descendants(&all, when, &[10, 99])
+        let found: Vec<(u32, u64)> = descendants(&all, when, |_| false, &[10, 99])
             .into_iter()
             .map(|(p, at)| (p.pid, at))
             .collect();
@@ -754,8 +779,22 @@ mod tests {
             .into_iter()
             .map(|p| (p.pid, p))
             .collect();
-        let found = descendants(&all, |_| Some(1), &[10, 20, 10]);
+        let found = descendants(&all, |_| Some(1), |_| false, &[10, 20, 10]);
         assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn descendants_list_a_spared_process_but_nothing_it_started() {
+        // 20 shows a window: it and all it started are for its owner.
+        let all: HashMap<u32, Proc> = [proc(10, 1), proc(20, 10), proc(30, 20), proc(40, 10)]
+            .into_iter()
+            .map(|p| (p.pid, p))
+            .collect();
+        let found: Vec<u32> = descendants(&all, |_| Some(1), |pid| pid == 20, &[10])
+            .into_iter()
+            .map(|(p, _)| p.pid)
+            .collect();
+        assert_eq!(found, [10, 20, 40]);
     }
 
     #[test]
@@ -772,8 +811,12 @@ mod tests {
             "a later start is another process"
         );
         assert!(child.try_wait().unwrap().is_none());
+        assert!(runs(pid, at));
+        assert!(!runs(pid, at + 1));
         assert!(end(pid, at).unwrap());
         assert!(child.wait().is_ok());
         assert!(!end(pid, at).unwrap(), "it has ended already");
+        // The child's handle is still open here, so its id still names it.
+        assert!(!runs(pid, at), "it has ended, though its handle is held");
     }
 }

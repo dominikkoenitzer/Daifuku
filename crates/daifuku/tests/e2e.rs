@@ -1930,8 +1930,8 @@ fn stop_agents_closes_every_agent_ends_what_it_left_and_restore_brings_it_back()
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(&state).unwrap();
     let config = peer_config(&dir);
-    // The agent reports its folder, which the fleet's terminal does not
-    // start in, and starts a ping that outlives its terminal.
+    // The agent reports a folder inside the one the fleet's terminal starts
+    // in, and starts a ping that outlives its terminal.
     let event = serde_json::json!({
         "session_id": "e2e-stop-1",
         "hook_event_name": "Stop",
