@@ -353,6 +353,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Needs no other job, so the warning shows on the runs where publish is skipped too.
+  notice:
+    name: Notice
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say why nothing is published
+        if: inputs.tag != '' && github.ref != format('refs/tags/{0}', inputs.tag) && !inputs.dry_run
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: echo "::warning::Nothing published for $RELEASE_TAG, this run is on $GITHUB_REF. Run the workflow from the tag itself (Use workflow from $RELEASE_TAG) to release and attest it."
+
   # The only job with a token that can write, and it runs no code from the
   # repository or its dependencies: it takes the downloads the build job
   # uploaded and publishes them. It runs only from a v tag and never on a dry
@@ -398,13 +411,6 @@ jobs:
             dist/*.zip
             dist/*/daifuku.exe
             dist/*/daifukud.exe
-
-      - name: Say why nothing is published
-        if: inputs.tag != '' && github.ref != format('refs/tags/{0}', inputs.tag)
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: echo "::warning::Nothing published for $RELEASE_TAG, this run is on $GITHUB_REF. Run the workflow from the tag itself (Use workflow from $RELEASE_TAG) to release and attest it."
 
       # A version with a pre-release part, such as v0.2.0-rc.1, is published
       # as a pre-release, so it never becomes the latest release the README's
