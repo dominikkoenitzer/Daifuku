@@ -300,6 +300,7 @@ impl Daemon {
             Ok(c) => {
                 self.config = c;
                 self.config_error = None;
+                self.drop_unresumed();
                 tracing::info!(path = %self.config_path.display(), fleets = self.config.fleets.len(), "config loaded");
             }
             Err(e) => {
@@ -512,9 +513,12 @@ impl Daemon {
     /// back into the list whatever happens, so a failure part way loses
     /// neither the terminals that were open nor the ones just started.
     fn open_fleet(&mut self, fleet: &daifuku_core::config::Fleet) -> Response {
-        if fleet.resume {
-            self.resume_cells(&fleet.name);
-        }
+        let notes = if fleet.resume {
+            self.resume_cells(fleet)
+        } else {
+            self.drop_unresumed();
+            Vec::new()
+        };
         let mut record = match self
             .fleets
             .iter()
@@ -531,7 +535,8 @@ impl Daemon {
         match result {
             Ok(message) => {
                 tracing::info!(%message);
-                Response::said(message)
+                let said: Vec<String> = std::iter::once(message).chain(notes).collect();
+                Response::said(said.join("; "))
             }
             Err(e) => Response::error(format!("{e:#}")),
         }
@@ -1486,80 +1491,147 @@ impl Daemon {
             return;
         }
         if !agent.is_some_and(|a| in_terminal(a, w)) {
-            tracing::warn!(
-                window = format!("{w:#x}"),
-                "a hook outside the peer named its session; kept the old one"
-            );
+            // Every hook of a fleet terminal comes here until one can be
+            // placed, so only a peer's is worth a warning.
+            if i.is_some() {
+                tracing::warn!(
+                    window = format!("{w:#x}"),
+                    "a hook outside the peer named its session; kept the old one"
+                );
+            } else {
+                tracing::debug!(
+                    window = format!("{w:#x}"),
+                    "a hook outside the fleet terminal named its session; not kept"
+                );
+            }
             return;
         }
-        match (i, cell) {
-            (Some(i), _) => self.peers[i].spawn.resume = Some(session.to_owned()),
+        if let Some(i) = i {
+            self.peers[i].spawn.resume = Some(session.to_owned());
+        } else if let Some((fleet, n, directory)) = cell {
             // A terminal of a fleet that resumes becomes a peer in its cell,
             // kept as `daifuku spawn` keeps one.
-            (None, Some((fleet, n))) => {
-                let directory = fleet::directory(&fleet, n, fleet::as_user(&fleet, self.elevated));
-                tracing::info!(window = format!("{w:#x}"), fleet = %fleet.name, cell = n, "kept a fleet terminal with its session");
-                self.peers.push(Peer {
-                    window: w,
-                    spawn: Spawn {
-                        directory,
-                        label: self.labels.remove(&w),
-                        resume: Some(session.to_owned()),
-                        fleet: Some(fleet.name),
-                        cell: Some(peer::Cell::At(u32::try_from(n).unwrap_or(u32::MAX))),
-                        ..Spawn::default()
-                    },
-                });
-            }
-            (None, None) => return,
+            tracing::info!(window = format!("{w:#x}"), %fleet, cell = n, "kept a fleet terminal with its session");
+            self.peers.push(Peer {
+                window: w,
+                spawn: Spawn {
+                    directory,
+                    label: self.labels.remove(&w),
+                    resume: Some(session.to_owned()),
+                    fleet: Some(fleet),
+                    cell: Some(peer::Cell::At(n)),
+                    adopted: true,
+                    ..Spawn::default()
+                },
+            });
         }
         self.save_peers();
     }
 
-    /// The fleet window `w` is a terminal of and its cell, numbered from
-    /// one, when that fleet resumes its sessions.
-    fn resuming_cell(&self, w: u64) -> Option<(daifuku_core::config::Fleet, usize)> {
+    /// The fleet window `w` is a terminal of, its cell numbered from one and
+    /// the folder it started in, when that fleet resumes its sessions.
+    fn resuming_cell(&self, w: u64) -> Option<(String, u32, PathBuf)> {
         self.fleets.iter().find_map(|record| {
             let slot = record.slots.iter().position(|s| *s == Some(w))?;
             let fleet = self.config.fleet(&record.name).filter(|f| f.resume)?;
-            Some((fleet.clone(), slot + 1))
+            let n = slot + 1;
+            // Its sessions belong to the folder it started in, which a
+            // folder made or taken away since would change.
+            let directory = record.folders.iter().find(|(f, _)| *f == w).map_or_else(
+                || fleet::directory(fleet, n, fleet::as_user(fleet, self.elevated)),
+                |(_, d)| d.clone(),
+            );
+            Some((fleet.name.clone(), u32::try_from(n).ok()?, directory))
         })
     }
 
-    /// Opens the terminals of fleet `name` that wait to be restored, dormant
-    /// or closed with the fleet, each in its cell resuming its session.
-    /// Opening a fleet that resumes does this first, so its other cells are
-    /// the only ones that start afresh.
-    fn resume_cells(&mut self, name: &str) {
-        let waiting: Vec<Spawn> = self
+    /// Whether fleet `name` keeps its terminals with their sessions.
+    fn resumes(&self, name: Option<&str>) -> bool {
+        name.and_then(|n| self.config.fleet(n))
+            .is_some_and(|f| f.resume)
+    }
+
+    /// Lets go of the terminals waiting to be restored that a fleet kept
+    /// for resuming, once that fleet no longer resumes or is gone.
+    /// Not while the daemon runs on the built-in config, as after it started
+    /// with a file it could not use: that file may resume them again.
+    fn drop_unresumed(&mut self) {
+        if self.on_defaults() {
+            return;
+        }
+        let before = self.dormant.len() + self.closed.len();
+        let config = &self.config;
+        let keep = |s: &Spawn| {
+            !s.adopted
+                || s.fleet
+                    .as_deref()
+                    .and_then(|n| config.fleet(n))
+                    .is_some_and(|f| f.resume)
+        };
+        self.dormant.retain(keep);
+        self.closed.retain(keep);
+        if self.dormant.len() + self.closed.len() != before {
+            self.save_peers();
+        }
+    }
+
+    /// Opens the terminals of `fleet` that wait to be restored, dormant or
+    /// closed with the fleet, each in its own cell resuming its session,
+    /// lowest cell first. Opening a fleet that resumes does this first, so
+    /// its other cells are the only ones that start afresh. One whose cell
+    /// is past the fleet's count, or holds a terminal already, stays for
+    /// `daifuku restore`; one that fails to open is let go, as its cell
+    /// starts afresh. Returns a line for each that did not open.
+    fn resume_cells(&mut self, fleet: &daifuku_core::config::Fleet) -> Vec<String> {
+        self.drop_unresumed();
+        let mut waiting: Vec<(u32, Spawn)> = self
             .dormant
             .iter()
             .chain(&self.closed)
             .filter(|s| {
-                s.cell.is_some()
-                    && s.fleet
-                        .as_deref()
-                        .is_some_and(|f| f.eq_ignore_ascii_case(name))
+                s.fleet
+                    .as_deref()
+                    .is_some_and(|f| f.eq_ignore_ascii_case(&fleet.name))
             })
-            .cloned()
+            .filter_map(|s| Some((s.cell?.number()?, s.clone())))
             .collect();
         if waiting.is_empty() {
-            return;
+            return Vec::new();
         }
-        for spawn in waiting {
+        waiting.sort_by_key(|(n, _)| *n);
+        let mut notes = Vec::new();
+        for (n, spawn) in waiting {
             if let Some(running) = self.running(&spawn) {
-                tracing::info!(fleet = name, %running, "not resuming a cell");
+                tracing::info!(fleet = %fleet.name, %running, "not resuming a cell");
                 self.forget_waiting(&spawn);
                 continue;
             }
-            match self.spawn(&spawn, true) {
-                Response::Error { message } => {
-                    tracing::warn!(fleet = name, %message, "could not resume a cell");
-                }
-                _ => self.forget_waiting(&spawn),
+            let taken = self
+                .fleets
+                .iter()
+                .find(|r| r.name.eq_ignore_ascii_case(&fleet.name))
+                .and_then(|r| {
+                    let slot = usize::try_from(n).ok()?.checked_sub(1)?;
+                    r.slots.get(slot).copied().flatten()
+                })
+                .is_some_and(window::exists);
+            if n == 0 || n > fleet.count || taken {
+                notes.push(format!(
+                    "cell {n} is not free for session {}, so `daifuku restore` opens it beside the fleet",
+                    spawn.resume.as_deref().unwrap_or_default()
+                ));
+                continue;
             }
+            if let Response::Error { message } = self.spawn(&spawn, true) {
+                tracing::warn!(fleet = %fleet.name, cell = n, %message, "could not resume a cell");
+                notes.push(format!(
+                    "cell {n} did not resume and starts afresh: {message}"
+                ));
+            }
+            self.forget_waiting(&spawn);
         }
         self.save_peers();
+        notes
     }
 
     /// Writes the peers, open and dormant, to [`Daemon::peers_file`]. Not
@@ -1671,6 +1743,7 @@ impl Daemon {
         self.dormant_boot = dormant_boot;
         self.closed = closed;
         self.rejoin_fleets(seats);
+        self.drop_unresumed();
         self.save_peers();
         tracing::info!(
             open = self.peers.len(),
@@ -1786,11 +1859,13 @@ impl Daemon {
             let w = self.peers[i].window;
             if asked.contains(&w) && !window::exists(w) {
                 let peer = self.peers.remove(i);
+                // One a fleet kept goes only while that fleet resumes.
                 if peer
                     .spawn
                     .resume
                     .as_deref()
                     .is_some_and(peer::session_id_ok)
+                    && (!peer.spawn.adopted || self.resumes(peer.spawn.fleet.as_deref()))
                 {
                     self.keep_closed(peer.spawn);
                     kept = true;
@@ -3096,11 +3171,14 @@ mod tests {
         let name = d.config.fleets[0].name.clone();
         let mut record = OpenFleet::new(&name);
         record.slots = vec![Some(5), Some(6)];
+        record.folders = vec![(6, PathBuf::from(r"C:\src\b"))];
         d.fleets.push(record);
         assert!(d.resuming_cell(6).is_none());
         d.config.fleets[0].resume = true;
-        let (fleet, n) = d.resuming_cell(6).unwrap();
-        assert_eq!((fleet.name.as_str(), n), (name.as_str(), 2));
+        // In the folder it started in, the one its sessions belong to.
+        let (fleet, n, folder) = d.resuming_cell(6).unwrap();
+        assert_eq!((fleet.as_str(), n), (name.as_str(), 2));
+        assert_eq!(folder, PathBuf::from(r"C:\src\b"));
         assert!(d.resuming_cell(7).is_none());
         // Still only from a hook in the terminal itself.
         d.note_peer_session(6, "planted", None);
@@ -3130,7 +3208,13 @@ mod tests {
                 ..Spawn::default()
             },
         });
-        d.resume_cells("Crew");
+        let crew = daifuku_core::config::Fleet {
+            name: "Crew".to_owned(),
+            count: 2,
+            resume: true,
+            ..daifuku_core::config::Fleet::default()
+        };
+        assert!(d.resume_cells(&crew).is_empty());
         let waiting: Vec<_> = d
             .closed
             .iter()
@@ -3138,6 +3222,54 @@ mod tests {
             .filter_map(|s| s.resume.as_deref())
             .collect();
         assert_eq!(waiting, ["b", "c"]);
+    }
+
+    #[test]
+    fn a_kept_cell_past_the_fleet_s_count_stays_for_restore() {
+        let mut d = daemon();
+        d.closed = vec![Spawn {
+            directory: PathBuf::from(r"C:\"),
+            resume: Some("far".to_owned()),
+            fleet: Some("crew".to_owned()),
+            cell: Some(peer::Cell::At(3)),
+            adopted: true,
+            ..Spawn::default()
+        }];
+        let crew = daifuku_core::config::Fleet {
+            name: "crew".to_owned(),
+            count: 2,
+            resume: true,
+            ..daifuku_core::config::Fleet::default()
+        };
+        let notes = d.resume_cells(&crew);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("cell 3"), "{notes:?}");
+        assert_eq!(d.closed.len(), 1);
+    }
+
+    #[test]
+    fn what_a_fleet_kept_goes_once_it_no_longer_resumes() {
+        let mut d = daemon();
+        d.config.fleets[0].name = "crew".to_owned();
+        let kept = |session: &str, adopted: bool| Spawn {
+            directory: PathBuf::from(r"C:\"),
+            resume: Some(session.to_owned()),
+            fleet: Some("crew".to_owned()),
+            cell: Some(peer::Cell::At(1)),
+            adopted,
+            ..Spawn::default()
+        };
+        d.dormant = vec![kept("a", true), kept("b", false)];
+        d.closed = vec![kept("c", true)];
+        d.config.fleets[0].resume = true;
+        d.drop_unresumed();
+        assert_eq!((d.dormant.len(), d.closed.len()), (2, 1));
+        // Without `resume`, only what the fleet kept itself goes: a peer
+        // `daifuku spawn` put in a cell stays for `daifuku restore`.
+        d.config.fleets[0].resume = false;
+        d.drop_unresumed();
+        assert_eq!(d.dormant, [kept("b", false)]);
+        assert!(d.closed.is_empty());
     }
 
     #[test]

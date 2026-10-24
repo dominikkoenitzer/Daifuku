@@ -130,6 +130,10 @@ pub struct Spawn {
     /// took, so `daifuku restore` puts it back there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell: Option<Cell>,
+    /// Kept by a fleet that resumes, not opened by `daifuku spawn`: let go
+    /// once its fleet no longer resumes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopted: bool,
 }
 
 impl Spawn {
