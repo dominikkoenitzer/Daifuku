@@ -274,12 +274,8 @@ impl Facts {
                      agent,
                      file,
                      account,
+                     instead,
                  }| {
-                    let instead = if account.is_some() {
-                        None
-                    } else {
-                        read_instead(&file, std::env::var_os(folder_variable(agent)))
-                    };
                     let agent_installed = file.parent().is_some_and(Path::is_dir)
                         || instead
                             .as_deref()
@@ -774,6 +770,24 @@ fn text_of<'a>(values: &'a [(&str, Value)], name: &str) -> &'a str {
         .unwrap_or_default()
 }
 
+/// A line for each account folder install leaves alone because its agent
+/// has not signed in there yet.
+fn unsigned_accounts(facts: &Facts) -> Vec<String> {
+    facts
+        .hooks
+        .iter()
+        .filter(|h| !h.agent_installed)
+        .filter_map(|h| {
+            let account = h.account.as_deref()?;
+            Some(format!(
+                "{} has not signed in to account `{account}` yet: run `daifuku install` again once it has, for the hooks in {}",
+                h.agent.name,
+                h.file.display()
+            ))
+        })
+        .collect()
+}
+
 /// The plan `install --dry-run` prints.
 pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
     let facts = Facts::gather()?;
@@ -792,6 +806,7 @@ pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
         );
     }
     if !options.no_hooks {
+        plan.notes.extend(unsigned_accounts(&facts));
         for h in &facts.hooks {
             if let Some(other) = &h.instead
                 && (h.agent.name != CODEX.name || h.agent_installed)
@@ -884,6 +899,11 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
         run(&step)?;
     }
     drop(installing);
+    if !options.no_hooks {
+        for line in unsigned_accounts(&facts) {
+            println!("hooks        {line}");
+        }
+    }
 
     if terminal::find().is_none() {
         println!(
@@ -1138,6 +1158,9 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         run(&step)?;
     }
     drop(installing);
+    if let Err(e) = config_on_disk() {
+        println!("\nThe config does not read, so hooks in the folders of its accounts stay: {e}");
+    }
     // This program, moved aside because it runs, goes once it has exited.
     let moved = std::env::temp_dir().join(aside_name("daifuku.exe"));
     if moved.is_file()
@@ -1337,14 +1360,10 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
         agent,
         file,
         account,
+        instead,
     } in hook_files()
     {
         let variable = folder_variable(agent);
-        // A fleet on an account sets the variable itself.
-        let instead = account
-            .is_none()
-            .then(|| read_instead(&file, std::env::var_os(variable)))
-            .flatten();
         let read = instead.as_deref().unwrap_or(&file);
         if (agent.name == CODEX.name || account.is_some())
             && !read.parent().is_some_and(Path::is_dir)
@@ -1746,23 +1765,49 @@ struct HookFile {
     file: PathBuf,
     /// The account it belongs to, `None` for the one in the profile.
     account: Option<String>,
+    /// The file the agent reads in its place, when the variable in this
+    /// process points it elsewhere. Never an account's file: that one is
+    /// written and checked under the account.
+    instead: Option<PathBuf>,
 }
 
 /// Every agent and the file its hooks live in: the one in the profile, then
 /// one in each account the config names a folder for.
 fn hook_files() -> Vec<HookFile> {
-    let config = paths::config_file()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| config::decode(&b).ok())
-        .and_then(|text| Config::from_json(&text).ok())
-        .unwrap_or_default();
-    files_for(paths::claude_settings(), paths::codex_hooks(), &config)
+    // A config that does not read names no accounts.
+    let config = config_on_disk().unwrap_or_default();
+    files_for(
+        paths::claude_settings(),
+        paths::codex_hooks(),
+        &config,
+        |v| std::env::var_os(v),
+    )
 }
 
-/// [`hook_files`] given the files in the profile and the config: those
-/// first, then each account's. An account folder that is the profile's own
-/// adds nothing.
-fn files_for(claude: Option<PathBuf>, codex: Option<PathBuf>, config: &Config) -> Vec<HookFile> {
+/// The config in `C:\ProgramData\Daifuku`; none there reads as the defaults.
+fn config_on_disk() -> Result<Config, String> {
+    let Some(file) = paths::config_file() else {
+        return Ok(Config::default());
+    };
+    match std::fs::read(&file) {
+        Ok(bytes) => {
+            let text = config::decode(&bytes).map_err(|e| e.to_string())?;
+            Config::from_json(&text).map_err(|e| e.to_string())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// [`hook_files`] given the files in the profile, the config and the
+/// environment: the profile's first, then each account's. An account folder
+/// that is the profile's own adds nothing.
+fn files_for(
+    claude: Option<PathBuf>,
+    codex: Option<PathBuf>,
+    config: &Config,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> Vec<HookFile> {
     let profile: Vec<_> = [(&CLAUDE, claude), (&CODEX, codex)]
         .into_iter()
         .filter_map(|(agent, file)| Some((agent, file?)))
@@ -1773,6 +1818,7 @@ fn files_for(claude: Option<PathBuf>, codex: Option<PathBuf>, config: &Config) -
             agent,
             file: file.clone(),
             account: None,
+            instead: read_instead(file, var(folder_variable(agent))),
         })
         .collect();
     for (name, account) in &config.accounts {
@@ -1784,17 +1830,44 @@ fn files_for(claude: Option<PathBuf>, codex: Option<PathBuf>, config: &Config) -
                 continue;
             };
             if let Some(file) = read_instead(default, Some(folder.as_os_str().to_owned()))
-                && !out.iter().any(|h| h.file == file)
+                && !out.iter().any(|h| same_path(&h.file, &file))
             {
                 out.push(HookFile {
                     agent,
                     file,
                     account: Some(name.clone()),
+                    instead: None,
                 });
             }
         }
     }
+    // Run in an account's terminal, the variable points at that account's
+    // file, which has an entry of its own.
+    let accounts: Vec<PathBuf> = out
+        .iter()
+        .filter(|h| h.account.is_some())
+        .map(|h| h.file.clone())
+        .collect();
+    for h in &mut out {
+        if h.instead
+            .as_deref()
+            .is_some_and(|i| accounts.iter().any(|a| same_path(a, i)))
+        {
+            h.instead = None;
+        }
+    }
     out
+}
+
+/// Whether two paths name the same file as written: in any case and with or
+/// without a separator at the end.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let key = |p: &Path| {
+        p.components()
+            .map(|c| c.as_os_str().to_ascii_lowercase())
+            .collect::<Vec<_>>()
+    };
+    key(a) == key(b)
 }
 
 /// The variable that points `agent` at another folder than the one in the
@@ -1820,16 +1893,8 @@ fn read_instead(file: &Path, folder: Option<OsString>) -> Option<PathBuf> {
         std::fs::canonicalize(default),
     ) {
         (Ok(a), Ok(b)) => a == b,
-        // Not there to ask the file system: compared as written, in any
-        // case and with or without a separator at the end.
-        _ => {
-            let key = |p: &Path| {
-                p.components()
-                    .map(|c| c.as_os_str().to_ascii_lowercase())
-                    .collect::<Vec<_>>()
-            };
-            key(&folder) == key(default)
-        }
+        // Not there to ask the file system: compared as written.
+        _ => same_path(&folder, default),
     };
     if same {
         None
@@ -2309,13 +2374,26 @@ mod tests {
         let config = Config::from_json(
             r#"{"accounts":{
                 "work":{"claude":"C:\\Users\\u\\.claude-work","codex":"C:\\Users\\u\\.codex"},
-                "again":{"claude":"C:\\Users\\u\\.claude-work\\"}}}"#,
+                "other":{"codex":"C:\\Users\\u\\.codex-other"}}}"#,
         )
         .unwrap();
-        let files = files_for(
-            Some(PathBuf::from(r"C:\Users\u\.claude\settings.json")),
-            Some(PathBuf::from(r"C:\Users\u\.codex\hooks.json")),
-            &config,
+        let files_with = |claude_dir: &str| {
+            let claude_dir = OsString::from(claude_dir);
+            files_for(
+                Some(PathBuf::from(r"C:\Users\u\.claude\settings.json")),
+                Some(PathBuf::from(r"C:\Users\u\.codex\hooks.json")),
+                &config,
+                |v| (v == "CLAUDE_CONFIG_DIR").then(|| claude_dir.clone()),
+            )
+        };
+        // In the work account's terminal the profile's file is checked as
+        // the profile's, the work file under the account.
+        let files = files_with(r"c:\users\u\.CLAUDE-work\");
+        assert!(files.iter().all(|h| h.instead.is_none()));
+        let elsewhere = files_with(r"D:\elsewhere");
+        assert_eq!(
+            elsewhere[0].instead.as_deref(),
+            Some(Path::new(r"D:\elsewhere\settings.json"))
         );
         let found: Vec<_> = files
             .iter()
@@ -2327,8 +2405,7 @@ mod tests {
                 )
             })
             .collect();
-        // The profile's own Codex folder and a second name for the same
-        // folder add nothing.
+        // The profile's own Codex folder adds nothing.
         assert_eq!(
             found,
             [
@@ -2339,9 +2416,14 @@ mod tests {
                 ),
                 (CODEX.name, r"C:\Users\u\.codex\hooks.json".to_owned(), None),
                 (
+                    CODEX.name,
+                    r"C:\Users\u\.codex-other\hooks.json".to_owned(),
+                    Some("other")
+                ),
+                (
                     CLAUDE.name,
                     r"C:\Users\u\.claude-work\settings.json".to_owned(),
-                    Some("again")
+                    Some("work")
                 ),
             ]
         );
