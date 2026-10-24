@@ -144,6 +144,7 @@ impl Reporter {
             return;
         };
         let message = HookMessage {
+            ask: false,
             window,
             event: HookEvent {
                 session_id: self.session.clone(),
