@@ -1015,14 +1015,17 @@ fn status_line(quiet: bool) {
     let Ok(usage) = Limits::from_status_line(input.as_slice()) else {
         return;
     };
-    report_usage(usage);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let line = usage.line(now);
+    // Printed before reporting: finding the terminal borrows its console,
+    // which can leave standard output on that console instead of the pipe
+    // or file it was. Measured on CI.
     if !quiet && !line.is_empty() {
         println!("{line}");
     }
+    report_usage(usage);
 }
 
 /// Sends `usage` down the hook pipe with the account's folder and the
