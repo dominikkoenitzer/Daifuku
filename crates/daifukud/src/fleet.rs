@@ -30,6 +30,9 @@ pub struct OpenFleet {
     /// opened again lands in the cell, and gets the `{n}`, of the one it
     /// replaces, while every other terminal stays where it is.
     pub slots: Vec<Option<u64>>,
+    /// The folder each terminal this daemon opened for the fleet started
+    /// in, by its window: the one its agent's sessions belong to.
+    pub folders: Vec<(u64, PathBuf)>,
 }
 
 impl OpenFleet {
@@ -39,6 +42,7 @@ impl OpenFleet {
             name: name.to_owned(),
             monitor: String::new(),
             slots: Vec::new(),
+            folders: Vec::new(),
         }
     }
 
@@ -181,8 +185,9 @@ pub fn open(
         // for another.
         for &slot in &empty {
             let n = slot + 1;
+            let folder = directory(fleet, n, as_user(fleet, elevated));
             let launch = Launch {
-                directory: Some(directory(fleet, n, as_user(fleet, elevated))),
+                directory: Some(folder.clone()),
                 profile: fleet.profile.clone(),
                 command: fleet
                     .command
@@ -196,6 +201,9 @@ pub fn open(
             match start_one(&wt, &launch, fleet.admin, elevated, record)? {
                 Some(w) => {
                     record.slots[slot] = Some(w);
+                    let slots = &record.slots;
+                    record.folders.retain(|(w, _)| slots.contains(&Some(*w)));
+                    record.folders.push((w, folder));
                     window::place(w, cells[slot]);
                 }
                 None => break,
@@ -819,6 +827,7 @@ mod tests {
             name: "agents".into(),
             monitor: monitor.into(),
             slots,
+            folders: Vec::new(),
         }
     }
 

@@ -91,6 +91,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet opens last and asks for the focus. Their own `with` is not followed (after 0.1.3). |
 | `priority` | none | `"idle"`, `"below-normal"` or `"normal"`: each terminal runs in a group of its own at that priority. Everything started in it runs at it and cannot raise it, and all of it ends when the terminal closes, shells and watchers an agent left behind included. Left out, the terminals run as any other program (after 0.1.3). |
 | `account` | the one in your profile | The account its agents sign in with, by its name under [`accounts`](#accounts) (after 0.3.0). |
+| `resume` | `false` | Keep each terminal with the last session its agent reported from inside it, as `daifuku spawn` keeps a peer. Opening the fleet then first opens every such terminal it had when Windows last stopped, or when the fleet was closed, in its own cell resuming that session, lowest cell first, and starts the other cells afresh. A terminal closed by hand is let go, so its cell starts afresh; so does one whose session no longer opens, with the reason in the answer to `open`. A session that runs already is not opened twice, and one whose cell is past the fleet's `count` waits for `daifuku restore`. Turning `resume` off lets go of what the fleet kept; `daifuku restore --forget` lets go of all of it. Needs a `command` (after 0.3.0). |
 
 Opening a fleet that is already open brings it back: terminals that were
 closed are opened again, each in its own cell with its own number (after
@@ -156,6 +157,47 @@ On their own, three terminals on a half come out two over one, so `shape`
 stacks them in three rows the width of the half. Ctrl+Alt+Return opens the
 crew and then the lead, which asks for the focus; Ctrl+Alt+W opens or brings
 back the crew alone.
+
+The same layout with a second fleet on the portrait monitor that signs in to
+another account, all of it on one key and each terminal back in its session
+after a restart:
+
+```json
+{
+  "accounts": { "work": { "claude": "C:\\Users\\you\\.claude-work" } },
+  "fleets": [
+    {
+      "name": "lead",
+      "count": 1,
+      "monitor": "landscape",
+      "area": "left",
+      "resume": true,
+      "hotkey": "ctrl + alt + return",
+      "with": ["crew", "work"]
+    },
+    {
+      "name": "crew",
+      "count": 3,
+      "monitor": "landscape",
+      "area": "right",
+      "shape": { "columns": 1, "rows": 3 },
+      "resume": true,
+      "hotkey": null
+    },
+    {
+      "name": "work",
+      "count": 4,
+      "monitor": "portrait",
+      "account": "work",
+      "resume": true,
+      "hotkey": null
+    }
+  ]
+}
+```
+
+With `resume`, a terminal a `daifuku spawn --cell` put in the crew comes back
+in its cell too, as `daifuku restore` would bring it back.
 
 The outer gap goes around the area as it goes around the monitor, so on the
 monitor's own edges the terminals line up with a fleet that fills all of it.
