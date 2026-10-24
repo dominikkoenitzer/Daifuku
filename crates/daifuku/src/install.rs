@@ -1785,7 +1785,7 @@ fn hook_files() -> Vec<HookFile> {
 }
 
 /// The config in `C:\ProgramData\Daifuku`; none there reads as the defaults.
-fn config_on_disk() -> Result<Config, String> {
+pub(crate) fn config_on_disk() -> Result<Config, String> {
     let Some(file) = paths::config_file() else {
         return Ok(Config::default());
     };

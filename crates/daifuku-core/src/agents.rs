@@ -111,16 +111,48 @@ fn fit_codex_limits(event: &str, hook: &mut Value) -> bool {
     changed
 }
 
+/// The shortest a Claude Code `Stop` hook that asks may run, in seconds:
+/// enough for the five it waits for the daemon's answer.
+const ASK_TIMEOUT: u64 = 10;
+
+/// Makes a Claude Code `Stop` hook as an earlier install wrote it, in the
+/// background with `hook` alone, wait for the agent and ask for its next
+/// task: only a hook the agent waits for can keep it going. A timeout below
+/// [`ASK_TIMEOUT`] is raised to it, so the answer is not cut off. One whose
+/// arguments the user changed stays. Says whether anything changed.
+fn fit_claude_stop(event: &str, hook: &mut Value) -> bool {
+    let Some(hook) = hook.as_object_mut() else {
+        return false;
+    };
+    if event != "Stop" || hook.get("args") != Some(&json!(["hook"])) {
+        return false;
+    }
+    hook.insert("args".to_owned(), json!(["hook", "--ask"]));
+    hook.shift_remove("async");
+    let too_short = hook
+        .get("timeout")
+        .and_then(Value::as_u64)
+        .is_some_and(|t| t < ASK_TIMEOUT);
+    if too_short {
+        hook.insert("timeout".to_owned(), json!(ASK_TIMEOUT));
+    }
+    true
+}
+
 impl Agent {
     fn entry(&self, event: &str, exe: &str) -> Value {
         match self.style {
-            Style::ProgramAndArgs => json!({
-                "type": "command",
-                "command": exe,
-                "args": ["hook"],
-                "async": true,
-                "timeout": 10
-            }),
+            Style::ProgramAndArgs => {
+                let mut entry = json!({
+                    "type": "command",
+                    "command": exe,
+                    "args": ["hook"],
+                    "async": true,
+                    "timeout": 10
+                });
+                fit_claude_stop(event, &mut entry);
+                entry
+            }
             Style::CommandLine => {
                 let mut entry = json!({
                     "type": "command",
@@ -139,7 +171,9 @@ impl Agent {
     /// had them all.
     ///
     /// The hook runs `async`, so the agent never waits for it, with a short
-    /// timeout for the case where something does go wrong. Codex runs
+    /// timeout for the case where something does go wrong. Claude Code's
+    /// `Stop` hook is the one it waits for, as that hook can hand the agent
+    /// its next task from a fleet's backlog. Codex runs
     /// `SessionEnd` hooks in the foreground whatever they say, and gives
     /// them and `Interrupt` ones three seconds at most, so its hooks there
     /// ask for just that.
@@ -220,7 +254,8 @@ fn is_daifuku(path: &str) -> bool {
 /// hooks an earlier install left calling another copy work again. Each
 /// keeps its form and everything else in it, and hooks that are not
 /// Daifuku's are not touched. Codex's, the one-command-line form, are also
-/// brought within the timeouts Codex allows, as a new install writes them.
+/// brought within the timeouts Codex allows, and Claude Code's `Stop` hook
+/// made to ask for tasks, as a new install writes them.
 /// Returns how many were rewritten. The same for both agents.
 pub fn update_hooks(settings: &mut Value, exe: &str) -> usize {
     let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
@@ -232,7 +267,7 @@ pub fn update_hooks(settings: &mut Value, exe: &str) -> usize {
         let all = groups.filter_map(|g| g.get_mut("hooks").and_then(Value::as_array_mut));
         for hook in all.flatten() {
             let (wanted, fitted) = match style_of_ours(hook) {
-                Some(Style::ProgramAndArgs) => (exe.to_owned(), false),
+                Some(Style::ProgramAndArgs) => (exe.to_owned(), fit_claude_stop(event, hook)),
                 Some(Style::CommandLine) => (command_line(exe), fit_codex_limits(event, hook)),
                 None => continue,
             };
@@ -507,6 +542,58 @@ mod tests {
         // A shorter timeout of the user's own stays.
         s["hooks"]["Interrupt"][0]["hooks"][0]["timeout"] = json!(2);
         assert_eq!(update_hooks(&mut s, EXE), 0);
+    }
+
+    #[test]
+    fn only_claude_codes_stop_hook_waits_and_asks_for_a_task() {
+        let mut c = json!({});
+        CLAUDE.add_hooks(&mut c, EXE).unwrap();
+        let stop = &c["hooks"]["Stop"][0]["hooks"][0];
+        assert_eq!(stop["args"], json!(["hook", "--ask"]));
+        assert!(stop.get("async").is_none(), "the agent reads its answer");
+        assert_eq!(stop["timeout"], 10);
+        for &e in CLAUDE.events.iter().filter(|&&e| e != "Stop") {
+            let hook = &c["hooks"][e][0]["hooks"][0];
+            assert_eq!(hook["args"], json!(["hook"]), "{e}");
+            assert_eq!(hook["async"], true, "{e}");
+        }
+        let mut x = json!({});
+        CODEX.add_hooks(&mut x, EXE).unwrap();
+        assert_eq!(x["hooks"]["Stop"][0]["hooks"][0]["async"], true);
+    }
+
+    #[test]
+    fn an_update_makes_an_earlier_stop_hook_ask() {
+        let old = json!({"type": "command", "command": EXE, "args": ["hook"],
+            "async": true, "timeout": 10});
+        let mut s = json!({"hooks": {
+            "Stop": [{"hooks": [old.clone()]}],
+            "SessionEnd": [{"hooks": [old]}]
+        }});
+        assert_eq!(update_hooks(&mut s, EXE), 1);
+        let mut fresh = json!({});
+        CLAUDE.add_hooks(&mut fresh, EXE).unwrap();
+        assert_eq!(s["hooks"]["Stop"], fresh["hooks"]["Stop"]);
+        assert_eq!(s["hooks"]["SessionEnd"], fresh["hooks"]["SessionEnd"]);
+        assert_eq!(update_hooks(&mut s, EXE), 0, "nothing left to update");
+        // One the user changed stays as they have it.
+        s["hooks"]["Stop"][0]["hooks"][0]["args"] = json!(["hook", "--quiet"]);
+        assert_eq!(update_hooks(&mut s, EXE), 0);
+    }
+
+    #[test]
+    fn an_asking_stop_hook_gets_time_for_its_answer() {
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": EXE, "args": ["hook"], "async": true, "timeout": 3}
+        ]}]}});
+        assert_eq!(update_hooks(&mut s, EXE), 1);
+        assert_eq!(s["hooks"]["Stop"][0]["hooks"][0]["timeout"], ASK_TIMEOUT);
+        // A longer one stays.
+        let mut s = json!({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": EXE, "args": ["hook"], "async": true, "timeout": 30}
+        ]}]}});
+        assert_eq!(update_hooks(&mut s, EXE), 1);
+        assert_eq!(s["hooks"]["Stop"][0]["hooks"][0]["timeout"], 30);
     }
 
     #[test]

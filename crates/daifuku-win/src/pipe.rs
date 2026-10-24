@@ -33,9 +33,9 @@ use windows::Win32::Security::Authorization::{
 };
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE,
-    FILE_WRITE_DATA, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION,
-    SECURITY_SQOS_PRESENT, WriteFile,
+    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
+    FILE_SHARE_NONE, FILE_WRITE_DATA, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
+    SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{
@@ -477,12 +477,88 @@ pub fn send(pipe: Pipe, line: &str, wait: Duration) -> io::Result<Option<String>
 }
 
 fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Option<String>> {
-    let name = to_wide(name);
     // The hook asks for exactly what its access list grants the user.
     let access = match pipe {
         Pipe::Hook => FILE_WRITE_DATA.0,
         Pipe::Control => GENERIC_READ.0 | GENERIC_WRITE.0,
     };
+    let deadline = Instant::now() + wait;
+    let handle = connect(name, access, deadline)?;
+    let h = raw(&handle);
+    if pipe == Pipe::Control && !trusted_server(server_of(h)) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            NOT_THE_DAEMON,
+        ));
+    }
+    // A server that never reads, such as one that took the name while no
+    // daemon ran, would otherwise hold the write for ever.
+    let event = event()?;
+    write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
+    if pipe == Pipe::Hook {
+        // Until the daemon has read the line, within the same short wait,
+        // so it finds this process and the agent it ran under still there
+        // and can tell who sent it.
+        wait_until_read(h, deadline);
+        return Ok(None);
+    }
+    // The daemon bounds how long it takes to answer.
+    read_reply(h, raw(&event)).map(Some)
+}
+
+/// Sends one hook line and reads the daemon's one-line answer: `wait` for a
+/// free instance and for the line to be taken, then `answer` more for the
+/// answer. Only for a hook that is not elevated, and only from a server the
+/// control client would talk to: one of this user's, which could write the
+/// backlog anyway, or an elevated one. Another account's process that took
+/// the name while no daemon ran gets no word to the agent.
+///
+/// # Errors
+///
+/// When no daemon is listening, the server is neither elevated nor this
+/// user's, or no whole answer came in time.
+pub fn ask(line: &str, wait: Duration, answer: Duration) -> io::Result<String> {
+    ask_at(&Pipe::Hook.name(), line, wait, answer)
+}
+
+fn ask_at(name: &str, line: &str, wait: Duration, answer: Duration) -> io::Result<String> {
+    // Read as well as write, still within what the access list grants.
+    let handle = connect(
+        name,
+        FILE_GENERIC_READ.0 | FILE_WRITE_DATA.0,
+        Instant::now() + wait,
+    )?;
+    let h = raw(&handle);
+    if !trusted_server(server_of(h)) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the process answering on Daifuku's hook pipe is neither an elevated daemon nor one of yours",
+        ));
+    }
+    let event = event()?;
+    write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
+    let reply = read_line(h, raw(&event), Some(Instant::now() + answer))?;
+    if !reply.ends_with('\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Daifuku stopped before it answered",
+        ));
+    }
+    Ok(reply)
+}
+
+/// The process serving the other end of `h`, or 0 when it cannot be told.
+fn server_of(h: HANDLE) -> u32 {
+    let mut server = 0u32;
+    // SAFETY: server is a valid out pointer.
+    let _ = unsafe { GetNamedPipeServerProcessId(h, &raw mut server) };
+    server
+}
+
+/// Opens the client end of `name` with `access`, waiting for a free
+/// instance until `deadline`.
+fn connect(name: &str, access: u32, deadline: Instant) -> io::Result<OwnedHandle> {
+    let name = to_wide(name);
     let open = || {
         // SAFETY: name is NUL terminated.
         unsafe {
@@ -498,7 +574,6 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
             )
         }
     };
-    let deadline = Instant::now() + wait;
     let h = match open() {
         Ok(h) => h,
         Err(_) => loop {
@@ -529,32 +604,8 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
             }
         },
     };
-    // SAFETY: h is a fresh, owned, valid handle, closed when this returns.
-    let _handle = unsafe { OwnedHandle::from_raw_handle(h.0) };
-    if pipe == Pipe::Control {
-        let mut server = 0u32;
-        // SAFETY: server is a valid out pointer.
-        let _ = unsafe { GetNamedPipeServerProcessId(h, &raw mut server) };
-        if !trusted_server(server) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                NOT_THE_DAEMON,
-            ));
-        }
-    }
-    // A server that never reads, such as one that took the name while no
-    // daemon ran, would otherwise hold the write for ever.
-    let event = event()?;
-    write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
-    if pipe == Pipe::Hook {
-        // Until the daemon has read the line, within the same short wait,
-        // so it finds this process and the agent it ran under still there
-        // and can tell who sent it.
-        wait_until_read(h, deadline);
-        return Ok(None);
-    }
-    // The daemon bounds how long it takes to answer.
-    read_reply(h, raw(&event)).map(Some)
+    // SAFETY: h is a fresh, owned, valid handle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(h.0) })
 }
 
 /// Whether the control client may talk to process `server`: an elevated one,
@@ -761,6 +812,26 @@ mod tests {
         });
         send_to(&name, Pipe::Hook, "{\"hook\":1}\n", Duration::from_secs(2)).unwrap();
         assert_eq!(server.join().unwrap(), "{\"hook\":1}\n");
+    }
+
+    #[test]
+    fn an_ask_reads_its_answer_through_the_narrow_access_list() {
+        let name = private_name();
+        let mut instance = instances_at(&name, &Pipe::Hook.sddl(true), 1)
+            .unwrap()
+            .remove(0);
+        let server = std::thread::spawn(move || {
+            let mut connection = instance.accept().unwrap();
+            let line = connection.read_line(Duration::from_millis(500)).unwrap();
+            connection
+                .write_line("{\"task\":\"t\"}\n", Duration::from_millis(500))
+                .unwrap();
+            line
+        });
+        let wait = Duration::from_secs(2);
+        let answer = ask_at(&name, "{\"ask\":1}\n", wait, wait).unwrap();
+        assert_eq!(server.join().unwrap(), "{\"ask\":1}\n");
+        assert_eq!(answer, "{\"task\":\"t\"}\n");
     }
 
     #[test]

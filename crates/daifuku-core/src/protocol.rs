@@ -5,7 +5,9 @@
 //! - **The hook pipe** takes [`HookLine`] from agent hooks and status lines,
 //!   which run at whatever integrity the agent runs at. The worst a message
 //!   can do is colour a border or show a wrong number in `daifuku status`,
-//!   so any process of the signed-in user may write to it.
+//!   so any process of the signed-in user may write to it. The one answer
+//!   on it, a [`HookAnswer`], goes only to the agent the daemon itself finds
+//!   in the terminal, and carries a task from that fleet's backlog.
 //! - **The control pipe** takes [`Request`] from the command line. A request
 //!   can open a fleet of administrator terminals when the daemon runs
 //!   elevated, so then only an elevated process may connect; letting an
@@ -32,6 +34,20 @@ pub struct HookMessage {
     /// open. Left out by hooks older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// The hook waits for a [`HookAnswer`]: it sends a `Stop` while a fleet
+    /// in the config works a backlog, and the answer may hand the agent its
+    /// next task.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ask: bool,
+}
+
+/// The daemon's answer to a hook that asks for one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookAnswer {
+    /// What to tell the agent: the task it is handed. Left out when it gets
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// What an agent's status line reports: how much of its limits the account
@@ -118,6 +134,15 @@ pub enum Request {
     },
     /// What the daemon knows.
     Status,
+    /// Each backlog's open and handed-out tasks, and what goes out next.
+    Tasks,
+    /// Take a task back from the terminal it was handed to, which then gets
+    /// the next one. While its backlog still lists it open, the next idle
+    /// agent gets it.
+    TaskRelease {
+        /// Its id.
+        id: String,
+    },
     /// Re-read the config file.
     Reload,
     /// Take the borders down and exit.
@@ -151,6 +176,11 @@ pub enum Response {
         /// Each process an agent started that it ended, or would end if it
         /// were still running once its terminal went.
         leftovers: Vec<Leftover>,
+    },
+    /// The answer to [`Request::Tasks`]: every fleet with a backlog.
+    Tasks {
+        /// Each fleet's queue, in the config's order.
+        fleets: Vec<FleetQueue>,
     },
     /// The answer to [`Request::Spawn`]: the terminal that opened.
     Spawned {
@@ -264,6 +294,55 @@ pub struct WindowUsage {
     /// percentage points; negative is to spare. Left out once it has reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pace: Option<i32>,
+}
+
+/// One fleet's backlog, for `daifuku task`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FleetQueue {
+    /// The fleet.
+    pub fleet: String,
+    /// Its backlog file.
+    pub backlog: String,
+    /// Why the file could not be read; the tasks are then empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Its open tasks and the ones Daifuku handed out, in the file's order.
+    pub tasks: Vec<QueuedTask>,
+    /// The id of the task its next idle agent gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    /// Why its agents get no task now, as its account's `stop_at` says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
+}
+
+/// One task of a backlog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueuedTask {
+    /// Its id.
+    pub id: String,
+    /// Its title.
+    pub title: String,
+    /// Its status, as the file says.
+    pub status: String,
+    /// The terminal it was handed to; left out while it is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handed_to: Option<HandedTo>,
+}
+
+/// The terminal a task was handed to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandedTo {
+    /// Its window, while it is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+    /// Its label, else its fleet and number, while it is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The session it was handed to.
+    pub session_id: String,
+    /// How long ago, in seconds.
+    pub age_seconds: u64,
 }
 
 /// One peer `daifuku restore` looked at.
@@ -620,6 +699,7 @@ mod tests {
     #[test]
     fn a_hook_message_carries_the_event_unchanged() {
         let m = HookMessage {
+            ask: false,
             window: 0x00b8_089e,
             event: HookEvent {
                 session_id: "s".into(),
@@ -632,6 +712,22 @@ mod tests {
         // A hook from before the field still reads.
         let old = r#"{"window":5,"event":{"session_id":"s","hook_event_name":"Stop"}}"#;
         assert_eq!(from_line::<HookMessage>(old).unwrap().pid, None);
+        assert!(!from_line::<HookMessage>(old).unwrap().ask);
+        // Only a hook that asks says so, and then waits for one answer.
+        assert!(!to_line(&m).unwrap().contains("ask"));
+        let asking = HookMessage { ask: true, ..m };
+        assert_eq!(
+            from_line::<HookMessage>(&to_line(&asking).unwrap()).unwrap(),
+            asking
+        );
+        assert_eq!(to_line(&HookAnswer::default()).unwrap(), "{}\n");
+        let answer = HookAnswer {
+            task: Some("C6".into()),
+        };
+        assert_eq!(
+            from_line::<HookAnswer>(&to_line(&answer).unwrap()).unwrap(),
+            answer
+        );
     }
 
     #[test]

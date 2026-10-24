@@ -26,6 +26,8 @@ mod hotkeys;
 mod ipc;
 #[cfg(windows)]
 mod logging;
+#[cfg(windows)]
+mod queue;
 #[cfg(all(windows, test))]
 mod test_support;
 #[cfg(windows)]

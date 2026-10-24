@@ -99,6 +99,146 @@ pub struct Account {
     /// `daifuku status-line` in Claude Code's status line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warn: Option<u8>,
+    /// When its fleets get no more tasks from their backlog: the first rule
+    /// that holds for a window, in the order written, says how much of it
+    /// may be used. A window no rule holds for has no stop. Needs
+    /// `daifuku status-line` in Claude Code's status line; with rules but no
+    /// numbers reported yet, no task is handed out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stop_at: Vec<StopAt>,
+}
+
+/// One rule for when an account's fleets get no more tasks, such as
+/// `{ "share": 75, "days": "mon-fri", "hours": "9-17" }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StopAt {
+    /// No task is handed out once this share of the window is used, in
+    /// percent, 1 to 100.
+    pub share: u8,
+    /// The window it is for, `five_hour` or `seven_day`. Left out, both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<LimitWindow>,
+    /// The days it holds on, in local time: `mon-fri`, `sat,sun` or one
+    /// day. Left out, every day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<String>,
+    /// The hours it holds in, in local time, from the first up to the
+    /// second, 0 to 24: `8-18`, or `22-6` past midnight. Left out, all day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<String>,
+    /// It holds only in this many minutes before the window resets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_minutes: Option<u32>,
+}
+
+/// One of the two limits Claude Code reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitWindow {
+    /// The 5-hour window.
+    FiveHour,
+    /// The weekly one.
+    SevenDay,
+}
+
+/// The time a [`StopAt`] is checked at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTime {
+    /// Seconds since 1970, as windows reset at.
+    pub now: u64,
+    /// The local day, 0 for Monday to 6 for Sunday.
+    pub weekday: u8,
+    /// Local minutes since midnight.
+    pub minute: u16,
+}
+
+const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+impl StopAt {
+    /// Whether it holds for `window`, which resets at `resets_at`, at
+    /// `time`.
+    #[must_use]
+    pub fn holds(&self, window: LimitWindow, resets_at: u64, time: LocalTime) -> bool {
+        self.window.is_none_or(|w| w == window)
+            && self
+                .days
+                .as_deref()
+                .is_none_or(|d| day_mask(d).is_ok_and(|m| m & (1 << time.weekday) != 0))
+            && self.hours.as_deref().is_none_or(|h| {
+                hour_span(h).is_ok_and(|(from, to)| {
+                    let hour = time.minute / 60;
+                    if from < to {
+                        (from..to).contains(&hour)
+                    } else {
+                        hour >= from || hour < to
+                    }
+                })
+            })
+            && self
+                .last_minutes
+                .is_none_or(|m| resets_at > time.now && resets_at - time.now <= u64::from(m) * 60)
+    }
+
+    fn problem(&self) -> Option<String> {
+        if !(1..=100).contains(&self.share) {
+            return Some("a stop_at share is a percentage from 1 to 100".to_owned());
+        }
+        if let Some(Err(e)) = self.days.as_deref().map(day_mask) {
+            return Some(e);
+        }
+        if let Some(Err(e)) = self.hours.as_deref().map(hour_span) {
+            return Some(e);
+        }
+        if self
+            .last_minutes
+            .is_some_and(|m| !(1..=10_080).contains(&m))
+        {
+            return Some("last_minutes is 1 to 10080, a week".to_owned());
+        }
+        None
+    }
+}
+
+/// `mon-fri`, `sat,sun` or `wed` as one bit per day, Monday the lowest.
+fn day_mask(text: &str) -> Result<u8, String> {
+    let day = |name: &str| {
+        let name = name.trim().to_ascii_lowercase();
+        DAYS.iter()
+            .position(|d| *d == name)
+            .ok_or_else(|| format!("days: `{name}` is not mon, tue, wed, thu, fri, sat or sun"))
+    };
+    let mut mask = 0u8;
+    for part in text.split(',') {
+        if let Some((from, to)) = part.split_once('-') {
+            let (from, to) = (day(from)?, day(to)?);
+            let mut d = from;
+            loop {
+                mask |= 1 << d;
+                if d == to {
+                    break;
+                }
+                d = (d + 1) % 7;
+            }
+        } else {
+            mask |= 1 << day(part)?;
+        }
+    }
+    Ok(mask)
+}
+
+/// `8-18` as its two hours, the first taken as 0 to 23.
+fn hour_span(text: &str) -> Result<(u16, u16), String> {
+    let bad = || format!("hours: `{text}` is not two hours 0 to 24, such as 8-18");
+    let (from, to) = text.split_once('-').ok_or_else(bad)?;
+    let hour = |h: &str| h.trim().parse::<u16>().ok().filter(|h| *h <= 24);
+    let (from, to) = (hour(from).ok_or_else(bad)?, hour(to).ok_or_else(bad)?);
+    if from % 24 == to % 24 {
+        return Err(format!(
+            "hours: `{text}` is no time at all; leave hours out for all day"
+        ));
+    }
+    Ok((from % 24, to))
 }
 
 impl Account {
@@ -363,6 +503,11 @@ pub struct Fleet {
     /// last session: after Windows restarts, and after the fleet was closed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub resume: bool,
+    /// A markdown file of tasks its agents work through, by full path. Each
+    /// time one of them ends a turn holding no task, Daifuku hands it the
+    /// next open one, within its account's `stop_at`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backlog: Option<PathBuf>,
 }
 
 impl Default for Fleet {
@@ -383,6 +528,7 @@ impl Default for Fleet {
             priority: None,
             account: None,
             resume: false,
+            backlog: None,
         }
     }
 }
@@ -907,6 +1053,11 @@ pub enum ConfigError {
         /// The account it names.
         account: String,
     },
+    /// A fleet's backlog that is not a full path.
+    #[error(
+        "fleet `{0}`: backlog is not a full path, write it from the drive, such as C:\\work\\BACKLOG.md"
+    )]
+    Backlog(String),
     /// An account that cannot be told apart from another, names no folder,
     /// or names one that is not a full path.
     #[error("account `{name}`: {reason}")]
@@ -1018,6 +1169,9 @@ impl Config {
                     reason,
                 });
             }
+            if fleet.backlog.as_deref().is_some_and(|b| !b.is_absolute()) {
+                return Err(ConfigError::Backlog(fleet.name.clone()));
+            }
             if let Some(account) = &fleet.account
                 && self.account(account).is_none()
             {
@@ -1083,6 +1237,9 @@ impl Config {
             }
             if account.warn.is_some_and(|w| !(1..=100).contains(&w)) {
                 return Err(problem("warn is a percentage from 1 to 100"));
+            }
+            if let Some(reason) = account.stop_at.iter().find_map(StopAt::problem) {
+                return Err(problem(&reason));
             }
             for (variable, folder) in variables {
                 if !folders.insert((variable, folder_key(folder))) {
@@ -1900,6 +2057,7 @@ mod tests {
             codex: Some(PathBuf::from(r"D:\codex")),
             claude: Some(PathBuf::from(r"D:\claude")),
             warn: None,
+            stop_at: Vec::new(),
         };
         let names: Vec<_> = a.variables().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, vec!["CLAUDE_CONFIG_DIR", "CODEX_HOME"]);
@@ -1970,5 +2128,88 @@ mod tests {
         for key in ["gaps", "border", "hotkeys", "fleets", "accounts"] {
             assert!(schema["properties"][key].is_object(), "{key}");
         }
+    }
+
+    fn rules(json: &str) -> Result<Config, ConfigError> {
+        Config::from_json(&format!(
+            r#"{{"accounts":{{"work":{{"claude":"C:\\w","stop_at":{json}}}}}}}"#
+        ))
+    }
+
+    #[test]
+    fn stop_rules_parse_and_bad_ones_name_their_problem() {
+        let c = rules(
+            r#"[{"share":90,"window":"five_hour","last_minutes":60},{"share":75,"days":"mon-fri","hours":"9-17"},{"share":95}]"#,
+        )
+        .unwrap();
+        let stop = &c.account("work").unwrap().stop_at;
+        assert_eq!(stop.len(), 3);
+        assert_eq!(stop[0].window, Some(LimitWindow::FiveHour));
+        for (json, says) in [
+            (r#"[{"share":0}]"#, "1 to 100"),
+            (r#"[{"share":101}]"#, "1 to 100"),
+            (r#"[{"share":50,"days":"mon-fry"}]"#, "`fry`"),
+            (r#"[{"share":50,"hours":"8"}]"#, "such as 8-18"),
+            (r#"[{"share":50,"hours":"8-25"}]"#, "such as 8-18"),
+            (r#"[{"share":50,"hours":"0-24"}]"#, "no time at all"),
+            (r#"[{"share":50,"last_minutes":0}]"#, "a week"),
+        ] {
+            let e = rules(json).unwrap_err().to_string();
+            assert!(e.contains(says), "{json}: {e}");
+        }
+        assert!(rules(r#"[{"share":50,"day":"mon"}]"#).is_err());
+    }
+
+    fn at(weekday: u8, hour: u16) -> LocalTime {
+        LocalTime {
+            now: 1_000_000,
+            weekday,
+            minute: hour * 60 + 30,
+        }
+    }
+
+    #[test]
+    fn a_rule_holds_on_its_days_in_its_hours_and_for_its_window() {
+        let rule = |json: &str| serde_json::from_str::<StopAt>(json).unwrap();
+        let work = rule(r#"{"share":75,"window":"five_hour","days":"mon-fri","hours":"9-17"}"#);
+        let five = LimitWindow::FiveHour;
+        let reset = 1_000_000 + 7200;
+        assert!(work.holds(five, reset, at(0, 9)));
+        assert!(!work.holds(five, reset, at(0, 8)));
+        assert!(work.holds(five, reset, at(4, 16)));
+        assert!(!work.holds(five, reset, at(4, 17)));
+        assert!(!work.holds(five, reset, at(5, 10)));
+        assert!(!work.holds(LimitWindow::SevenDay, reset, at(0, 10)));
+        let night = rule(r#"{"share":50,"days":"sat,sun","hours":"22-6"}"#);
+        assert!(night.holds(five, reset, at(6, 23)));
+        assert!(night.holds(five, reset, at(5, 5)));
+        assert!(!night.holds(five, reset, at(5, 6)));
+        let round = rule(r#"{"share":50,"days":"fri-mon"}"#);
+        assert!(round.holds(five, reset, at(6, 1)) && round.holds(five, reset, at(0, 1)));
+        assert!(!round.holds(five, reset, at(1, 1)));
+    }
+
+    #[test]
+    fn a_last_minutes_rule_holds_only_that_close_to_the_reset() {
+        let rule: StopAt = serde_json::from_str(r#"{"share":90,"last_minutes":60}"#).unwrap();
+        let w = LimitWindow::FiveHour;
+        assert!(rule.holds(w, 1_000_000 + 3600, at(0, 9)));
+        assert!(!rule.holds(w, 1_000_000 + 3601, at(0, 9)));
+        assert!(!rule.holds(w, 1_000_000, at(0, 9)), "a reset window");
+    }
+
+    #[test]
+    fn a_backlog_is_a_full_path() {
+        let c =
+            Config::from_json(r#"{"fleets":[{"name":"crew","backlog":"C:\\work\\BACKLOG.md"}]}"#)
+                .unwrap();
+        assert_eq!(
+            c.fleets[0].backlog.as_deref(),
+            Some(Path::new(r"C:\work\BACKLOG.md"))
+        );
+        assert!(matches!(
+            Config::from_json(r#"{"fleets":[{"name":"crew","backlog":"BACKLOG.md"}]}"#),
+            Err(ConfigError::Backlog(name)) if name == "crew"
+        ));
     }
 }
