@@ -1389,6 +1389,28 @@ mod tests {
     }
 
     #[test]
+    fn an_area_of_the_wrong_type_says_what_an_area_is() {
+        let e = area_of("5").unwrap_err();
+        assert!(
+            e.to_string().contains(
+                "expected full, left, right, top, bottom, or an object with x, y, width and height"
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn an_area_covers_its_part_of_the_work_area() {
+        let work = Rect::new(100, 0, 300, 50);
+        assert_eq!(Area::Full.within(work), work);
+        assert_eq!(Area::Right.within(work), Rect::new(200, 0, 300, 50));
+        assert_eq!(
+            part(0.25, 0.2, 0.5, 0.6).within(work),
+            Rect::new(150, 10, 250, 40)
+        );
+    }
+
+    #[test]
     fn an_area_off_its_monitor_is_an_error_that_names_the_fleet() {
         for (text, says) in [
             (
@@ -1438,6 +1460,27 @@ mod tests {
         ] {
             assert!(area_of(text).is_ok(), "{text}");
         }
+    }
+
+    #[test]
+    fn an_edge_one_slack_past_the_monitor_still_ends_on_it() {
+        let edge = 1.0 + Part::SLACK;
+        let across = Part {
+            x: edge - 0.5,
+            y: 0.0,
+            width: 0.5,
+            height: 1.0,
+        };
+        assert_eq!(across.x + across.width, edge);
+        assert_eq!(across.problem(), None);
+        let down = Part {
+            x: 0.0,
+            y: edge - 0.5,
+            width: 1.0,
+            height: 0.5,
+        };
+        assert_eq!(down.y + down.height, edge);
+        assert_eq!(down.problem(), None);
     }
 
     #[test]
