@@ -6,11 +6,12 @@ use std::path::Path;
 use std::process::Command;
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+    SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, GetAce,
@@ -20,8 +21,9 @@ use windows::Win32::Security::{
     WinLocalSystemSid,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateDirectoryW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 use windows::Win32::System::Threading::{
@@ -102,11 +104,33 @@ pub fn harden_dir(dir: &Path) -> std::io::Result<bool> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let sddl = to_wide(FOLDER_SDDL);
+    // Fails when anything exists at the path, so a folder someone made after
+    // the removal above is never taken over.
+    create_dir_with(dir, FOLDER_SDDL)?;
+    Ok(removed)
+}
+
+/// Creates the folder `dir` with the owner and access list `sddl` in place
+/// from the start. Fails when anything exists at `dir`.
+fn create_dir_with(dir: &Path, sddl: &str) -> std::io::Result<()> {
     let path = to_wide(&dir.to_string_lossy());
+    with_descriptor(sddl, |attributes| {
+        // SAFETY: the path is NUL terminated and attributes points at a live
+        // descriptor.
+        unsafe { CreateDirectoryW(PCWSTR(path.as_ptr()), Some(attributes)) }
+            .map_err(std::io::Error::from)
+    })
+}
+
+/// Runs `f` with security attributes that carry the descriptor `sddl`.
+fn with_descriptor<T>(
+    sddl: &str,
+    f: impl FnOnce(*const SECURITY_ATTRIBUTES) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let sddl = to_wide(sddl);
     let mut sd = PSECURITY_DESCRIPTOR::default();
-    // SAFETY: both strings are NUL terminated; sd lives until it is freed
-    // after the folder is created.
+    // SAFETY: the string is NUL terminated; sd lives until it is freed after
+    // `f` returns.
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             PCWSTR(sddl.as_ptr()),
@@ -115,18 +139,67 @@ pub fn harden_dir(dir: &Path) -> std::io::Result<bool> {
             None,
         )
         .map_err(std::io::Error::other)?;
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0),
-            lpSecurityDescriptor: sd.0,
-            bInheritHandle: false.into(),
-        };
-        // Fails when anything exists at the path, so a folder someone made
-        // after the removal above is never taken over.
-        let r = CreateDirectoryW(PCWSTR(path.as_ptr()), Some(&raw const attributes));
-        let _ = LocalFree(Some(HLOCAL(sd.0)));
-        r.map_err(std::io::Error::from)?;
     }
-    Ok(removed)
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0),
+        lpSecurityDescriptor: sd.0,
+        bInheritHandle: false.into(),
+    };
+    let r = f(&raw const attributes);
+    // SAFETY: allocated by the conversion above, used by nothing after `f`.
+    let _ = unsafe { LocalFree(Some(HLOCAL(sd.0))) };
+    r
+}
+
+/// The owner and access list of a file only one user's daemon writes, such
+/// as the saved state, which tells what that user's agents work on.
+/// Protected, so nothing comes from the data folder, which lets every user
+/// read: SYSTEM and Administrators may do anything, the user `sid` may read,
+/// and no one else may open it. An elevated daemon gives the file to
+/// Administrators, so the user's ordinary processes can neither change it nor
+/// its access list; one without rights runs as the user, who then owns and
+/// may write it. Without a SID the owner stands in for the user.
+#[must_use]
+pub fn private_file_sddl(sid: Option<&str>, elevated: bool) -> String {
+    const ADMINS: &str = "(A;;FA;;;SY)(A;;FA;;;BA)";
+    match (sid, elevated) {
+        (Some(sid), true) => format!("O:BAD:P{ADMINS}(A;;FR;;;{sid})"),
+        (Some(sid), false) => format!("O:{sid}D:P{ADMINS}(A;;FA;;;{sid})"),
+        (None, true) => format!("O:BAD:P{ADMINS}"),
+        (None, false) => format!("D:P{ADMINS}(A;;FA;;;OW)"),
+    }
+}
+
+/// Creates the file `path` for writing, with the owner and access list
+/// `sddl` in place from the start, as [`private_file_sddl`] builds them.
+///
+/// # Errors
+///
+/// When anything exists at `path`, whose access list would stay as it is, or
+/// the file cannot be created.
+pub fn create_private_file(path: &Path, sddl: &str) -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::FromRawHandle;
+
+    let wide = to_wide(&path.to_string_lossy());
+    let handle = with_descriptor(sddl, |attributes| {
+        // SAFETY: the path is NUL terminated and attributes points at a live
+        // descriptor.
+        unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                GENERIC_WRITE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                Some(attributes),
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        }
+        // The code Windows set, so a file that exists reads as AlreadyExists.
+        .map_err(|_| std::io::Error::last_os_error())
+    })?;
+    // SAFETY: a handle just opened and owned by nothing else.
+    Ok(unsafe { std::fs::File::from_raw_handle(handle.0) })
 }
 
 /// Whether [`harden_dir`] would keep `dir` as it is: a real folder only
@@ -295,6 +368,82 @@ fn set_security(file: &Path, sddl: &str) -> std::io::Result<()> {
 /// When `file` cannot be opened, `NotFound` when there is nothing there.
 pub fn config_is_locked(file: &Path) -> std::io::Result<bool> {
     secured(file, false)
+}
+
+/// The owner and access list of the file or folder at `path`, in the SDDL
+/// form [`canonical_sddl`] gives. Reads, changes nothing.
+///
+/// # Errors
+///
+/// When `path` cannot be opened or its security cannot be read.
+pub fn file_sddl(path: &Path) -> std::io::Result<String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    let file = std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)?;
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: the handle is open for the call; sd is freed after its last use.
+    unsafe {
+        let r = GetSecurityInfo(
+            HANDLE(file.as_raw_handle()),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            None,
+            Some(&raw mut sd),
+        );
+        if r.is_err() {
+            return Err(std::io::Error::from_raw_os_error(
+                i32::try_from(r.0).unwrap_or(-1),
+            ));
+        }
+        let out = owner_and_access(sd);
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        out
+    }
+}
+
+/// `sddl` as [`file_sddl`] reads it back from a file that carries it. Windows
+/// writes some accounts by a short name, such as `LA` for the built-in
+/// Administrator, whatever form they were given in.
+///
+/// # Errors
+///
+/// When `sddl` is not a valid descriptor.
+pub fn canonical_sddl(sddl: &str) -> std::io::Result<String> {
+    with_descriptor(sddl, |attributes| {
+        // SAFETY: attributes points at a live descriptor for the call.
+        unsafe { owner_and_access(PSECURITY_DESCRIPTOR((*attributes).lpSecurityDescriptor)) }
+    })
+}
+
+/// The owner and access list of the descriptor `sd` as SDDL.
+///
+/// # Safety
+///
+/// `sd` points at a valid security descriptor.
+unsafe fn owner_and_access(sd: PSECURITY_DESCRIPTOR) -> std::io::Result<String> {
+    let mut s = PWSTR::null();
+    // SAFETY: sd is valid as the caller promises; the string is freed after
+    // its last use.
+    unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd,
+            SDDL_REVISION_1,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &raw mut s,
+            None,
+        )
+        .map_err(std::io::Error::other)?;
+        let out = from_wide(s.as_wide());
+        let _ = LocalFree(Some(HLOCAL(s.0.cast())));
+        Ok(out)
+    }
 }
 
 /// Whether `dir` is a real folder, not a link, owned by Administrators or
@@ -915,6 +1064,86 @@ mod tests {
             assert_eq!(denied(WRITE_OWNER.0), std::io::ErrorKind::PermissionDenied);
         }
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_private_file_descriptor_lets_in_only_its_user_and_the_administrators() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        assert_eq!(
+            private_file_sddl(Some(sid), true),
+            "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;S-1-5-21-1-2-3-1001)"
+        );
+        assert_eq!(
+            private_file_sddl(Some(sid), false),
+            "O:S-1-5-21-1-2-3-1001D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;S-1-5-21-1-2-3-1001)"
+        );
+        for (sid, elevated) in [
+            (Some(sid), true),
+            (Some(sid), false),
+            (None, true),
+            (None, false),
+        ] {
+            let sddl = private_file_sddl(sid, elevated);
+            assert!(sddl.contains("D:P("), "protected: {sddl}");
+            for other in [";BU)", ";WD)", ";AU)", ";IU)", ";BG)"] {
+                assert!(!sddl.contains(other), "{other} in {sddl}");
+            }
+            assert_eq!(sddl.starts_with("O:BA"), elevated, "{sddl}");
+            with_descriptor(&sddl, |_| Ok(())).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_access_list_reads_back_with_the_short_names_windows_writes() {
+        // CI runs as the built-in Administrator, which Windows writes as LA
+        // even when it was given by its full SID.
+        let short = "O:LAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)";
+        assert_eq!(canonical_sddl(short).unwrap(), short);
+        let once = canonical_sddl(&private_file_sddl(user_sid().as_deref(), false)).unwrap();
+        assert_eq!(canonical_sddl(&once).unwrap(), once);
+        assert!(canonical_sddl("O:nobody").is_err());
+    }
+
+    #[test]
+    fn a_private_file_takes_nothing_from_a_folder_every_user_may_read() {
+        let dir = std::env::temp_dir().join(format!("daifuku-readable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sid = user_sid().unwrap();
+        // The data folder's access list, owned by this user, as a test may
+        // not give a folder to Administrators.
+        create_dir_with(
+            &dir,
+            &format!("O:{sid}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{sid})(A;OICI;0x1200a9;;;BU)"),
+        )
+        .unwrap();
+        let plain = dir.join("plain.json");
+        std::fs::write(&plain, "{}").unwrap();
+        assert!(file_sddl(&plain).unwrap().contains(";;;BU)"));
+
+        let private = dir.join("private.json");
+        let sddl = private_file_sddl(Some(&sid), false);
+        let mut f = create_private_file(&private, &sddl).unwrap();
+        std::io::Write::write_all(&mut f, b"{}").unwrap();
+        drop(f);
+        let written = canonical_sddl(&sddl).unwrap();
+        assert_eq!(file_sddl(&private).unwrap(), written);
+        assert_eq!(std::fs::read_to_string(&private).unwrap(), "{}");
+        // Moved over another file, as a save is, it keeps its own list.
+        std::fs::rename(&private, &plain).unwrap();
+        assert_eq!(file_sddl(&plain).unwrap(), written);
+        assert_eq!(
+            create_private_file(&plain, &sddl).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        // Only an elevated process may give a file to Administrators, as the
+        // installed daemon does; CI runs its tests elevated.
+        if crate::process::current_is_elevated() {
+            let given = dir.join("elevated.json");
+            let sddl = private_file_sddl(Some(&sid), true);
+            drop(create_private_file(&given, &sddl).unwrap());
+            assert_eq!(file_sddl(&given).unwrap(), canonical_sddl(&sddl).unwrap());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

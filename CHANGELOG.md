@@ -30,6 +30,12 @@
   the moment its window is found, and loses it when Daifuku lets it go
   while it stays open, so a tiling window manager that honours the property
   leaves it in its cell. Terminals that only have a label never get it.
+- Other accounts on the same PC can no longer read the saved state and the
+  peers file an elevated daemon keeps in `ProgramData\Daifuku`, which name
+  your sessions, your fleets and the folders `daifuku spawn` opened. Both
+  took the access of that folder, which every user may read. The daemon now
+  writes them with an access list of their own that lets in only you,
+  SYSTEM and Administrators.
 
 ## 0.4.1, 2026-10-22
 
