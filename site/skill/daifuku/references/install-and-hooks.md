@@ -59,7 +59,9 @@ Install leaves a settings file alone, and says why, when:
 - the file is not valid JSON, or `hooks` in it is not an object;
 - no desktop shell is running to borrow the user's own rights from, as on a build server.
 
-`CLAUDE_CONFIG_DIR` and `CODEX_HOME` move an agent's settings. Install still writes only the files in the profile, and prints which file the agent reads instead. Copy the Daifuku entries into that file by hand, after showing the user the change, and remove them there by hand after an uninstall. `daifuku doctor` checks the file the variable points to.
+Install also writes the same files in the folders of each account under `accounts` in the config, once the agent has made that folder by signing in, and only inside the profile. Uninstall removes them there.
+
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` set any other way move an agent's settings. Install still writes only the files in the profile and the accounts' folders, and prints which file the agent reads instead. Copy the Daifuku entries into that file by hand, after showing the user the change, and remove them there by hand after an uninstall. `daifuku doctor` checks the file the variable points to.
 
 After install, Claude Code sessions already open normally pick the hooks up; restart one that still shows no border. Codex runs new hooks only after the user trusts them in its `/hooks` menu.
 
