@@ -508,33 +508,20 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
 
 /// Sends one hook line and reads the daemon's one-line answer: `wait` for a
 /// free instance and for the line to be taken, then `answer` more for the
-/// answer.
-///
-/// The answer is taken only from a server the control client would talk to,
-/// and with `elevated_only` from an elevated one alone. An elevated hook
-/// passes it: a process that took the name while no daemon ran could
-/// otherwise put words to an elevated agent, or another account's to any.
+/// answer. Only for a hook that is not elevated, and only from a server the
+/// control client would talk to: one of this user's, which could write the
+/// backlog anyway, or an elevated one. Another account's process that took
+/// the name while no daemon ran gets no word to the agent.
 ///
 /// # Errors
 ///
-/// When no daemon is listening, the server is not one to take an answer
-/// from, or no whole answer came in time.
-pub fn ask(
-    line: &str,
-    wait: Duration,
-    answer: Duration,
-    elevated_only: bool,
-) -> io::Result<String> {
-    ask_at(&Pipe::Hook.name(), line, wait, answer, elevated_only)
+/// When no daemon is listening, the server is neither elevated nor this
+/// user's, or no whole answer came in time.
+pub fn ask(line: &str, wait: Duration, answer: Duration) -> io::Result<String> {
+    ask_at(&Pipe::Hook.name(), line, wait, answer)
 }
 
-fn ask_at(
-    name: &str,
-    line: &str,
-    wait: Duration,
-    answer: Duration,
-    elevated_only: bool,
-) -> io::Result<String> {
+fn ask_at(name: &str, line: &str, wait: Duration, answer: Duration) -> io::Result<String> {
     // Read as well as write, still within what the access list grants.
     let handle = connect(
         name,
@@ -542,14 +529,7 @@ fn ask_at(
         Instant::now() + wait,
     )?;
     let h = raw(&handle);
-    let server = server_of(h);
-    if elevated_only && process::is_elevated(server) != Some(true) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "the process answering on Daifuku's hook pipe is not the elevated daemon",
-        ));
-    }
-    if !trusted_server(server) {
+    if !trusted_server(server_of(h)) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "the process answering on Daifuku's hook pipe is neither an elevated daemon nor one of yours",
@@ -849,31 +829,9 @@ mod tests {
             line
         });
         let wait = Duration::from_secs(2);
-        let answer = ask_at(&name, "{\"ask\":1}\n", wait, wait, false).unwrap();
+        let answer = ask_at(&name, "{\"ask\":1}\n", wait, wait).unwrap();
         assert_eq!(server.join().unwrap(), "{\"ask\":1}\n");
         assert_eq!(answer, "{\"task\":\"t\"}\n");
-    }
-
-    #[test]
-    fn an_elevated_only_ask_takes_no_answer_from_an_ordinary_server() {
-        if process::current_is_elevated() {
-            // The server below would be elevated too.
-            return;
-        }
-        let name = private_name();
-        let sddl = &Pipe::Hook.sddl(false);
-        let mut instance = instances_at(&name, sddl, 1).unwrap().remove(0);
-        let server = std::thread::spawn(move || {
-            let mut connection = instance.accept().unwrap();
-            let _ = connection.write_line("{\"task\":\"t\"}\n", Duration::from_millis(500));
-        });
-        let wait = Duration::from_secs(2);
-        let refused = ask_at(&name, "{\"ask\":1}\n", wait, wait, true);
-        server.join().unwrap();
-        assert_eq!(
-            refused.map_err(|e| e.kind()),
-            Err(io::ErrorKind::PermissionDenied)
-        );
     }
 
     #[test]

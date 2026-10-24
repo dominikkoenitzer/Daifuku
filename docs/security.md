@@ -121,11 +121,15 @@ daemon reads it, and the `claims` folder beside it, with the user's own
 rights, borrowed from the desktop shell when the daemon runs elevated, and
 never writes there: a link in it leads nowhere the user could not read
 anyway. It reads at most 4 MiB, takes ids of at most 32 letters, digits,
-`-` and `_`, and cuts a title to 200 characters without control characters.
-An agent reads a task as it reads any file of the user's, and nothing in a
-backlog runs. An elevated hook takes an answer only from the elevated
-daemon, so a process that took the pipe's name while no daemon ran cannot
-put words to an administrator agent.
+`-` and `_`, and cuts a title and each field to 200 characters without
+control characters, in the answer and in `daifuku task` alike. Headings in
+fenced code are not tasks. An agent reads a task as it reads any file of
+the user's, and nothing in a backlog runs. An elevated agent's hook never
+asks: any process of the user's can write the backlog, and a process that
+took the pipe's name while no daemon ran could answer it, so neither can
+put words to an administrator agent. Any other agent's hook takes an answer
+only from an elevated daemon or a process of its own user, which could write
+the backlog anyway.
 
 Both pipes are created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, allow exactly
 as many instances as the daemon creates, and keep them for the daemon's whole
@@ -136,8 +140,9 @@ can learn who the client is, never act as it. Remote clients are rejected.
 Every exchange has a deadline. A hook has half a second from connecting to
 deliver its line, a command client five seconds to send its request and five
 to read the reply; past that the daemon hangs up. A hook that asks for a
-task waits at most five seconds for the answer, and the daemon answers
-within four or not at all. A process that opens every
+task waits at most five seconds for the answer. The daemon gives up on it
+after four, and hands out no task then, unless the task is already on its
+way. A process that opens every
 hook instance and says nothing therefore holds them for a moment, not for
 ever. One that keeps reconnecting can still crowd hooks out while it runs,
 which keeps borders from updating and does nothing more. A hook gives up

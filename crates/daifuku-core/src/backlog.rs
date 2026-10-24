@@ -9,19 +9,24 @@
 //!
 //! The id runs up to the first full stop. A task is open while no owner is
 //! written and its status starts with `open`, and finished once its status
-//! starts with `done` or `closed`. Daifuku only reads the file: the agent a
+//! starts with `done` or `closed`. Headings inside fenced code are text, not
+//! tasks. Daifuku only reads the file: the agent a
 //! task is handed to reads its text there, and writes its own name and
 //! status in as it works.
 
 /// The longest id taken, in characters.
 pub const MAX_ID: usize = 32;
 
+/// The most of a title, owner or status kept, in characters.
+pub const MAX_TEXT: usize = 200;
+
 /// One task, as its heading says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     /// What comes before the first full stop, such as `A1`.
     pub id: String,
-    /// The rest of the heading's first part.
+    /// The rest of the heading's first part. This and the fields are cut to
+    /// [`MAX_TEXT`], without control characters.
     pub title: String,
     /// The `owner:` field, empty when there is none.
     pub owner: String,
@@ -49,7 +54,39 @@ impl Task {
 /// the order they are handed out in.
 #[must_use]
 pub fn parse(text: &str) -> Vec<Task> {
-    text.lines().filter_map(task).collect()
+    let mut open: Option<(char, usize)> = None;
+    let mut tasks = Vec::new();
+    for line in text.lines() {
+        if let Some((mark, length, bare)) = fence(line) {
+            match open {
+                None => open = Some((mark, length)),
+                Some((m, l)) if m == mark && length >= l && bare => open = None,
+                Some(_) => {}
+            }
+        } else if open.is_none() {
+            tasks.extend(task(line));
+        }
+    }
+    tasks
+}
+
+/// The fence a line opens or closes code with: its character, how many,
+/// and whether nothing follows them.
+fn fence(line: &str) -> Option<(char, usize, bool)> {
+    let rest = line.trim_start_matches(' ');
+    if line.len() - rest.len() > 3 {
+        return None;
+    }
+    let mark = rest.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let length = rest.chars().take_while(|&c| c == mark).count();
+    (length >= 3).then(|| (mark, length, rest[length..].trim().is_empty()))
+}
+
+fn plain(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_TEXT)
+        .collect()
 }
 
 /// An id Daifuku takes: letters, digits, `-` and `_`, at most [`MAX_ID`].
@@ -73,7 +110,7 @@ fn task(line: &str) -> Option<Task> {
     }
     let mut task = Task {
         id: id.to_owned(),
-        title: title.trim().to_owned(),
+        title: plain(title.trim()),
         owner: String::new(),
         status: String::new(),
     };
@@ -81,7 +118,7 @@ fn task(line: &str) -> Option<Task> {
         let Some((key, value)) = part.split_once(':') else {
             continue;
         };
-        let value = value.trim().to_owned();
+        let value = plain(value.trim());
         match key.trim().to_ascii_lowercase().as_str() {
             "owner" => task.owner = value,
             "status" => task.status = value,
@@ -154,6 +191,43 @@ Steps and sources.
         .map(|t| t.id)
         .collect();
         assert_eq!(finished, ["A", "B"]);
+    }
+
+    #[test]
+    fn headings_in_fenced_code_are_not_tasks() {
+        let tasks = parse(
+            "### A1. Real | status: open\n\
+             ```markdown\n\
+             ### X1. Example | status: open\n\
+             ```\n\
+             ~~~~\n\
+             ### X2. Example | status: open\n\
+             ~~~ still inside\n\
+             ```\n\
+             ~~~~~\n\
+             ### A2. Real too | status: open\n\
+             \x20\x20\x20\x20```\n\
+             ### A3. After an indented fence | status: open\n",
+        );
+        let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["A1", "A2", "A3"]);
+    }
+
+    #[test]
+    fn titles_and_fields_are_cut_and_plain() {
+        let long = "x".repeat(MAX_TEXT + 50);
+        let tasks = parse(&format!(
+            "### A1. Bad\u{1b}[2J\u{7}title {long} | owner: \u{1b}]0;x\u{7} | status: open\t{long}\n"
+        ));
+        assert_eq!(tasks[0].title.chars().count(), MAX_TEXT);
+        assert!(tasks[0].title.starts_with("Bad[2Jtitle x"));
+        assert_eq!(tasks[0].owner, "]0;x");
+        assert_eq!(tasks[0].status.chars().count(), MAX_TEXT);
+        assert!(!tasks.iter().any(|t| {
+            [&t.title, &t.owner, &t.status]
+                .iter()
+                .any(|s| s.chars().any(char::is_control))
+        }));
     }
 
     #[test]

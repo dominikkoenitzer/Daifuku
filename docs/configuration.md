@@ -229,6 +229,7 @@ What the guide covers, and where it goes.
 The id runs up to the first full stop: letters, digits, `-` and `_`, at
 most 32. A task is open while it has no owner and its status starts with
 `open`, and finished once its status starts with `done` or `closed`.
+Headings in fenced code are not tasks.
 
 When the main thread of one of the fleet's Claude Code agents stops and its
 terminal holds no task, Daifuku hands it the first open task nobody has, in
@@ -243,9 +244,11 @@ by hand. Codex agents get no tasks.
 An agent gets a task only while its account's [`stop_at`](#stopping) lets
 it work on. `daifuku task` lists each backlog's open tasks, which terminal
 has which, and the one that goes out next; `daifuku task release <id>`
-takes a task back, and the terminal that had it gets the next one. A
-terminal whose hook gave up waiting before Daifuku answered keeps the task
-it was handed without hearing of it, so release that one.
+takes a task back, so the terminal that had it can get another. Tasks go
+out only as agents stop: one that stopped while none could go out, or
+while Daifuku answered four others at once, waits for you and gets one at
+the end of its next turn. An elevated agent gets no tasks, as any program
+of yours can write the backlog it would take them from.
 
 The hook that hands out tasks is Claude Code's `Stop` hook, which then
 waits for Daifuku instead of running in the background. Run
