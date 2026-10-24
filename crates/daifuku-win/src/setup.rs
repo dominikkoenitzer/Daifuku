@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -522,16 +522,34 @@ pub fn run_task(name: &str) -> std::io::Result<()> {
 ///
 /// When `schtasks` fails for another reason.
 pub fn delete_task(name: &str) -> std::io::Result<()> {
-    if !task_exists(name) {
+    if !task_exists(name)? {
         return Ok(());
     }
     schtasks(&["/Delete", "/TN", name, "/F"])
 }
 
 /// Whether the task is registered.
-#[must_use]
-pub fn task_exists(name: &str) -> bool {
-    schtasks(&["/Query", "/TN", name]).is_ok()
+///
+/// # Errors
+///
+/// When Task Scheduler could not be asked, as when its service is stopped
+/// or this process may not read the task.
+pub fn task_exists(name: &str) -> std::io::Result<bool> {
+    query_found(
+        schtasks_output(&["/Query", "/TN", name]),
+        &ERROR_FILE_NOT_FOUND.to_hresult().message(),
+    )
+}
+
+/// What a `schtasks /Query` result says about the task. For one that does
+/// not exist schtasks prints the system's message for ERROR_FILE_NOT_FOUND,
+/// `not_found`, in the language of Windows, so any other failure is one.
+fn query_found(result: std::io::Result<Vec<u8>>, not_found: &str) -> std::io::Result<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(e) if !not_found.is_empty() && e.to_string().ends_with(not_found) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// The task's definition as Task Scheduler gives it back, `None` when there
@@ -643,6 +661,28 @@ mod tests {
         assert!(install_running());
         drop(lock);
         assert!(!install_running());
+    }
+
+    #[test]
+    fn only_a_task_scheduler_cannot_find_is_a_task_that_is_not_there() {
+        let not_found = ERROR_FILE_NOT_FOUND.to_hresult().message();
+        assert!(!not_found.is_empty());
+        // As schtasks_output gives a failed schtasks: its own prefix, in the
+        // language of Windows, then the system's message.
+        let failed = |text: &str| Err(std::io::Error::other(text.to_owned()));
+        assert!(query_found(Ok(b"TaskName ...".to_vec()), &not_found).unwrap());
+        assert!(!query_found(failed(&format!("ERROR: {not_found}")), &not_found).unwrap());
+        assert!(!query_found(failed(&format!("FEHLER: {not_found}")), &not_found).unwrap());
+        // A stopped service or a refused read says nothing about the task.
+        let denied = ERROR_ACCESS_DENIED.to_hresult().message();
+        assert!(query_found(failed(&format!("ERROR: {denied}")), &not_found).is_err());
+        assert!(query_found(failed("schtasks /Query failed"), &not_found).is_err());
+        // Nor does a schtasks that could not be started, whose error is the
+        // same code with "(os error 2)" after it.
+        let no_program = std::io::Error::from_raw_os_error(2);
+        assert!(query_found(Err(no_program), &not_found).is_err());
+        // Without the system's message nothing reads as not found.
+        assert!(query_found(failed("ERROR: "), "").is_err());
     }
 
     /// What `schtasks /Query /XML` wrote for the task an earlier install
