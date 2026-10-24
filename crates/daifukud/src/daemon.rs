@@ -512,6 +512,9 @@ impl Daemon {
     /// back into the list whatever happens, so a failure part way loses
     /// neither the terminals that were open nor the ones just started.
     fn open_fleet(&mut self, fleet: &daifuku_core::config::Fleet) -> Response {
+        if fleet.resume {
+            self.resume_cells(&fleet.name);
+        }
         let mut record = match self
             .fleets
             .iter()
@@ -1470,10 +1473,16 @@ impl Daemon {
         if !peer::session_id_ok(session) {
             return;
         }
-        let Some(i) = self.peers.iter().position(|p| p.window == w) else {
-            return;
+        let i = self.peers.iter().position(|p| p.window == w);
+        let cell = if i.is_none() {
+            self.resuming_cell(w)
+        } else {
+            None
         };
-        if self.peers[i].spawn.resume.as_deref() == Some(session) {
+        if i.is_none() && cell.is_none() {
+            return;
+        }
+        if i.is_some_and(|i| self.peers[i].spawn.resume.as_deref() == Some(session)) {
             return;
         }
         if !agent.is_some_and(|a| in_terminal(a, w)) {
@@ -1483,7 +1492,73 @@ impl Daemon {
             );
             return;
         }
-        self.peers[i].spawn.resume = Some(session.to_owned());
+        match (i, cell) {
+            (Some(i), _) => self.peers[i].spawn.resume = Some(session.to_owned()),
+            // A terminal of a fleet that resumes becomes a peer in its cell,
+            // kept as `daifuku spawn` keeps one.
+            (None, Some((fleet, n))) => {
+                let directory = fleet::directory(&fleet, n, fleet::as_user(&fleet, self.elevated));
+                tracing::info!(window = format!("{w:#x}"), fleet = %fleet.name, cell = n, "kept a fleet terminal with its session");
+                self.peers.push(Peer {
+                    window: w,
+                    spawn: Spawn {
+                        directory,
+                        label: self.labels.remove(&w),
+                        resume: Some(session.to_owned()),
+                        fleet: Some(fleet.name),
+                        cell: Some(peer::Cell::At(u32::try_from(n).unwrap_or(u32::MAX))),
+                        ..Spawn::default()
+                    },
+                });
+            }
+            (None, None) => return,
+        }
+        self.save_peers();
+    }
+
+    /// The fleet window `w` is a terminal of and its cell, numbered from
+    /// one, when that fleet resumes its sessions.
+    fn resuming_cell(&self, w: u64) -> Option<(daifuku_core::config::Fleet, usize)> {
+        self.fleets.iter().find_map(|record| {
+            let slot = record.slots.iter().position(|s| *s == Some(w))?;
+            let fleet = self.config.fleet(&record.name).filter(|f| f.resume)?;
+            Some((fleet.clone(), slot + 1))
+        })
+    }
+
+    /// Opens the terminals of fleet `name` that wait to be restored, dormant
+    /// or closed with the fleet, each in its cell resuming its session.
+    /// Opening a fleet that resumes does this first, so its other cells are
+    /// the only ones that start afresh.
+    fn resume_cells(&mut self, name: &str) {
+        let waiting: Vec<Spawn> = self
+            .dormant
+            .iter()
+            .chain(&self.closed)
+            .filter(|s| {
+                s.cell.is_some()
+                    && s.fleet
+                        .as_deref()
+                        .is_some_and(|f| f.eq_ignore_ascii_case(name))
+            })
+            .cloned()
+            .collect();
+        if waiting.is_empty() {
+            return;
+        }
+        for spawn in waiting {
+            if let Some(running) = self.running(&spawn) {
+                tracing::info!(fleet = name, %running, "not resuming a cell");
+                self.forget_waiting(&spawn);
+                continue;
+            }
+            match self.spawn(&spawn, true) {
+                Response::Error { message } => {
+                    tracing::warn!(fleet = name, %message, "could not resume a cell");
+                }
+                _ => self.forget_waiting(&spawn),
+            }
+        }
         self.save_peers();
     }
 
@@ -3013,6 +3088,56 @@ mod tests {
         });
         d.note_peer_session(7, "planted", None);
         assert_eq!(d.peers[0].spawn.resume, None);
+    }
+
+    #[test]
+    fn only_a_fleet_that_resumes_keeps_its_terminals_with_their_sessions() {
+        let mut d = daemon();
+        let name = d.config.fleets[0].name.clone();
+        let mut record = OpenFleet::new(&name);
+        record.slots = vec![Some(5), Some(6)];
+        d.fleets.push(record);
+        assert!(d.resuming_cell(6).is_none());
+        d.config.fleets[0].resume = true;
+        let (fleet, n) = d.resuming_cell(6).unwrap();
+        assert_eq!((fleet.name.as_str(), n), (name.as_str(), 2));
+        assert!(d.resuming_cell(7).is_none());
+        // Still only from a hook in the terminal itself.
+        d.note_peer_session(6, "planted", None);
+        assert!(d.peers.is_empty());
+    }
+
+    #[test]
+    fn opening_a_fleet_resumes_only_its_own_cells_and_none_that_run_already() {
+        let mut d = daemon();
+        let kept = |fleet: &str, session: &str| Spawn {
+            directory: PathBuf::from(r"C:\"),
+            resume: Some(session.to_owned()),
+            fleet: Some(fleet.to_owned()),
+            cell: Some(peer::Cell::At(1)),
+            ..Spawn::default()
+        };
+        d.closed = vec![kept("crew", "a"), kept("other", "b")];
+        d.dormant = vec![Spawn {
+            cell: None,
+            ..kept("crew", "c")
+        }];
+        // Session `a` runs in a peer already, so nothing opens for it.
+        d.peers.push(Peer {
+            window: 9,
+            spawn: Spawn {
+                resume: Some("a".to_owned()),
+                ..Spawn::default()
+            },
+        });
+        d.resume_cells("Crew");
+        let waiting: Vec<_> = d
+            .closed
+            .iter()
+            .chain(&d.dormant)
+            .filter_map(|s| s.resume.as_deref())
+            .collect();
+        assert_eq!(waiting, ["b", "c"]);
     }
 
     #[test]
