@@ -1668,9 +1668,8 @@ fn heading(a: &daifuku_core::protocol::AgentWindow) -> String {
 }
 
 /// The lines under an agent in `daifuku status`: the folder it works in,
-/// and what it asks while it waits. Both are what a hook said, so their line
-/// breaks, other control characters and the bidi controls, which reorder how
-/// a line reads, become spaces and each stays on its line.
+/// and what it asks while it waits. Both are what a hook said, so each goes
+/// through `one_line` and stays on its line.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
     let mut lines = Vec::new();
@@ -1685,9 +1684,9 @@ fn details(a: &daifuku_core::protocol::AgentWindow) -> Vec<String> {
     lines
 }
 
-/// `text` on one line: line breaks, other control characters and the bidi
-/// controls, which reorder how a line reads, become spaces, and the ends are
-/// trimmed.
+/// `text` on one line: line breaks, the line and paragraph separators, other
+/// control characters and the bidi controls, which reorder how a line reads,
+/// become spaces, and the ends are trimmed.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn one_line(text: &str) -> String {
     let text: String = text
@@ -1697,7 +1696,12 @@ fn one_line(text: &str) -> String {
                 c,
                 '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
             );
-            if c.is_control() || bidi { ' ' } else { c }
+            let separator = matches!(c, '\u{2028}' | '\u{2029}');
+            if c.is_control() || bidi || separator {
+                ' '
+            } else {
+                c
+            }
         })
         .collect();
     text.trim().to_owned()
@@ -1799,6 +1803,17 @@ mod tests {
             a.cwd = Some(format!("a{c}b"));
             assert_eq!(details(&a), ["in a b"], "{:#x}", c as u32);
         }
+        // Some terminals break a line at the line and paragraph separators.
+        a.cwd = Some("a\u{2028}b\u{2029}c".into());
+        assert_eq!(details(&a), ["in a b c"]);
+        a.title = "claude\u{2028}fake line\u{2029}x".into();
+        assert_eq!(
+            heading(&a),
+            "working        0s  claude fake line x  (0x00000001)"
+        );
+        let json = output::ascii_json(&daifuku_core::protocol::to_line(&a).unwrap());
+        assert!(json.contains(r#""title":"claude\u2028fake line\u2029x""#));
+        assert!(json.contains(r#""cwd":"a\u2028b\u2029c""#));
         a.cwd = None;
         assert!(details(&a).is_empty());
     }
