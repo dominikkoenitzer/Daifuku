@@ -115,6 +115,15 @@ impl Book {
             .is_some_and(|e| e.limits.reaches(warn, now))
     }
 
+    /// The latest numbers of the account in `folder`.
+    pub fn limits(&self, folder: &Path) -> Option<Limits> {
+        let key = folder_key(folder);
+        self.entries
+            .iter()
+            .find(|e| folder_key(Path::new(&e.folder)) == key)
+            .map(|e| e.limits)
+    }
+
     /// Every account, most recently reported first, for `daifuku status`.
     pub fn status(&self, config: &Config, now: u64) -> Vec<AccountUsage> {
         self.entries

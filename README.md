@@ -127,6 +127,10 @@ it never waits for it. The hook finds the terminal window it runs in and tells
 the daemon, which colours that window's border. Several agents in tabs of one
 window show the most urgent of their states.
 
+Claude Code's `Stop` hook is the one the agent waits for: when its fleet has a
+[`backlog`](docs/configuration.md#backlog), the answer can be its next task,
+which it goes on with instead of stopping.
+
 No hook reports your answer at a permission prompt, so after you approve one
 the border stays yellow until the approved tool has run. A Claude Code turn
 you interrupt, with Esc or by saying no at a permission prompt, turns green

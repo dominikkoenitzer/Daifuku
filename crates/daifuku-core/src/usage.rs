@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::{LimitWindow, LocalTime, StopAt};
+
 /// How long the short window lasts, in seconds.
 pub const FIVE_HOURS: u64 = 5 * 60 * 60;
 
@@ -110,6 +112,24 @@ impl Limits {
             .into_iter()
             .flatten()
             .any(|w| !w.has_reset(now) && w.used >= warn)
+    }
+
+    /// Why an account's `stop_at` rules hand out no more work at `time`,
+    /// such as `5h 80%, stops at 75%`: the first window whose first rule
+    /// that holds it has used up. `None` while work may go on. A window that
+    /// has reset since is used up by nothing.
+    #[must_use]
+    pub fn stopped_by(&self, rules: &[StopAt], time: LocalTime) -> Option<String> {
+        [
+            (LimitWindow::FiveHour, "5h", self.five_hour),
+            (LimitWindow::SevenDay, "week", self.seven_day),
+        ]
+        .into_iter()
+        .find_map(|(kind, name, w)| {
+            let w = w.filter(|w| !w.has_reset(time.now))?;
+            let rule = rules.iter().find(|r| r.holds(kind, w.resets_at, time))?;
+            (w.used >= rule.share).then(|| format!("{name} {}%, stops at {}%", w.used, rule.share))
+        })
     }
 }
 
@@ -275,5 +295,62 @@ mod tests {
         assert!(!l.reaches(77, 100), "the 5-hour window has reset");
         assert!(l.reaches(30, 100), "the weekly one has not");
         assert!(!Limits::default().reaches(0, 0));
+    }
+
+    #[test]
+    fn the_first_rule_that_holds_for_a_window_decides_its_stop() {
+        let rules: Vec<StopAt> = serde_json::from_str(
+            r#"[{"share":90,"window":"five_hour","last_minutes":60},
+                {"share":75,"window":"five_hour","days":"mon-fri","hours":"9-17"},
+                {"share":95}]"#,
+        )
+        .unwrap();
+        let now = 1_000_000;
+        let five = |used, left| Limits {
+            five_hour: Some(Window {
+                used,
+                resets_at: now + left,
+            }),
+            seven_day: Some(Window {
+                used: 40,
+                resets_at: now + 86_400,
+            }),
+        };
+        let monday_ten = LocalTime {
+            now,
+            weekday: 0,
+            minute: 600,
+        };
+        let saturday = LocalTime {
+            weekday: 5,
+            ..monday_ten
+        };
+        assert_eq!(
+            five(80, 7200).stopped_by(&rules, monday_ten).as_deref(),
+            Some("5h 80%, stops at 75%")
+        );
+        assert_eq!(five(74, 7200).stopped_by(&rules, monday_ten), None);
+        assert_eq!(five(80, 7200).stopped_by(&rules, saturday), None);
+        // In the last hour before the reset, the higher stop comes first.
+        assert_eq!(five(80, 3600).stopped_by(&rules, monday_ten), None);
+        assert!(five(90, 3600).stopped_by(&rules, monday_ten).is_some());
+        let week = Limits {
+            seven_day: Some(Window {
+                used: 96,
+                resets_at: now + 10,
+            }),
+            ..Limits::default()
+        };
+        assert_eq!(
+            week.stopped_by(&rules, saturday).as_deref(),
+            Some("week 96%, stops at 95%")
+        );
+        // Once it has reset, it stops nothing.
+        let later = LocalTime {
+            now: now + 10,
+            ..saturday
+        };
+        assert_eq!(week.stopped_by(&rules, later), None);
+        assert_eq!(five(100, 7200).stopped_by(&[], monday_ten), None);
     }
 }

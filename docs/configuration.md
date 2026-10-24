@@ -92,6 +92,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `priority` | none | `"idle"`, `"below-normal"` or `"normal"`: each terminal runs in a group of its own at that priority. Everything started in it runs at it and cannot raise it, and all of it ends when the terminal closes, shells and watchers an agent left behind included. Left out, the terminals run as any other program (after 0.1.3). |
 | `account` | the one in your profile | The account its agents sign in with, by its name under [`accounts`](#accounts) (after 0.3.0). |
 | `resume` | `false` | Keep each terminal with the last session its agent reported from inside it, as `daifuku spawn` keeps a peer. Opening the fleet then first opens every such terminal it had when Windows last stopped, or when the fleet was closed, in its own cell resuming that session, lowest cell first, and starts the other cells afresh. A terminal closed by hand is let go, so its cell starts afresh; so does one whose session no longer opens, with the reason in the answer to `open`. A session that runs already is not opened twice, and one whose cell is past the fleet's `count` waits for `daifuku restore`. Turning `resume` off lets go of what the fleet kept; `daifuku restore --forget` lets go of all of it. Needs a `command` (after 0.3.0). |
+| `backlog` | none | A markdown file of tasks for its agents, by full path. Each time one of its Claude Code agents finishes a turn holding no task, Daifuku hands it the next open one. See [below](#backlog) (after 0.3.0). |
 
 Opening a fleet that is already open brings it back: terminals that were
 closed are opened again, each in its own cell with its own number (after
@@ -214,6 +215,46 @@ stacked and three are two over one; `"shape": { "columns": 1, "rows": 3 }`
 stacks three. Cells are placed by the window's visible edge, so the gaps are
 exact.
 
+### `backlog`
+
+A fleet with a `backlog` works through it on its own (after 0.3.0). Each
+task is a third-level heading with its fields after bars, and its text runs
+up to the next heading:
+
+```markdown
+### A1. Write the setup guide | owner: | status: open
+What the guide covers, and where it goes.
+```
+
+The id runs up to the first full stop: letters, digits, `-` and `_`, at
+most 32. A task is open while it has no owner and its status starts with
+`open`, and finished once its status starts with `done` or `closed`.
+Headings in fenced code are not tasks.
+
+When the main thread of one of the fleet's Claude Code agents stops and its
+terminal holds no task, Daifuku hands it the first open task nobody has, in
+the order of the file: the agent goes on with it instead of stopping, told
+which file and id it is. The task stays with that terminal, and with its
+session if it moves to another, until the file says it is finished; until
+then the agent gets no other. Daifuku only reads the file, so the agent
+writes its own name and status in as it works. A task with a folder of its
+id in `claims` beside the file counts as taken, for agents that claim tasks
+by hand. Codex agents get no tasks.
+
+An agent gets a task only while its account's [`stop_at`](#stopping) lets
+it work on. `daifuku task` lists each backlog's open tasks, which terminal
+has which, and the one that goes out next; `daifuku task release <id>`
+takes a task back, so the terminal that had it can get another. Tasks go
+out only as agents stop: one that stopped while none could go out, or
+while Daifuku answered four others at once, waits for you and gets one at
+the end of its next turn. An elevated agent gets no tasks, as any program
+of yours can write the backlog it would take them from.
+
+The hook that hands out tasks is Claude Code's `Stop` hook, which then
+waits for Daifuku instead of running in the background. Run
+`daifuku install` again after an update that adds `backlog`, so the
+installed hook asks.
+
 ## `gaps`
 
 | Key | Default | |
@@ -288,6 +329,7 @@ folder Claude Code keeps its sign-in and settings in, the one it reads from
 | `claude` | Claude Code's folder for this account, a full path. |
 | `codex` | Codex's folder for this account, a full path. |
 | `warn` | A share of the 5-hour or the weekly limit, in percent from 1 to 100. Once either reaches it, the borders of the account's working and done terminals take the [`warning`](#colours) colour until that window resets (after 0.3.0). Needs the status line below. |
+| `stop_at` | Rules for when its fleets' agents get no more tasks from a [`backlog`](#backlog). See [below](#stopping) (after 0.3.0). |
 
 Every terminal of a fleet with an `account` starts with those variables
 set, before its `command` runs, and so does a terminal `daifuku restore`
@@ -333,6 +375,36 @@ list the profile's folder under `accounts` too to give it a name or a
 agents got, and `daifuku status` says how old; once a window resets they
 no longer hold until the next answer. Codex has no status line to report
 from.
+
+### Stopping
+
+An account's `stop_at` says how much of its limits its agents may use on
+tasks from a backlog (after 0.3.0). Each rule names a `share` in percent;
+the first rule that holds for a window, in the order written, decides it,
+and once that much of the window is used no task goes out until it resets.
+A window no rule holds for has no stop.
+
+```json
+"stop_at": [
+  { "share": 90, "window": "five_hour", "last_minutes": 60 },
+  { "share": 75, "window": "five_hour", "days": "mon-fri", "hours": "9-17" },
+  { "share": 95 }
+]
+```
+
+| Key | |
+|---|---|
+| `share` | 1 to 100. |
+| `window` | `five_hour` or `seven_day`. Left out, both. |
+| `days` | Local days it holds on: `mon-fri`, `sat,sun`, or one day. Left out, every day. |
+| `hours` | Local hours it holds in, from the first up to the second, 0 to 24: `9-17`, or `22-6` past midnight. Left out, all day. |
+| `last_minutes` | It holds only this many minutes before the window resets, 1 to 10080. |
+
+Here the 5-hour window may be used up to 90% in its last hour, up to 75%
+in office hours on weekdays, and up to 95% otherwise, as may the week. The
+numbers come from the status line above, so with rules but no numbers
+reported yet no task goes out. A task already handed out is not taken
+back: the agent finishes it.
 
 ## `hotkeys`
 
