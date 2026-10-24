@@ -245,8 +245,29 @@ mod tests {
 
     #[test]
     fn a_job_takes_every_priority() {
-        for p in [Priority::Idle, Priority::BelowNormal, Priority::Normal] {
-            assert!(Job::new(p).is_ok(), "{p:?}");
+        use windows::Win32::System::JobObjects::QueryInformationJobObject;
+        for (p, class) in [
+            (Priority::Idle, IDLE_PRIORITY_CLASS),
+            (Priority::BelowNormal, BELOW_NORMAL_PRIORITY_CLASS),
+            (Priority::Normal, NORMAL_PRIORITY_CLASS),
+        ] {
+            let job = Job::new(p).unwrap();
+            // Read from the job, since a group the suite runs in caps what
+            // its processes show.
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            // SAFETY: the pointer and size describe `limits`, which outlives
+            // the call.
+            unsafe {
+                QueryInformationJobObject(
+                    Some(job.0),
+                    JobObjectExtendedLimitInformation,
+                    (&raw mut limits).cast(),
+                    u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()).unwrap(),
+                    None,
+                )
+            }
+            .unwrap();
+            assert_eq!(limits.BasicLimitInformation.PriorityClass, class.0, "{p:?}");
         }
     }
 }
