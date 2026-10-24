@@ -1039,7 +1039,7 @@ fn run(step: &Step) -> anyhow::Result<()> {
             }
         }
         Step::RemoveTask { name } => {
-            let was_there = setup::task_exists(name);
+            let was_there = setup::task_exists(name).context("could not remove the logon task")?;
             setup::delete_task(name).context("could not remove the logon task")?;
             if was_there {
                 println!("removed      logon task");
@@ -1210,7 +1210,7 @@ impl local::Probe for Here {
         let Some(sid) = setup::user_sid() else {
             return false;
         };
-        setup::task_exists(&task_name(&sid))
+        setup::task_exists(&task_name(&sid)).is_ok_and(|found| found)
             || setup::task_xml(LEGACY_TASK_NAME).is_some_and(|definition| {
                 runs_for(&task_users(&definition), &sid, this_account().as_deref())
             })
@@ -1283,7 +1283,8 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
     let task = setup::user_sid().map(|sid| task_name(&sid));
     if wants_elevated {
         doctor.check(
-            task.as_deref().is_some_and(setup::task_exists),
+            task.as_deref()
+                .is_some_and(|t| setup::task_exists(t).is_ok_and(|found| found)),
             "logon task registered",
             "run `daifuku install`",
         );

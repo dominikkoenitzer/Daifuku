@@ -6,7 +6,8 @@ use std::path::Path;
 use std::process::Command;
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE, HLOCAL,
+    LocalFree, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -522,16 +523,47 @@ pub fn run_task(name: &str) -> std::io::Result<()> {
 ///
 /// When `schtasks` fails for another reason.
 pub fn delete_task(name: &str) -> std::io::Result<()> {
-    if !task_exists(name) {
+    if !task_exists(name)? {
         return Ok(());
     }
     schtasks(&["/Delete", "/TN", name, "/F"])
 }
 
 /// Whether the task is registered.
-#[must_use]
-pub fn task_exists(name: &str) -> bool {
-    schtasks(&["/Query", "/TN", name]).is_ok()
+///
+/// # Errors
+///
+/// When Task Scheduler could not be asked, as when its service is stopped
+/// or this process may not read the task.
+pub fn task_exists(name: &str) -> std::io::Result<bool> {
+    query_found(schtasks_output(&["/Query", "/TN", name]), &not_there())
+}
+
+/// What schtasks prints, after its own prefix, for a task that does not
+/// exist: the system's message for ERROR_FILE_NOT_FOUND, or for
+/// ERROR_PATH_NOT_FOUND when its folder does not exist either, in the
+/// language of Windows.
+fn not_there() -> Vec<String> {
+    [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND]
+        .map(|e| e.to_hresult().message())
+        .into()
+}
+
+/// What a `schtasks /Query` result says about the task: a failure that ends
+/// in one of the `not_there` messages means there is none, so any other
+/// failure is one.
+fn query_found(result: std::io::Result<Vec<u8>>, not_there: &[String]) -> std::io::Result<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(e)
+            if not_there
+                .iter()
+                .any(|m| !m.is_empty() && e.to_string().ends_with(m.as_str())) =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The task's definition as Task Scheduler gives it back, `None` when there
@@ -643,6 +675,35 @@ mod tests {
         assert!(install_running());
         drop(lock);
         assert!(!install_running());
+    }
+
+    #[test]
+    fn only_a_task_scheduler_cannot_find_is_a_task_that_is_not_there() {
+        let not_there = not_there();
+        let not_found = ERROR_FILE_NOT_FOUND.to_hresult().message();
+        assert!(!not_found.is_empty());
+        // As schtasks_output gives a failed schtasks: its own prefix, in the
+        // language of Windows, then the system's message.
+        let failed = |text: &str| Err(std::io::Error::other(text.to_owned()));
+        assert!(query_found(Ok(b"TaskName ...".to_vec()), &not_there).unwrap());
+        assert!(!query_found(failed(&format!("ERROR: {not_found}")), &not_there).unwrap());
+        assert!(!query_found(failed(&format!("FEHLER: {not_found}")), &not_there).unwrap());
+        // Nor is a task whose folder is not there, as `\Daifuku` is not until
+        // an install registers a task in it.
+        let no_folder = ERROR_PATH_NOT_FOUND.to_hresult().message();
+        assert!(!query_found(failed(&format!("ERROR: {no_folder}")), &not_there).unwrap());
+        // A stopped service or a refused read says nothing about the task.
+        let denied = ERROR_ACCESS_DENIED.to_hresult().message();
+        assert!(query_found(failed(&format!("ERROR: {denied}")), &not_there).is_err());
+        assert!(query_found(failed("schtasks /Query failed"), &not_there).is_err());
+        // Nor does a schtasks that could not be started, whose error is the
+        // same code with "(os error 2)" or "(os error 3)" after it.
+        for code in [2, 3] {
+            let no_program = std::io::Error::from_raw_os_error(code);
+            assert!(query_found(Err(no_program), &not_there).is_err());
+        }
+        // Without the system's message nothing reads as not found.
+        assert!(query_found(failed("ERROR: "), &[String::new()]).is_err());
     }
 
     /// What `schtasks /Query /XML` wrote for the task an earlier install
