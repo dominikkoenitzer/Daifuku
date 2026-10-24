@@ -60,7 +60,7 @@ To check a draft without the daemon, run `daifuku config validate <path>`; witho
 | `directory` | string | the user's profile folder | Where every terminal starts. `{n}` becomes the terminal's number, so `C:\src\site-{n}` gives each agent its own folder. A folder that does not exist falls back to the profile folder. |
 | `command` | string or `null` | `"claude"` | What each terminal runs, in a PowerShell that stays open after it (PowerShell 7 when installed in Program Files, else Windows PowerShell). `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | string | Windows Terminal's default profile | A Windows Terminal profile, by name. |
-| `admin` | bool | `false` | Open the terminals as administrator. Needs `"elevated": true`. The agent and every command it runs then run as administrator. With `false` and an elevated daemon they open as the user through the Secondary Logon service (seclogon), which must not be disabled; keep `command` under about 250 characters then. A daemon with the user's own rights opens them directly. |
+| `admin` | bool | `false` | Open the terminals as administrator. Needs `"elevated": true`. The agent and every command it runs then run as administrator. With `false` and an elevated daemon they open as the user through the Secondary Logon service (seclogon), which must not be disabled; keep `command` under about 250 characters then, less a folder's length plus 20 for each folder of its `account`. A daemon with the user's own rights opens them directly. |
 | `no_profile` | bool | `false` | With a `command`, start PowerShell without the user's profile script. |
 | `hotkey` | string or `null` | `"ctrl + alt + return"` | The key that opens this fleet or brings it back. Every fleet without the key gets the default, so a second fleet needs its own key or `null`. |
 | `with` | list of strings | none | Other fleets, by name, that open with this one, before it, so this one opens last. Their own `with` is not followed. A name that is not a fleet, or the fleet itself, is an error. |
@@ -101,7 +101,7 @@ An object from a name of the user's own, not case sensitive, to the folders that
 | `claude` | string | Claude Code's folder for the account, set as `CLAUDE_CONFIG_DIR`. A full path. |
 | `codex` | string | Codex's folder for the account, set as `CODEX_HOME`. A full path. |
 
-An account needs at least one of them. Run `daifuku install` again after adding one, once the agent has signed in there, so the hooks go into that folder too.
+An account needs at least one of them; two accounts cannot share a name or a folder. Run `daifuku install` again after adding one, once the agent has signed in there, so the hooks go into that folder too. `daifuku uninstall` removes hooks only from the accounts in the config, so run it before taking an account out. A fleet on an account with `command: null` opens PowerShell, not its profile's shell. `daifuku spawn` without `--fleet` takes the fleet, and so the account, of the terminal it runs in. A `restore` resumes in the fleet's account as it is then, so change an account only once its spawned terminals are done.
 
 ```json
 "accounts": { "work": { "claude": "C:\\Users\\you\\.claude-work" } },

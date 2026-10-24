@@ -85,7 +85,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `directory` | your profile folder | Where every terminal starts. `{n}` becomes the terminal's number: `C:\src\site-{n}` gives each agent a folder of its own, such as its own git worktree (in releases after 0.1.1). A folder that does not exist falls back to your profile folder. An `"admin": false` fleet looks for the folder as you, so a drive you mapped or made with `subst` counts (after 0.1.1). |
 | `command` | `"claude"` | What each terminal runs, in PowerShell that stays open after it: PowerShell 7 when it is installed in Program Files, else Windows PowerShell. When no execution policy lets Windows PowerShell run scripts, it starts with `-ExecutionPolicy RemoteSigned` so a `claude` installed with npm runs; a policy you or your organisation set is kept. `{n}` becomes the terminal's number, 1 for the first cell. `null` opens a plain shell. |
 | `profile` | Windows Terminal's default | A Windows Terminal profile, by name. |
-| `admin` | `false` | Open the terminals as administrator. Needs `"elevated": true`. With `false` and an elevated daemon, Windows starts them as you through its Secondary Logon service (seclogon), which must not be disabled, and takes at most 1024 characters for their whole command line. The encoded `command` uses almost three of those for each of its own, so keep it under about 250 characters, or about 225 with a `priority`, whose group takes about 70 more. A daemon with your own rights starts them directly, with neither limit. |
+| `admin` | `false` | Open the terminals as administrator. Needs `"elevated": true`. With `false` and an elevated daemon, Windows starts them as you through its Secondary Logon service (seclogon), which must not be disabled, and takes at most 1024 characters for their whole command line. The encoded `command` uses almost three of those for each of its own, so keep it under about 250 characters, or about 225 with a `priority`, whose group takes about 70 more, and about 20 plus the folder's length less for each folder of an `account`. A daemon with your own rights starts them directly, with neither limit. |
 | `no_profile` | `false` | With a `command`, start PowerShell without your profile script: faster, and nothing of your setup on screen. |
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
 | `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet opens last and asks for the focus. Their own `with` is not followed (after 0.1.3). |
@@ -243,17 +243,24 @@ folder Claude Code keeps its sign-in and settings in, the one it reads from
 
 Every terminal of a fleet with an `account` starts with those variables
 set, before its `command` runs, and so does a terminal `daifuku restore`
-opens for it or one an agent of it opens with `daifuku spawn`. With no
-`command` the shell opens with them set, ready for one you type.
+opens for it or one an agent of it opens with `daifuku spawn`, which
+takes the fleet of the terminal it runs in when it names none. With no
+`command` the terminal opens PowerShell with them set, ready for one you
+type, in place of the shell of its `profile`.
 
-Account names are not case sensitive, and two accounts cannot share one. A
-fleet that names an account missing here makes the config invalid.
+Account names are not case sensitive, and two accounts cannot share a name
+or a folder. A fleet that names an account missing here makes the config
+invalid. A terminal `daifuku restore` opens resumes its session in the
+fleet's account as it is then, so change a fleet's account once its
+spawned terminals are done.
 
 `daifuku install` adds the hooks to each account's folder as well as to
 the one in your profile, once the agent has made the folder by signing in
 there: run it again after you add an account. Like the profile's, the
 folder must be inside your profile folder. `daifuku doctor` checks each
-account's hooks, and `daifuku uninstall` removes them.
+account's hooks, and `daifuku uninstall` removes them from the accounts
+the config names then: run it before you take an account out, or remove
+Daifuku's hooks from that folder's `settings.json` or `hooks.json` by hand.
 
 ## `hotkeys`
 
