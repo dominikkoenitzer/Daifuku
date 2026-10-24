@@ -18,6 +18,7 @@
 //! daifuku reload         re-read the config
 //! daifuku stop           stop the daemon
 //! daifuku hook           read a hook event on stdin and report it (for agents)
+//! daifuku status-line    report an account's limits from Claude Code's status line
 //! daifuku schema         print the config file's JSON schema
 //! daifuku config         open the config file in your editor
 //! daifuku config validate check a config file without the daemon
@@ -252,6 +253,15 @@ enum Command {
     /// it never prints and always exits 0, so it can never disturb one.
     #[command(hide = true)]
     Hook,
+    /// Report how much of its limits the agent's account has used, read
+    /// from what Claude Code hands its status line, and print it as one
+    /// line. Set it as Claude Code's status line command, or pipe your own
+    /// status line's input into it. Always exits 0.
+    StatusLine {
+        /// Report only, print nothing: for a status line of your own.
+        #[arg(long)]
+        quiet: bool,
+    },
     /// Print the config file's JSON schema.
     Schema {
         #[command(flatten)]
@@ -346,6 +356,10 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Hook => {
             hook();
+            ExitCode::SUCCESS
+        }
+        Command::StatusLine { quiet } => {
+            status_line(quiet);
             ExitCode::SUCCESS
         }
         // The schema is JSON already; --json leaves it as it is.
@@ -982,6 +996,63 @@ fn hook() {
 fn hook() {
     let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
 }
+
+/// Reports the limits Claude Code hands its status line to the daemon, for
+/// the account in `CLAUDE_CONFIG_DIR` or else the profile's, and prints
+/// them unless `quiet`. Never fails: a status line that errs shows nothing.
+fn status_line(quiet: bool) {
+    use std::io::Read;
+
+    use daifuku_core::usage::Limits;
+
+    // A few kilobytes at most; the cap keeps a runaway writer from filling
+    // memory.
+    let mut input = Vec::new();
+    let _ = std::io::stdin()
+        .lock()
+        .take(1 << 20)
+        .read_to_end(&mut input);
+    let Ok(usage) = Limits::from_status_line(input.as_slice()) else {
+        return;
+    };
+    report_usage(usage);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let line = usage.line(now);
+    if !quiet && !line.is_empty() {
+        println!("{line}");
+    }
+}
+
+/// Sends `usage` down the hook pipe with the account's folder and the
+/// terminal this runs in. Even with no numbers yet: the daemon then knows
+/// which account the terminal runs on.
+#[cfg(windows)]
+fn report_usage(usage: daifuku_core::usage::Limits) {
+    use daifuku_core::protocol::{HookLine, UsageReport, to_line};
+    use daifuku_win::pipe::{Pipe, send};
+    use daifuku_win::{console, process};
+
+    let folder = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|f| !f.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|p| std::path::Path::new(&p).join(".claude"))
+        });
+    let Some(folder) = folder else { return };
+    let report = HookLine::Usage(UsageReport {
+        usage,
+        folder: folder.display().to_string(),
+        window: console::terminal_window_of(process::current()).map(|(w, _)| w),
+    });
+    let Ok(line) = to_line(&report) else { return };
+    // As short a wait as a hook's: the status line must never lag.
+    let _ = send(Pipe::Hook, &line, std::time::Duration::from_millis(100));
+}
+
+#[cfg(not(windows))]
+const fn report_usage(_: daifuku_core::usage::Limits) {}
 
 #[cfg(windows)]
 fn config_path(json: bool) -> ExitCode {
@@ -1689,6 +1760,50 @@ fn print_status(s: &daifuku_core::protocol::Status) {
             p.window
         );
     }
+    if !s.usage.is_empty() {
+        println!("\nusage");
+    }
+    for u in &s.usage {
+        println!("  {}", usage_line(u));
+    }
+}
+
+/// One account's limits for `daifuku status`: `work  5h 80%, 3 over pace,
+/// 1h 2m left; week 35%, 12 under pace, 3d 4h left; 2m 5s ago; past its warn
+/// at 77%`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn usage_line(u: &daifuku_core::protocol::AccountUsage) -> String {
+    use daifuku_core::usage::span;
+
+    let window =
+        |name: &str, w: &daifuku_core::protocol::WindowUsage| match (w.resets_in_seconds, w.pace) {
+            (Some(left), Some(pace)) => {
+                let pace = match pace {
+                    0 => "on pace".to_owned(),
+                    p if p > 0 => format!("{p} over pace"),
+                    p => format!("{} under pace", p.unsigned_abs()),
+                };
+                format!("{name} {}%, {pace}, {} left", w.used, span(left))
+            }
+            _ => format!("{name} reset since"),
+        };
+    let mut parts: Vec<String> = [("5h", u.five_hour), ("week", u.seven_day)]
+        .into_iter()
+        .filter_map(|(name, w)| Some(window(name, &w?)))
+        .collect();
+    parts.push(format!("{} ago", since(u.age_seconds)));
+    if let Some(warn) = u.warn {
+        parts.push(if u.warning {
+            format!("past its warn at {warn}%")
+        } else {
+            format!("warns at {warn}%")
+        });
+    }
+    format!(
+        "{}  {}",
+        u.account.as_deref().unwrap_or(&u.folder),
+        parts.join("; ")
+    )
 }
 
 /// What `daifuku restore` did, one line a peer.
@@ -1856,6 +1971,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_shows_an_account_s_use_pace_and_warning() {
+        use daifuku_core::protocol::{AccountUsage, WindowUsage};
+        let mut u = AccountUsage {
+            account: Some("work".into()),
+            folder: r"C:\Users\me\.claude-work".into(),
+            age_seconds: 125,
+            five_hour: Some(WindowUsage {
+                used: 80,
+                resets_at: 0,
+                resets_in_seconds: Some(3720),
+                pace: Some(3),
+            }),
+            seven_day: Some(WindowUsage {
+                used: 35,
+                resets_at: 0,
+                resets_in_seconds: Some(3 * 86_400 + 4 * 3600),
+                pace: Some(-12),
+            }),
+            warn: Some(77),
+            warning: true,
+        };
+        assert_eq!(
+            usage_line(&u),
+            "work  5h 80%, 3 over pace, 1h 2m left; week 35%, 12 under pace, 3d 4h left; 2m 5s ago; past its warn at 77%"
+        );
+        u.account = None;
+        u.warn = None;
+        u.five_hour = u.five_hour.map(|w| WindowUsage {
+            resets_in_seconds: None,
+            pace: None,
+            ..w
+        });
+        u.seven_day = None;
+        assert_eq!(
+            usage_line(&u),
+            r"C:\Users\me\.claude-work  5h reset since; 2m 5s ago"
+        );
+    }
+
+    #[test]
     fn status_lists_the_agent_that_needs_you_first() {
         use daifuku_core::protocol::AgentWindow;
         use daifuku_core::state::AgentState;
@@ -1871,6 +2026,8 @@ mod tests {
             last_tool: None,
             last_message: None,
             transcript_path: None,
+            account: None,
+            warning: false,
         };
         let agents = [
             agent(1, AgentState::Done, 90),
@@ -1899,6 +2056,8 @@ mod tests {
             last_tool: Some("Bash".into()),
             last_message: Some("may I run\r\nthis? ".into()),
             transcript_path: None,
+            account: None,
+            warning: false,
         };
         assert_eq!(details(&a), ["in site", "asks: may I run  this?"]);
         // Once it works again, the question is old news.
@@ -2328,6 +2487,7 @@ mod tests {
             Command::Install { json, .. } | Command::Uninstall { json, .. } => Some(*json),
             Command::DemoAgent { .. }
             | Command::Hook
+            | Command::StatusLine { .. }
             | Command::Group { .. }
             | Command::ConsoleWindow { .. }
             | Command::Heavy { .. } => None,

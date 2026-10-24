@@ -183,6 +183,7 @@ dependencies = [
  "daifuku-core",
  "daifuku-render",
  "daifuku-win",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-appender",

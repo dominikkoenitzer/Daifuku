@@ -7,7 +7,7 @@ use daifuku_core::config::{Border, Config};
 use daifuku_core::peer::{self, FleetCell, Kept, KeptFile, Spawn};
 use daifuku_core::protocol::{
     AgentWindow, FleetStatus, HookMessage, Leftover, PeerStatus, Request, Response, RestoredPeer,
-    Status, StoppedTerminal,
+    Status, StoppedTerminal, UsageReport,
 };
 use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
@@ -24,6 +24,7 @@ use crate::events::{self, Event};
 use crate::fleet::{self, OpenFleet};
 use crate::hotkeys::{Action, Hotkeys};
 use crate::ipc::{self, Inbound, Inbox, WM_INBOX};
+use crate::usage;
 
 /// The most sessions tracked at once. A hook can report any session id it
 /// likes; past this, new ones are ignored instead of growing the map forever.
@@ -133,6 +134,11 @@ struct Daemon {
     /// What the last save held, apart from when it was made, and the
     /// interrupt time it was made at.
     last_saved: (String, u64),
+    /// Each account's latest limits, from its agents' status lines.
+    usage: usage::Book,
+    /// The agent windows whose account has reached its `warn`, as the
+    /// borders show them.
+    warned: Vec<u64>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -177,8 +183,10 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
         d.state_file = Some(files.state);
         d.peers_file = Some(files.peers);
         d.legacy_state_file = files.legacy_state;
+        d.usage.file = Some(files.usage);
     }
     d.load_config();
+    d.usage.load(wall_seconds());
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
         .inspect_err(|e| tracing::error!(error = %e, "no borders"))
         .ok();
@@ -276,6 +284,8 @@ impl Daemon {
             state_file: None,
             legacy_state_file: None,
             last_saved: (String::new(), 0),
+            usage: usage::Book::default(),
+            warned: Vec::new(),
         }
     }
 
@@ -359,6 +369,7 @@ impl Daemon {
         while let Ok(item) = inbox.receiver.try_recv() {
             match item {
                 Inbound::Hook(message, sender) => self.hook(&message, &sender),
+                Inbound::Usage(report) => self.usage_report(&report),
                 Inbound::Control(request, reply, claimed) => {
                     // Withdrawn while it waited behind something long: its
                     // client was told nothing was done, so nothing is.
@@ -465,6 +476,50 @@ impl Daemon {
             tracing::debug!(window = format!("{w:#x}"), event = %message.event.hook_event_name, state = ?self.agents.window_state(w), "agent state");
             self.refresh_borders();
         }
+    }
+
+    /// One status line's report of its account's limits. Kept on disk only
+    /// when the numbers changed: a status line runs after every answer.
+    fn usage_report(&mut self, report: &UsageReport) {
+        let window = report.window.and_then(daifuku_win::console::visible_window);
+        if self.usage.note(report, window, wall_seconds()) {
+            self.usage.save();
+        }
+        if self.update_warnings() {
+            self.paint_borders();
+        }
+    }
+
+    /// The Claude Code folder of the account terminal `w` runs on: the one
+    /// its status line last reported, else its fleet's account's.
+    fn account_folder(&self, w: u64) -> Option<PathBuf> {
+        if let Some(folder) = self.usage.folder_of(w) {
+            return Some(PathBuf::from(folder));
+        }
+        let record = self.fleets.iter().find(|f| f.slots.contains(&Some(w)))?;
+        let fleet = self.config.fleet(&record.name)?;
+        self.config.account_of(fleet)?.claude.clone()
+    }
+
+    /// Works out again which agent windows show their account's warning.
+    /// True when that changed, so the borders need painting.
+    fn update_warnings(&mut self) -> bool {
+        let now = wall_seconds();
+        let warned: Vec<u64> = self
+            .agents
+            .windows()
+            .into_keys()
+            .filter(|&w| {
+                self.account_folder(w)
+                    .is_some_and(|f| self.usage.warning(&self.config, &f, now))
+            })
+            .collect();
+        if warned == self.warned {
+            return false;
+        }
+        tracing::info!(windows = warned.len(), "account warnings changed");
+        self.warned = warned;
+        true
     }
 
     /// Keeps `shown_since` in step with every session's state. A session
@@ -1008,6 +1063,10 @@ impl Daemon {
                     last_tool: detail.last_tool,
                     last_message: detail.last_message,
                     transcript_path: detail.transcript_path,
+                    account: self
+                        .account_folder(w)
+                        .and_then(|f| self.config.account_in(&f).map(|(name, _)| name.to_owned())),
+                    warning: self.warned.contains(&w),
                 }
             })
             .collect();
@@ -1054,6 +1113,7 @@ impl Daemon {
             fleets,
             agents,
             peers,
+            usage: self.usage.status(&self.config, wall_seconds()),
         }
     }
 
@@ -1176,6 +1236,9 @@ impl Daemon {
             // with high contrast on all along: only the colours change, and
             // only a repaint shows them. One that changes nothing sends
             // nothing to the borders.
+            self.paint_borders();
+        }
+        if self.update_warnings() {
             self.paint_borders();
         }
         let gone = away();
@@ -2054,6 +2117,7 @@ impl Daemon {
             })
             .filter_map(|(w, state)| window::frame(w).map(|rect| (w, state, rect)))
             .collect();
+        self.update_warnings();
         self.update_pulse(
             self.framed
                 .iter()
@@ -2082,7 +2146,13 @@ impl Daemon {
             .framed
             .iter()
             .map(|&(w, state, rect)| {
-                let mut colour = colours.of(state);
+                // Working or done only: waiting and failed say more.
+                let mut colour = match state {
+                    AgentState::Working | AgentState::Done if self.warned.contains(&w) => {
+                        colours.warning
+                    }
+                    _ => colours.of(state),
+                };
                 if state == AgentState::Waiting
                     && let Some(k) = breath
                 {
@@ -2432,6 +2502,8 @@ struct SavedFiles {
     state: PathBuf,
     /// The peers, for `daifuku restore`.
     peers: PathBuf,
+    /// Each account's latest limits.
+    usage: PathBuf,
     /// The state file versions up to 0.1.3 shared between users.
     legacy_state: Option<PathBuf>,
 }
@@ -2448,6 +2520,7 @@ impl SavedFiles {
         Self {
             state: dir.join(name("state")),
             peers: dir.join(name("peers")),
+            usage: dir.join(name("usage")),
             legacy_state: sid.map(|_| dir.join("state.json")),
         }
     }
@@ -2467,7 +2540,7 @@ fn state_to_read<'a>(
 
 /// Writes `text` next to `path` and renames it over `path`, so a daemon that
 /// stops half way leaves the last whole save, never one cut short.
-fn replace_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn replace_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".new");
     let new = path.with_file_name(name);
