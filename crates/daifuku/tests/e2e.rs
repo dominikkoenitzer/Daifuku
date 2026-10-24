@@ -486,6 +486,17 @@ fn a_fleet_on_an_account_signs_every_terminal_in_to_it_and_no_other_fleet() {
             into.display()
         )
     };
+    // Crew's first terminal also opens a peer as an agent would, naming no
+    // fleet: it has to take crew's, not e2e's, the first in the config.
+    let inner = dir.join("inner");
+    let crew = format!(
+        "{}; if (-not (Test-Path -LiteralPath '{}')) {{ New-Item -ItemType File -Path '{}' | Out-Null; & '{}' spawn --dir '{}' --label 'e2e inner' }}",
+        command(&home),
+        inner.display(),
+        inner.display(),
+        cli().display(),
+        home.display()
+    );
     let json = serde_json::json!({
         "accounts": { "Work": { "claude": account } },
         "fleets": [
@@ -496,7 +507,7 @@ fn a_fleet_on_an_account_signs_every_terminal_in_to_it_and_no_other_fleet() {
             },
             {
                 "name": "crew", "count": 1, "monitor": "primary", "area": "right",
-                "command": command(&home),
+                "command": crew,
                 "admin": true, "no_profile": true, "hotkey": null
             }
         ],
@@ -504,7 +515,10 @@ fn a_fleet_on_an_account_signs_every_terminal_in_to_it_and_no_other_fleet() {
     });
     std::fs::write(&config, json.to_string()).unwrap();
     let mut steps = 0;
-    let (mut cleanup, _) = start(&config);
+    // Peers of its own, so a failed run leaves the real ones as they were.
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
 
     // Whole files only: Set-Content ends each with a line break.
     let said = |folder: &Path| -> Vec<String> {
@@ -539,15 +553,21 @@ fn a_fleet_on_an_account_signs_every_terminal_in_to_it_and_no_other_fleet() {
     steps += 1;
 
     // The fleet with no account leaves the variables as they were: unset on
-    // a runner, so the agent reads the folder in the profile.
-    let lines = wait_for("crew's terminal to write", Duration::from_secs(30), || {
-        let lines = said(&home);
-        (lines.len() == 1).then_some(lines)
-    });
+    // a runner, so the agent reads the folder in the profile. So does the
+    // peer its terminal opened without naming a fleet.
+    let lines = wait_for(
+        "crew's terminal and its peer to write",
+        Duration::from_secs(45),
+        || {
+            let lines = said(&home);
+            (lines.len() == 2).then_some(lines)
+        },
+    );
     assert!(
-        !lines[0].contains("it's work"),
+        lines.iter().all(|l| !l.contains("it's work")),
         "crew got e2e's account: {lines:?}"
     );
+    assert_eq!(said(&work).len(), 2, "crew's peer opened in e2e");
     steps += 1;
 
     // A peer the fleet's agent opens signs in to the same account.
@@ -570,6 +590,7 @@ fn a_fleet_on_an_account_signs_every_terminal_in_to_it_and_no_other_fleet() {
     steps += 1;
 
     let _ = run(&["close", "--terminal", "e2e account"]);
+    let _ = run(&["close", "--terminal", "e2e inner"]);
     let _ = run(&["close", "--all"]);
     wait_for("the peer to close", Duration::from_secs(15), || {
         (!window::exists(peer)).then_some(())
