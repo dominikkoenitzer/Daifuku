@@ -32,7 +32,7 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku close [fleet] --json` | `{"ok": true}` |
 | `daifuku close --all --json` | `{"ok": true}` |
 | `daifuku close --terminal <window or label> --json` | `{"ok": true}` |
-| `daifuku stop-agents [--dry-run] --json` | every terminal it closed and every process it ended, below |
+| `daifuku stop-agents [--dry-run] --json` | the terminals it asked to close and the processes the agents left, below |
 | `daifuku demo --json` | `{"ok": true}` |
 | `daifuku spawn [--cell [n]] --json` | the terminal it opened, below |
 | `daifuku restore [--dry-run] [--forget] --json` | every peer it looked at, below |
@@ -189,23 +189,26 @@ reached, `"exited"` when the agent ended and its terminal stayed open, or
 
 It closes every fleet's terminals and every terminal `spawn` opened, the
 ones in no fleet too, and keeps each session for `restore`. Terminals
-Daifuku did not open stay open. Then it waits up to five seconds for what
-the agents started to end with their terminals, and ends what is still
-running.
+Daifuku did not open stay open. It waits up to five seconds for the
+terminals to close, then up to five more for what the agents started to end
+with them, and ends what is still running.
+
+A program that shows a window of its own, and all it started, is left
+running: it may be a browser or an editor that is in use.
 
 | Field | Type | |
 |---|---|---|
 | `dry_run` | boolean | `true` when it only says what it would do. |
-| `terminals` | array of objects | Every terminal it closed, or would close. Empty when none is open. |
+| `terminals` | array of objects | Every terminal it asked to close, or would ask. Empty when none is open. |
 | `terminals[].window` | integer | Its window. |
 | `terminals[].label` | string | What `status` calls it; left out when it has no name. |
 | `terminals[].fleet` | string | The fleet it is in; left out for a terminal in none. |
 | `terminals[].cell` | integer | Its cell in that fleet, counted from 1. |
 | `terminals[].session_id` | string | The session its agent last reported; left out until it reports. |
-| `terminals[].directory` | string | The folder that session works in. |
-| `terminals[].kept` | boolean | Whether `restore` opens it again on that session, in that folder and in its cell. A fleet's own terminal is kept only when its agent reported the session from inside it. |
+| `terminals[].directory` | string | For a fleet's own terminal, the folder its agent last reported; for one `spawn` opened, the folder it opened in. |
+| `terminals[].kept` | boolean | Whether `restore` opens it again on that session, in that folder and in its cell. A fleet's own terminal is kept only when its agent reported the session from inside it, and the folder is the one the fleet starts in or one inside it. |
 | `terminals[].closed` | boolean | Whether it closed. `false` with `--dry-run`, and when Windows Terminal asked first whether to close its tabs. |
-| `leftovers` | array of objects | Every process the agents in the terminals that closed started, their own processes and what those started in turn. With `--dry-run`, every one that runs now. |
+| `leftovers` | array of objects | The agents' own processes in the terminals that closed, what they started and so on down, whether still running or not. With `--dry-run`, every one that runs now. |
 | `leftovers[].pid` | integer | Its process id. |
 | `leftovers[].name` | string | Its program's file name. |
 | `leftovers[].window` | integer | The terminal whose agent started it. |

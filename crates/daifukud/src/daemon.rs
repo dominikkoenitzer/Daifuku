@@ -739,16 +739,24 @@ impl Daemon {
             .collect();
         let (mut terminals, keeps): (Vec<StoppedTerminal>, Vec<Option<Spawn>>) =
             targets.iter().map(|&w| self.stop_plan(w)).unzip();
-        let found = self.started_by_agents(&targets);
+        // A program with a window of its own, as a browser an agent was the
+        // first to open, is for its owner to close, with all it started.
+        let mut windowed = shown_window_owners();
+        let found = self.started_by_agents(&targets, &windowed);
+        let spared = |pid: u32, windowed: &std::collections::HashSet<u32>| {
+            windowed
+                .contains(&pid)
+                .then(|| "it shows a window of its own".to_owned())
+        };
         if dry_run {
             let leftovers = found
                 .into_iter()
                 .map(|(w, p, _)| Leftover {
+                    reason: spared(p.pid, &windowed),
                     pid: p.pid,
                     name: p.name,
                     window: w,
                     ended: false,
-                    reason: None,
                 })
                 .collect();
             return Response::Stopped {
@@ -766,18 +774,22 @@ impl Daemon {
         while asked.iter().any(|&w| window::exists(w)) && start.elapsed() < CLOSE_WAIT {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+        for f in &mut self.fleets {
+            f.prune();
+        }
         let gone = |w: u64| asked.contains(&w) && !window::exists(w);
-        let before = self.closed.len();
+        let mut kept = false;
         for (t, keep) in terminals.iter_mut().zip(keeps) {
             t.closed = gone(t.window);
             t.kept &= t.closed;
             if t.closed
                 && let Some(spawn) = keep
             {
-                self.closed.push(spawn);
+                self.keep_closed(spawn);
+                kept = true;
             }
         }
-        if self.closed.len() != before {
+        if kept {
             self.save_peers();
         }
         self.keep_closed_peers(&asked);
@@ -785,25 +797,19 @@ impl Daemon {
         // when Windows Terminal asks first about its tabs, keeps its agent.
         let found: Vec<(u64, process::Proc, u64)> =
             found.into_iter().filter(|&(w, _, _)| gone(w)).collect();
-        let runs = |p: &process::Proc, at: u64| process::started(p.pid) == Some(at);
+        let runs = |p: &process::Proc, at: u64| process::runs(p.pid, at);
         let start = std::time::Instant::now();
         while found.iter().any(|(_, p, at)| runs(p, *at)) && start.elapsed() < LEFTOVER_WAIT {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        // A program with a window of its own, as a browser an agent was the
-        // first to open, is for its owner to close.
-        let windowed: std::collections::HashSet<u32> = window::top_level()
-            .into_iter()
-            .filter(|&w| window::is_shown(w))
-            .map(window::pid)
-            .collect();
+        windowed.extend(shown_window_owners());
         let leftovers = found
             .into_iter()
             .map(|(w, p, at)| {
                 let (ended, reason) = if !runs(&p, at) {
                     (false, None)
-                } else if windowed.contains(&p.pid) {
-                    (false, Some("it shows a window of its own".to_owned()))
+                } else if let Some(reason) = spared(p.pid, &windowed) {
+                    (false, Some(reason))
                 } else {
                     match process::end(p.pid, at) {
                         Ok(ended) => (ended, None),
@@ -835,8 +841,10 @@ impl Daemon {
     /// opens again for it once it went. A peer keeps the session it was
     /// opened on or last reported, as a fleet close keeps it. A fleet's own
     /// terminal keeps the session it shows, in that session's folder and in
-    /// its cell, only when the agent reporting it runs in it: whatever a
-    /// hook names here, restore runs in a terminal of its fleet.
+    /// its cell, only when an agent reporting it runs in it and the folder
+    /// is the one the fleet starts in or one inside it: restore runs in a
+    /// terminal of its fleet, which may run as administrator, and any hook
+    /// can name a folder.
     fn stop_plan(&self, w: u64) -> (StoppedTerminal, Option<Spawn>) {
         let cell = self.cell_of(w);
         let mut t = StoppedTerminal {
@@ -867,16 +875,20 @@ impl Daemon {
             .session_detail(&session)
             .and_then(|d| d.cwd.clone());
         t.session_id = Some(session.clone());
-        let reporter = self
-            .agent_processes
-            .iter()
-            .find(|(_, (_, sessions))| sessions.contains(&session))
-            .map(|(&pid, _)| pid);
-        let keep = match (&cell, &t.directory) {
-            (Some(cell), Some(directory))
+        let fleet_folder = cell.as_ref().and_then(|c| {
+            let f = self.config.fleet(&c.fleet)?;
+            let n = usize::try_from(c.cell).ok()?;
+            Some(fleet::directory(f, n, fleet::as_user(f, self.elevated)))
+        });
+        let keep = match (&cell, &t.directory, &fleet_folder) {
+            (Some(cell), Some(directory), Some(folder))
                 if peer::session_id_ok(&session)
-                    && std::path::Path::new(directory).is_absolute()
-                    && reporter.is_some_and(|pid| in_terminal(pid, w)) =>
+                    && inside(folder, std::path::Path::new(directory))
+                    && self
+                        .agent_processes
+                        .iter()
+                        .filter(|(_, (_, sessions))| sessions.contains(&session))
+                        .any(|(&pid, _)| in_terminal(pid, w)) =>
             {
                 Some(Spawn {
                     directory: PathBuf::from(directory),
@@ -896,9 +908,15 @@ impl Daemon {
     /// Every process the agents in terminals `targets` started, and theirs,
     /// the agents too, each with its terminal and when it started, which
     /// tells it from a later process given the same id. Found from the
-    /// agents' own processes, as their hooks named them, and never from the
-    /// terminal's: one Windows Terminal process may hold every window.
-    fn started_by_agents(&self, targets: &[u64]) -> Vec<(u64, process::Proc, u64)> {
+    /// agents' own processes, as their hooks named them, and only those that
+    /// run in that terminal and show no window of their own, never from the
+    /// terminal's: one Windows Terminal process may hold every window. What
+    /// a process in `windowed` started is not followed.
+    fn started_by_agents(
+        &self,
+        targets: &[u64],
+        windowed: &std::collections::HashSet<u32>,
+    ) -> Vec<(u64, process::Proc, u64)> {
         let all = process::snapshot();
         let me = process::current();
         let mut seen = std::collections::HashSet::new();
@@ -915,9 +933,12 @@ impl Daemon {
                 .iter()
                 .filter(|(_, (_, s))| s.iter().any(|id| sessions.contains(id.as_str())))
                 .map(|(&pid, _)| pid)
+                .filter(|&pid| pid != window::pid(w) && !windowed.contains(&pid))
+                .filter(|&pid| in_terminal(pid, w))
                 .collect();
             roots.sort_unstable();
-            for (p, at) in process::descendants(&all, process::started, &roots) {
+            let spare = |pid: u32| windowed.contains(&pid);
+            for (p, at) in process::descendants(&all, process::started, spare, &roots) {
                 if p.pid != me && seen.insert(p.pid) {
                     out.push((w, p, at));
                 }
@@ -1684,7 +1705,7 @@ impl Daemon {
     /// not by hand. Only those with a session to resume, as a new session
     /// in their folder would not be theirs.
     fn keep_closed_peers(&mut self, asked: &[u64]) {
-        let before = self.closed.len();
+        let mut kept = false;
         let mut i = 0;
         while i < self.peers.len() {
             let w = self.peers[i].window;
@@ -1696,15 +1717,24 @@ impl Daemon {
                     .as_deref()
                     .is_some_and(peer::session_id_ok)
                 {
-                    self.closed.push(peer.spawn);
+                    self.keep_closed(peer.spawn);
+                    kept = true;
                 }
             } else {
                 i += 1;
             }
         }
-        if self.closed.len() != before {
+        if kept {
             self.save_peers();
         }
+    }
+
+    /// Keeps `spawn` for `daifuku restore`, in place of any peer kept before
+    /// on its session: restore opens a session once.
+    fn keep_closed(&mut self, spawn: Spawn) {
+        self.dormant.retain(|d| d.resume != spawn.resume);
+        self.closed.retain(|c| c.resume != spawn.resume);
+        self.closed.push(spawn);
     }
 
     /// Why a dormant peer must not be opened again, when its session runs
@@ -2080,6 +2110,24 @@ fn wall_seconds() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The processes that show a top-level window.
+fn shown_window_owners() -> std::collections::HashSet<u32> {
+    window::top_level()
+        .into_iter()
+        .filter(|&w| window::is_shown(w))
+        .map(window::pid)
+        .collect()
+}
+
+/// Whether folder `dir` is `folder` or one inside it, as both are on disk:
+/// a link inside that leads out is not.
+fn inside(folder: &std::path::Path, dir: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(folder), std::fs::canonicalize(dir)) {
+        (Ok(folder), Ok(dir)) => dir.starts_with(folder),
+        _ => false,
+    }
+}
+
 /// The agent's process a hook named, when the pipe says the hook ran under
 /// it: one of the client's ancestors, not the client itself.
 fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
@@ -2414,6 +2462,43 @@ mod tests {
         assert!(keep.is_none(), "the peer's own spawn is what is kept");
         let (t, _) = d.stop_plan(11);
         assert!(!t.kept, "nothing to resume");
+    }
+
+    #[test]
+    fn a_session_is_kept_only_in_a_folder_inside_the_fleets_own() {
+        let base = std::env::temp_dir().join(format!("daifuku-inside-{}", std::process::id()));
+        let folder = base.join("site");
+        let deeper = folder.join("crates");
+        let other = base.join("other");
+        std::fs::create_dir_all(&deeper).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(inside(&folder, &folder));
+        assert!(inside(&folder, &deeper));
+        assert!(inside(&folder, &deeper.join("..")));
+        assert!(!inside(&folder, &other));
+        assert!(!inside(&folder, &folder.join("..").join("other")));
+        assert!(!inside(&folder, &base.join("site-2")), "no such folder");
+        assert!(!inside(&deeper, &folder));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_kept_session_replaces_the_one_kept_before() {
+        let mut d = daemon();
+        let kept = |directory: &str, resume: &str| Spawn {
+            directory: PathBuf::from(directory),
+            resume: Some(resume.into()),
+            ..Spawn::default()
+        };
+        d.dormant.push(kept(r"C:\old", "s-1"));
+        d.closed.push(kept(r"C:\src", "s-1"));
+        d.closed.push(kept(r"C:\src", "s-2"));
+        d.keep_closed(kept(r"C:\src\site", "s-1"));
+        assert!(d.dormant.is_empty());
+        assert_eq!(
+            d.closed,
+            [kept(r"C:\src", "s-2"), kept(r"C:\src\site", "s-1")]
+        );
     }
 
     #[test]
