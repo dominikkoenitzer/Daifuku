@@ -6,7 +6,8 @@ use anyhow::Context;
 use daifuku_core::config::{Border, Config};
 use daifuku_core::peer::{self, FleetCell, Kept, KeptFile, Spawn};
 use daifuku_core::protocol::{
-    AgentWindow, FleetStatus, HookMessage, PeerStatus, Request, Response, RestoredPeer, Status,
+    AgentWindow, FleetStatus, HookMessage, Leftover, PeerStatus, Request, Response, RestoredPeer,
+    Status, StoppedTerminal,
 };
 use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
@@ -38,6 +39,11 @@ const SWEEP_MS: u32 = 2000;
 /// How long `close` waits for its terminals to go. Windows Terminal closes a
 /// window at once, unless it asks first whether to close all its tabs.
 const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long `stop-agents` gives what the agents started to end by itself
+/// once their terminals went: Windows gives the processes of a console that
+/// closes five seconds before it ends them.
+const LEFTOVER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How often a waiting border's pulse repaints: twenty times a second, which
 /// is smooth for a slow breath and nothing for the compositor.
@@ -376,6 +382,7 @@ impl Daemon {
             Request::Snap => self.snap(),
             Request::Close { fleet } => self.close(fleet.as_deref()),
             Request::CloseAll => self.close_all(),
+            Request::StopAgents { dry_run } => self.stop_agents(*dry_run),
             Request::CloseTerminal { terminal } => self.close_terminal(terminal),
             Request::Next => self.next(),
             Request::Demo => self.demo(),
@@ -710,6 +717,234 @@ impl Daemon {
         self.keep_closed_peers(&asked);
         self.drop_closed_fleets();
         (closed, open)
+    }
+
+    /// Stops every agent at once: asks every fleet's terminal and every peer
+    /// to close, keeps the session each was on for `daifuku restore`, and
+    /// ends what their agents started that outlives the terminal. Terminals
+    /// Daifuku did not open are left alone, as they may hold other tabs. A
+    /// dry run only says what it would close, keep and end.
+    fn stop_agents(&mut self, dry_run: bool) -> Response {
+        for f in &mut self.fleets {
+            f.prune();
+        }
+        let targets: Vec<u64> = self
+            .fleets
+            .iter()
+            .flat_map(OpenFleet::windows)
+            .chain(self.peers.iter().map(|p| p.window))
+            .filter(|&w| window::exists(w) && window::class(w) == WINDOW_CLASS)
+            .collect::<std::collections::BTreeSet<u64>>()
+            .into_iter()
+            .collect();
+        let (mut terminals, keeps): (Vec<StoppedTerminal>, Vec<Option<Spawn>>) =
+            targets.iter().map(|&w| self.stop_plan(w)).unzip();
+        // A program with a window of its own, as a browser an agent was the
+        // first to open, is for its owner to close, with all it started.
+        let mut windowed = shown_window_owners();
+        let found = self.started_by_agents(&targets, &windowed);
+        let spared = |pid: u32, windowed: &std::collections::HashSet<u32>| {
+            windowed
+                .contains(&pid)
+                .then(|| "it shows a window of its own".to_owned())
+        };
+        if dry_run {
+            let leftovers = found
+                .into_iter()
+                .map(|(w, p, _)| Leftover {
+                    reason: spared(p.pid, &windowed),
+                    pid: p.pid,
+                    name: p.name,
+                    window: w,
+                    ended: false,
+                })
+                .collect();
+            return Response::Stopped {
+                dry_run,
+                terminals,
+                leftovers,
+            };
+        }
+        let asked: Vec<u64> = targets
+            .iter()
+            .copied()
+            .filter(|&w| window::close(w))
+            .collect();
+        let start = std::time::Instant::now();
+        while asked.iter().any(|&w| window::exists(w)) && start.elapsed() < CLOSE_WAIT {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        for f in &mut self.fleets {
+            f.prune();
+        }
+        let gone = |w: u64| asked.contains(&w) && !window::exists(w);
+        let mut kept = false;
+        for (t, keep) in terminals.iter_mut().zip(keeps) {
+            t.closed = gone(t.window);
+            t.kept &= t.closed;
+            if t.closed
+                && let Some(spawn) = keep
+            {
+                self.keep_closed(spawn);
+                kept = true;
+            }
+        }
+        if kept {
+            self.save_peers();
+        }
+        self.keep_closed_peers(&asked);
+        // Only what a terminal that went left behind: one still open, as
+        // when Windows Terminal asks first about its tabs, keeps its agent.
+        let found: Vec<(u64, process::Proc, u64)> =
+            found.into_iter().filter(|&(w, _, _)| gone(w)).collect();
+        let runs = |p: &process::Proc, at: u64| process::runs(p.pid, at);
+        let start = std::time::Instant::now();
+        while found.iter().any(|(_, p, at)| runs(p, *at)) && start.elapsed() < LEFTOVER_WAIT {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        windowed.extend(shown_window_owners());
+        let leftovers = found
+            .into_iter()
+            .map(|(w, p, at)| {
+                let (ended, reason) = if !runs(&p, at) {
+                    (false, None)
+                } else if let Some(reason) = spared(p.pid, &windowed) {
+                    (false, Some(reason))
+                } else {
+                    match process::end(p.pid, at) {
+                        Ok(ended) => (ended, None),
+                        Err(e) => (false, Some(e.to_string())),
+                    }
+                };
+                if ended {
+                    tracing::info!(pid = p.pid, name = %p.name, "ended what an agent left running");
+                }
+                Leftover {
+                    pid: p.pid,
+                    name: p.name,
+                    window: w,
+                    ended,
+                    reason,
+                }
+            })
+            .collect();
+        self.drop_closed_fleets();
+        self.refresh_borders();
+        Response::Stopped {
+            dry_run,
+            terminals,
+            leftovers,
+        }
+    }
+
+    /// What `stop-agents` says of terminal `w`, and what `daifuku restore`
+    /// opens again for it once it went. A peer keeps the session it was
+    /// opened on or last reported, as a fleet close keeps it. A fleet's own
+    /// terminal keeps the session it shows, in that session's folder and in
+    /// its cell, only when an agent reporting it runs in it and the folder
+    /// is the one the fleet starts in or one inside it: restore runs in a
+    /// terminal of its fleet, which may run as administrator, and any hook
+    /// can name a folder.
+    fn stop_plan(&self, w: u64) -> (StoppedTerminal, Option<Spawn>) {
+        let cell = self.cell_of(w);
+        let mut t = StoppedTerminal {
+            window: w,
+            label: self.label_of(w),
+            fleet: cell.as_ref().map(|c| c.fleet.clone()),
+            cell: cell.as_ref().map(|c| c.cell),
+            session_id: None,
+            directory: None,
+            kept: false,
+            closed: false,
+        };
+        if let Some(p) = self.peers.iter().find(|p| p.window == w) {
+            t.session_id.clone_from(&p.spawn.resume);
+            t.directory = Some(p.spawn.directory.display().to_string());
+            t.kept = p.spawn.resume.as_deref().is_some_and(peer::session_id_ok);
+            return (t, None);
+        }
+        let Some(session) = self
+            .agents
+            .window_state(w)
+            .and_then(|state| shown_session(&self.agents, w, state))
+        else {
+            return (t, None);
+        };
+        t.directory = self
+            .agents
+            .session_detail(&session)
+            .and_then(|d| d.cwd.clone());
+        t.session_id = Some(session.clone());
+        let fleet_folder = cell.as_ref().and_then(|c| {
+            let f = self.config.fleet(&c.fleet)?;
+            let n = usize::try_from(c.cell).ok()?;
+            Some(fleet::directory(f, n, fleet::as_user(f, self.elevated)))
+        });
+        let keep = match (&cell, &t.directory, &fleet_folder) {
+            (Some(cell), Some(directory), Some(folder))
+                if peer::session_id_ok(&session)
+                    && inside(folder, std::path::Path::new(directory))
+                    && self
+                        .agent_processes
+                        .iter()
+                        .filter(|(_, (_, sessions))| sessions.contains(&session))
+                        .any(|(&pid, _)| in_terminal(pid, w)) =>
+            {
+                Some(Spawn {
+                    directory: PathBuf::from(directory),
+                    label: self.labels.get(&w).cloned(),
+                    resume: Some(session),
+                    fleet: Some(cell.fleet.clone()),
+                    cell: Some(peer::Cell::At(cell.cell)),
+                    ..Spawn::default()
+                })
+            }
+            _ => None,
+        };
+        t.kept = keep.is_some();
+        (t, keep)
+    }
+
+    /// Every process the agents in terminals `targets` started, and theirs,
+    /// the agents too, each with its terminal and when it started, which
+    /// tells it from a later process given the same id. Found from the
+    /// agents' own processes, as their hooks named them, and only those that
+    /// run in that terminal and show no window of their own, never from the
+    /// terminal's: one Windows Terminal process may hold every window. What
+    /// a process in `windowed` started is not followed.
+    fn started_by_agents(
+        &self,
+        targets: &[u64],
+        windowed: &std::collections::HashSet<u32>,
+    ) -> Vec<(u64, process::Proc, u64)> {
+        let all = process::snapshot();
+        let me = process::current();
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for &w in targets {
+            let sessions: std::collections::BTreeSet<&str> = self
+                .agents
+                .sessions()
+                .filter(|&(_, window, _)| window == w)
+                .map(|(id, _, _)| id)
+                .collect();
+            let mut roots: Vec<u32> = self
+                .agent_processes
+                .iter()
+                .filter(|(_, (_, s))| s.iter().any(|id| sessions.contains(id.as_str())))
+                .map(|(&pid, _)| pid)
+                .filter(|&pid| pid != window::pid(w) && !windowed.contains(&pid))
+                .filter(|&pid| in_terminal(pid, w))
+                .collect();
+            roots.sort_unstable();
+            let spare = |pid: u32| windowed.contains(&pid);
+            for (p, at) in process::descendants(&all, process::started, spare, &roots) {
+                if p.pid != me && seen.insert(p.pid) {
+                    out.push((w, p, at));
+                }
+            }
+        }
+        out
     }
 
     /// The terminals whose agents need you, the one that has waited longest
@@ -1470,7 +1705,7 @@ impl Daemon {
     /// not by hand. Only those with a session to resume, as a new session
     /// in their folder would not be theirs.
     fn keep_closed_peers(&mut self, asked: &[u64]) {
-        let before = self.closed.len();
+        let mut kept = false;
         let mut i = 0;
         while i < self.peers.len() {
             let w = self.peers[i].window;
@@ -1482,15 +1717,24 @@ impl Daemon {
                     .as_deref()
                     .is_some_and(peer::session_id_ok)
                 {
-                    self.closed.push(peer.spawn);
+                    self.keep_closed(peer.spawn);
+                    kept = true;
                 }
             } else {
                 i += 1;
             }
         }
-        if self.closed.len() != before {
+        if kept {
             self.save_peers();
         }
+    }
+
+    /// Keeps `spawn` for `daifuku restore`, in place of any peer kept before
+    /// on its session: restore opens a session once.
+    fn keep_closed(&mut self, spawn: Spawn) {
+        self.dormant.retain(|d| d.resume != spawn.resume);
+        self.closed.retain(|c| c.resume != spawn.resume);
+        self.closed.push(spawn);
     }
 
     /// Why a dormant peer must not be opened again, when its session runs
@@ -1866,6 +2110,24 @@ fn wall_seconds() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The processes that show a top-level window.
+fn shown_window_owners() -> std::collections::HashSet<u32> {
+    window::top_level()
+        .into_iter()
+        .filter(|&w| window::is_shown(w))
+        .map(window::pid)
+        .collect()
+}
+
+/// Whether folder `dir` is `folder` or one inside it, as both are on disk:
+/// a link inside that leads out is not.
+fn inside(folder: &std::path::Path, dir: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(folder), std::fs::canonicalize(dir)) {
+        (Ok(folder), Ok(dir)) => dir.starts_with(folder),
+        _ => false,
+    }
+}
+
 /// The agent's process a hook named, when the pipe says the hook ran under
 /// it: one of the client's ancestors, not the client itself.
 fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
@@ -2153,6 +2415,114 @@ mod tests {
             false,
             events::Hooks::none(),
         )
+    }
+
+    #[test]
+    fn stop_keeps_a_peer_by_its_session_and_a_fleet_terminal_only_from_its_own_agent() {
+        use daifuku_core::state::HookEvent;
+        let mut d = daemon();
+        let mut crew = OpenFleet::new("crew");
+        crew.slots = vec![Some(7)];
+        d.fleets.push(crew);
+        // A hook named this session for the crew's terminal, yet no agent
+        // in it was seen to: restore would run whatever it names there.
+        d.agents.apply(
+            7,
+            &HookEvent {
+                session_id: "s-1".into(),
+                hook_event_name: "Stop".into(),
+                cwd: Some(r"C:\src\site".into()),
+                ..HookEvent::default()
+            },
+        );
+        let (t, keep) = d.stop_plan(7);
+        assert_eq!(t.label.as_deref(), Some("crew 1"));
+        assert_eq!((t.fleet.as_deref(), t.cell), (Some("crew"), Some(1)));
+        assert_eq!(t.session_id.as_deref(), Some("s-1"));
+        assert_eq!(t.directory.as_deref(), Some(r"C:\src\site"));
+        assert!(!t.kept && keep.is_none());
+        assert!(!t.closed);
+
+        let peer = |window: u64, resume: Option<&str>| Peer {
+            window,
+            spawn: Spawn {
+                directory: PathBuf::from(r"C:\src\docs"),
+                label: Some("docs".into()),
+                resume: resume.map(str::to_owned),
+                ..Spawn::default()
+            },
+        };
+        d.peers.push(peer(9, Some("p-1")));
+        d.peers.push(peer(11, None));
+        let (t, keep) = d.stop_plan(9);
+        assert_eq!(t.label.as_deref(), Some("docs"));
+        assert_eq!(t.session_id.as_deref(), Some("p-1"));
+        assert_eq!(t.directory.as_deref(), Some(r"C:\src\docs"));
+        assert!(t.kept, "a peer is kept as a fleet close keeps it");
+        assert!(keep.is_none(), "the peer's own spawn is what is kept");
+        let (t, _) = d.stop_plan(11);
+        assert!(!t.kept, "nothing to resume");
+    }
+
+    #[test]
+    fn a_session_is_kept_only_in_a_folder_inside_the_fleets_own() {
+        let base = std::env::temp_dir().join(format!("daifuku-inside-{}", std::process::id()));
+        let folder = base.join("site");
+        let deeper = folder.join("crates");
+        let other = base.join("other");
+        std::fs::create_dir_all(&deeper).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(inside(&folder, &folder));
+        assert!(inside(&folder, &deeper));
+        assert!(inside(&folder, &deeper.join("..")));
+        assert!(!inside(&folder, &other));
+        assert!(!inside(&folder, &folder.join("..").join("other")));
+        assert!(!inside(&folder, &base.join("site-2")), "no such folder");
+        assert!(!inside(&deeper, &folder));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_kept_session_replaces_the_one_kept_before() {
+        let mut d = daemon();
+        let kept = |directory: &str, resume: &str| Spawn {
+            directory: PathBuf::from(directory),
+            resume: Some(resume.into()),
+            ..Spawn::default()
+        };
+        d.dormant.push(kept(r"C:\old", "s-1"));
+        d.closed.push(kept(r"C:\src", "s-1"));
+        d.closed.push(kept(r"C:\src", "s-2"));
+        d.keep_closed(kept(r"C:\src\site", "s-1"));
+        assert!(d.dormant.is_empty());
+        assert_eq!(
+            d.closed,
+            [kept(r"C:\src", "s-2"), kept(r"C:\src\site", "s-1")]
+        );
+    }
+
+    #[test]
+    fn stop_with_no_terminal_open_closes_and_keeps_nothing() {
+        let mut d = daemon();
+        let mut crew = OpenFleet::new("crew");
+        crew.slots = vec![Some(7)];
+        d.fleets.push(crew);
+        for dry_run in [true, false] {
+            let stopped = d.stop_agents(dry_run);
+            assert_eq!(
+                stopped,
+                Response::Stopped {
+                    dry_run,
+                    terminals: Vec::new(),
+                    leftovers: Vec::new(),
+                }
+            );
+        }
+        assert!(d.closed.is_empty());
+        assert!(
+            d.fleets.is_empty(),
+            "a fleet with no terminal left is dropped"
+        );
     }
 
     #[test]

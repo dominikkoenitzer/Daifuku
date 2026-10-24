@@ -32,6 +32,7 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku close [fleet] --json` | `{"ok": true}` |
 | `daifuku close --all --json` | `{"ok": true}` |
 | `daifuku close --terminal <window or label> --json` | `{"ok": true}` |
+| `daifuku stop-agents [--dry-run] --json` | the terminals it asked to close and the processes the agents left, below |
 | `daifuku demo --json` | `{"ok": true}` |
 | `daifuku spawn [--cell [n]] --json` | the terminal it opened, below |
 | `daifuku restore [--dry-run] [--forget] --json` | every peer it looked at, below |
@@ -43,7 +44,7 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku uninstall --dry-run --json` | the plan, below |
 
 A command that worked exits with 0. The commands that talk to the daemon
-(`status`, `open`, `snap`, `next`, `close`, `demo`, `spawn`, `restore`, `label`, `wait`, `reload` and `stop`) work
+(`status`, `open`, `snap`, `next`, `close`, `stop-agents`, `demo`, `spawn`, `restore`, `label`, `wait`, `reload` and `stop`) work
 from any of your terminals when the daemon runs with your own rights, the
 default. With `"elevated": true` in the config they need an administrator
 terminal, with `--json` too. That is on purpose: an elevated daemon's
@@ -167,6 +168,57 @@ reached, `"exited"` when the agent ended and its terminal stayed open, or
 | `peers[].session_id` | string | The session it resumes, the last one seen in its terminal. |
 | `peers[].window` | integer | The terminal it opened in. Left out with `--dry-run` and `--forget`, and when it did not open. |
 | `peers[].error` | string | Why it did not open; it stays for the next `restore`. |
+
+### `stop-agents`
+
+```json
+{
+  "result": "stopped",
+  "dry_run": false,
+  "terminals": [
+    { "window": 1050190, "label": "crew 1", "fleet": "crew", "cell": 1, "session_id": "0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80", "directory": "C:\\src\\site", "kept": true, "closed": true },
+    { "window": 2098766, "label": "docs", "directory": "C:\\src\\docs", "kept": false, "closed": true }
+  ],
+  "leftovers": [
+    { "pid": 4120, "name": "powershell.exe", "window": 1050190, "ended": false },
+    { "pid": 7352, "name": "node.exe", "window": 1050190, "ended": true },
+    { "pid": 6204, "name": "viewer.exe", "window": 1050190, "ended": false, "reason": "it shows a window of its own" }
+  ]
+}
+```
+
+It closes every fleet's terminals and every terminal `spawn` opened, the
+ones in no fleet too, and keeps each session for `restore`. Terminals
+Daifuku did not open stay open. It waits up to five seconds for the
+terminals to close, then up to five more for what the agents started to end
+with them, and ends what is still running.
+
+A program that shows a window of its own, and all it started, is left
+running: it may be a browser or an editor that is in use.
+
+| Field | Type | |
+|---|---|---|
+| `dry_run` | boolean | `true` when it only says what it would do. |
+| `terminals` | array of objects | Every terminal it asked to close, or would ask. Empty when none is open. |
+| `terminals[].window` | integer | Its window. |
+| `terminals[].label` | string | What `status` calls it; left out when it has no name. |
+| `terminals[].fleet` | string | The fleet it is in; left out for a terminal in none. |
+| `terminals[].cell` | integer | Its cell in that fleet, counted from 1. |
+| `terminals[].session_id` | string | The session its agent last reported; left out until it reports. |
+| `terminals[].directory` | string | For a fleet's own terminal, the folder its agent last reported; for one `spawn` opened, the folder it opened in. |
+| `terminals[].kept` | boolean | Whether `restore` opens it again on that session, in that folder and in its cell. A fleet's own terminal is kept only when its agent reported the session from inside it, and the folder is the one the fleet starts in or one inside it. |
+| `terminals[].closed` | boolean | Whether it closed. `false` with `--dry-run`, and when Windows Terminal asked first whether to close its tabs. |
+| `leftovers` | array of objects | The agents' own processes in the terminals that closed, what they started and so on down, whether still running or not. With `--dry-run`, every one that runs now. |
+| `leftovers[].pid` | integer | Its process id. |
+| `leftovers[].name` | string | Its program's file name. |
+| `leftovers[].window` | integer | The terminal whose agent started it. |
+| `leftovers[].ended` | boolean | Whether `stop-agents` ended it. `false` for one that ended with its terminal. |
+| `leftovers[].reason` | string | Why it still runs: it shows a window of its own, or Windows refused, as for an elevated process from a terminal that is not. Left out otherwise. |
+
+A process is found from the agent's own process, as its hook named it,
+while the agent still runs. One whose parent had already exited is not:
+start such work in a fleet with a `priority`, whose group ends with its
+terminal ([configuration](configuration.md)).
 
 ### `status` from a terminal that is not elevated, when the daemon does not answer it
 
