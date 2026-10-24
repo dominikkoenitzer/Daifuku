@@ -259,6 +259,10 @@ pub struct Launch {
     /// Run the shell inside `daifuku group` at this priority, from the
     /// `daifuku.exe` given, so the whole tree in the tab ends with it.
     pub group: Option<(PathBuf, Priority)>,
+    /// Variables set in the shell before the command runs, such as the
+    /// folder an agent keeps its account in. With no command the shell
+    /// still opens with them set.
+    pub environment: Vec<(String, String)>,
 }
 
 impl Launch {
@@ -283,7 +287,7 @@ impl Launch {
             a.push("--title".into());
             a.push(escape(t).into());
         }
-        if let (Some(cmd), Some(shell)) = (&self.command, shell) {
+        if let (Some(cmd), Some(shell)) = (self.script(), shell) {
             if let Some((exe, priority)) = &self.group {
                 a.push(exe.as_os_str().to_owned());
                 for s in ["group", "--priority", priority.name(), "--"] {
@@ -311,10 +315,43 @@ impl Launch {
             for s in ["-NoLogo", "-NoExit", "-EncodedCommand"] {
                 a.push(s.into());
             }
-            a.push(encoded(cmd).into());
+            a.push(encoded(&cmd).into());
         }
         a
     }
+
+    /// What PowerShell runs: the variables set first, each value quoted so
+    /// nothing in it is read as code, then the command. `None` when there
+    /// is neither, and the profile's own shell opens untouched.
+    fn script(&self) -> Option<String> {
+        let mut script: String = self
+            .environment
+            .iter()
+            .map(|(name, value)| format!("$env:{name} = {}; ", quoted(value)))
+            .collect();
+        match &self.command {
+            Some(cmd) => script.push_str(cmd),
+            None if script.is_empty() => return None,
+            None => script.truncate(script.trim_end().len()),
+        }
+        Some(script)
+    }
+}
+
+/// A PowerShell string that reads back as `value`: in single quotes, with
+/// every quote mark doubled, the curly ones PowerShell also ends a string on
+/// among them, so nothing inside runs.
+fn quoted(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for c in value.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 /// A PowerShell command as `-EncodedCommand` takes it: Base64 of its UTF-16.
@@ -546,6 +583,7 @@ mod tests {
             profile: None,
             clean: false,
             group: None,
+            environment: Vec::new(),
         };
         assert_eq!(
             strs(&l.args(
@@ -591,6 +629,49 @@ mod tests {
                 .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c)),
             "{last}"
         );
+    }
+
+    #[test]
+    fn variables_are_set_quoted_before_the_command() {
+        let l = Launch {
+            command: Some("claude".into()),
+            environment: vec![
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    r"C:\Users\me\.claude-work".into(),
+                ),
+                ("CODEX_HOME".into(), r"C:\it's; $(here)".into()),
+            ],
+            ..Launch::default()
+        };
+        assert_eq!(
+            l.script().as_deref(),
+            Some(
+                r"$env:CLAUDE_CONFIG_DIR = 'C:\Users\me\.claude-work'; $env:CODEX_HOME = 'C:\it''s; $(here)'; claude"
+            )
+        );
+        let args = strs(&l.args(Some(Path::new("pwsh.exe")), true));
+        assert_eq!(args.last().unwrap(), &encoded(&l.script().unwrap()));
+    }
+
+    #[test]
+    fn variables_alone_still_open_the_shell_with_them_set() {
+        let l = Launch {
+            environment: vec![("CODEX_HOME".into(), r"D:\codex".into())],
+            ..Launch::default()
+        };
+        assert_eq!(
+            l.script().as_deref(),
+            Some(r"$env:CODEX_HOME = 'D:\codex';")
+        );
+        assert!(strs(&l.args(Some(Path::new("pwsh.exe")), true)).contains(&"-NoExit".to_owned()));
+        assert_eq!(Launch::default().script(), None);
+    }
+
+    #[test]
+    fn every_quote_powershell_ends_a_string_on_is_doubled() {
+        assert_eq!(quoted("a'b\u{2019}c"), "'a''b\u{2019}\u{2019}c'");
+        assert_eq!(quoted(""), "''");
     }
 
     #[test]
