@@ -1032,6 +1032,10 @@ impl Config {
     /// folder the terminal starts in.
     fn validate_accounts(&self) -> Result<(), ConfigError> {
         let mut names = BTreeSet::new();
+        // Each variable's folder, as written in any case and with or
+        // without a separator at the end: two accounts in one folder are
+        // one sign-in.
+        let mut folders = BTreeSet::new();
         for (name, account) in &self.accounts {
             let problem = |reason: &str| ConfigError::Account {
                 name: name.clone(),
@@ -1047,7 +1051,17 @@ impl Config {
             if variables.is_empty() {
                 return Err(problem("name a folder for claude, codex or both"));
             }
-            for (_, folder) in variables {
+            for (variable, folder) in variables {
+                let key: Vec<_> = folder
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+                    .collect();
+                if !folders.insert((variable, key)) {
+                    return Err(ConfigError::Account {
+                        name: name.clone(),
+                        reason: format!("`{}` is another account's folder too", folder.display()),
+                    });
+                }
                 if !folder.is_absolute() {
                     return Err(ConfigError::Account {
                         name: name.clone(),
@@ -1851,6 +1865,10 @@ mod tests {
             (
                 r#"{"accounts":{"Work":{"claude":"C:\\a"},"work":{"claude":"C:\\b"}}}"#,
                 "work",
+            ),
+            (
+                r#"{"accounts":{"a":{"claude":"C:\\x"},"b":{"claude":"c:\\X\\"}}}"#,
+                "b",
             ),
         ] {
             assert!(
