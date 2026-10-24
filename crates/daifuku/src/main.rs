@@ -1360,6 +1360,7 @@ fn spawn_request(
         priority: None,
         cell: None,
         from: None,
+        adopted: false,
     };
     match spawn.problem() {
         Some(problem) => Err(problem),

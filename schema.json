@@ -371,6 +371,10 @@
             "string",
             "null"
           ]
+        },
+        "resume": {
+          "description": "Keep each terminal with the session it runs, as `daifuku spawn`\nkeeps a peer, so the fleet opens again with every cell resuming its\nlast session: after Windows restarts, and after the fleet was closed.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

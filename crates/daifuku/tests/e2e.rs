@@ -2168,3 +2168,179 @@ fn stop_agents_closes_every_agent_ends_what_it_left_and_restore_brings_it_back()
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
 }
+
+#[test]
+fn a_fleet_that_resumes_opens_each_terminal_back_in_its_cell_and_session() {
+    use daifuku_core::config::Area;
+    use daifuku_core::grid::{Gaps, Grid, Shape};
+
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    daifuku_win::dpi::per_monitor_v2();
+    let dir = scratch().join("resume");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    // A crew of two that resumes, stacked on the right half, and a fleet of
+    // one beside it that does not. Each terminal runs the peer script with
+    // its number, which reports a session of its own from inside it.
+    let config = dir.join("daifuku.json");
+    let script = peer_script(&dir);
+    let fleets = serde_json::json!({
+        "fleets": [{
+            "name": "crew", "count": 2, "monitor": "primary", "area": "right",
+            "shape": { "columns": 1, "rows": 2 }, "resume": true,
+            "command": format!("& '{}' {{n}}", script.display()),
+            "admin": true, "no_profile": true, "hotkey": null
+        }, {
+            "name": "plain", "count": 1, "monitor": "primary", "area": "left",
+            "command": format!("& '{}' plain", script.display()),
+            "admin": true, "no_profile": true, "hotkey": null
+        }],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, fleets.to_string()).unwrap();
+    for name in ["1", "2", "plain"] {
+        let event = format!(r#"{{"session_id":"e2e-resume-{name}","hook_event_name":"Stop"}}"#);
+        std::fs::write(dir.join(format!("peer-event-{name}.json")), event).unwrap();
+    }
+    let primary = daifuku_win::monitor::monitors()
+        .into_iter()
+        .find(|m| m.primary)
+        .unwrap();
+    let cells = Grid::plan(
+        2,
+        Area::Right.within(primary.work),
+        Gaps::default(),
+        Some(Shape {
+            columns: 1,
+            rows: 2,
+        }),
+    );
+    let sessions = || -> Vec<(u64, String)> {
+        status()
+            .unwrap()
+            .peers
+            .into_iter()
+            .filter_map(|p| Some((p.window, p.session_id?)))
+            .collect()
+    };
+    let kept = || {
+        let listed = json(&run(&["restore", "--dry-run", "--json"]));
+        let mut ids: Vec<String> = listed["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["session_id"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        ids
+    };
+    // Both crew terminals open again, each in its cell, resuming the
+    // session it ran, and no new one starts beside them.
+    let resumed = |what: &str| {
+        let fresh = dir.join("ran-1.txt");
+        let _ = std::fs::remove_file(&fresh);
+        for n in 1..=2 {
+            let _ = std::fs::remove_file(dir.join(format!("ran-{n}---resume-e2e-resume-{n}.txt")));
+        }
+        let _ = run(&["open", "crew"]);
+        for n in 1..=2 {
+            let r = ran_full(&dir, &format!("{n}---resume-e2e-resume-{n}"));
+            assert_eq!(r.args, format!("{n} --resume e2e-resume-{n}"), "{what}");
+        }
+        let windows = fleet_windows("crew");
+        assert_eq!(windows.len(), 2, "{what}: {windows:?}");
+        for (i, &w) in windows.iter().enumerate() {
+            assert_in_cell(w, cells[i], &format!("{what}: terminal {}", i + 1));
+        }
+        assert!(!fresh.exists(), "{what}: a fresh terminal opened too");
+        windows
+    };
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
+
+    // Opened afresh, each crew terminal is kept with the session its agent
+    // reports from inside it, as a peer `daifuku spawn` opened would be.
+    let _ = run(&["open", "crew"]);
+    ran_full(&dir, "1");
+    ran_full(&dir, "2");
+    let crew = fleet_windows("crew");
+    assert_eq!(crew.len(), 2, "{crew:?}");
+    wait_for("both crew sessions", Duration::from_secs(20), || {
+        let s = sessions();
+        crew.iter()
+            .enumerate()
+            .all(|(i, w)| s.contains(&(*w, format!("e2e-resume-{}", i + 1))))
+            .then_some(())
+    });
+    let file = std::fs::read_to_string(peers_file(&state)).unwrap();
+    assert!(file.contains("e2e-resume-2"), "{file}");
+    steps += 1;
+
+    // A fleet that does not resume keeps nothing, once the daemon has its
+    // agent's report.
+    let _ = run(&["open", "plain"]);
+    ran_full(&dir, "plain");
+    let plain = fleet_windows("plain");
+    assert_eq!(plain.len(), 1);
+    wait_for("the plain fleet's agent", Duration::from_secs(20), || {
+        status()?
+            .agents
+            .iter()
+            .any(|a| a.window == plain[0])
+            .then_some(())
+    });
+    assert!(
+        sessions().iter().all(|(w, _)| *w != plain[0]),
+        "{:?}",
+        sessions()
+    );
+    let _ = run(&["close", "plain"]);
+    steps += 1;
+
+    // Closed with its fleet, each waits to come back; opened again, each
+    // comes back in its cell, resuming.
+    let _ = run(&["close", "crew"]);
+    assert!(fleet_windows("crew").is_empty());
+    assert_eq!(kept(), ["e2e-resume-1", "e2e-resume-2"]);
+    let again = resumed("after a close");
+    assert!(kept().is_empty(), "{:?}", kept());
+    steps += 1;
+
+    // As at a restart of Windows: the daemon stops, then the terminals go,
+    // and the next daemon runs in a later start of Windows. A runner cannot
+    // restart, so the file is moved a day back instead.
+    stop(&mut cleanup);
+    for &w in &again {
+        assert!(window::close(w));
+    }
+    wait_for("the crew to close", Duration::from_secs(15), || {
+        again.iter().all(|&w| !window::exists(w)).then_some(())
+    });
+    let file = peers_file(&state);
+    let mut saved = json(&std::fs::read_to_string(&file).unwrap());
+    let day = 86_400;
+    saved["boot"] = (saved["boot"].as_u64().unwrap() - day).into();
+    for p in saved["peers"].as_array_mut().unwrap() {
+        p["boot"] = (p["boot"].as_u64().unwrap() - day).into();
+    }
+    std::fs::write(&file, saved.to_string()).unwrap();
+    let (mut cleanup, first) = start_with(&config, Some(&state), &[]);
+    assert!(first.peers.is_empty(), "{:?}", first.peers);
+    assert_eq!(kept(), ["e2e-resume-1", "e2e-resume-2"]);
+    let back = resumed("after a restart");
+    steps += 1;
+
+    for w in back {
+        let _ = window::close(w);
+    }
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}

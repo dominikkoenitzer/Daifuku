@@ -54,6 +54,12 @@
   agent has made them, and `uninstall` removes them. `daifuku doctor`
   checks them, and says when an agent has not signed in to an account yet;
   install says so too, so it can be run again once the agent has.
+- A fleet with `resume` keeps each of its terminals with the last session
+  its agent reported from inside it, as `spawn` keeps a peer. Opening the fleet
+  first opens again every terminal it had when Windows last stopped or
+  when it was closed, each in its own cell resuming its session, and then
+  starts the cells left afresh, so a lead, its crew and a fleet on another
+  account come back as they were on one key. It needs a `command`.
 
 ## 0.4.1, 2026-10-22
 
