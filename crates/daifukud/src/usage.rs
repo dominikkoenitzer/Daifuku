@@ -78,14 +78,16 @@ impl Book {
         // A window the report left out keeps its last number until it
         // resets: Claude Code reports each one only once it knows it.
         let limits = Limits {
-            five_hour: report
-                .usage
-                .five_hour
-                .or_else(|| old.as_ref().and_then(|e| e.limits.five_hour)),
-            seven_day: report
-                .usage
-                .seven_day
-                .or_else(|| old.as_ref().and_then(|e| e.limits.seven_day)),
+            five_hour: newer(
+                report.usage.five_hour,
+                old.as_ref().and_then(|e| e.limits.five_hour),
+                FIVE_HOURS,
+            ),
+            seven_day: newer(
+                report.usage.seven_day,
+                old.as_ref().and_then(|e| e.limits.seven_day),
+                SEVEN_DAYS,
+            ),
         };
         let changed = old.as_ref().is_none_or(|e| e.limits != limits);
         self.entries.push(Entry {
@@ -238,6 +240,16 @@ impl Book {
     }
 }
 
+/// What a report says of a window `length` seconds long, else what was
+/// known: a terminal that still shows the window before the one known keeps
+/// the newer numbers.
+fn newer(reported: Option<Window>, known: Option<Window>, length: u64) -> Option<Window> {
+    match (reported, known) {
+        (Some(r), Some(k)) if k.resets_at > r.resets_at.saturating_add(length / 2) => Some(k),
+        (r, k) => r.or(k),
+    }
+}
+
 fn window(w: Window, length: u64, now: u64) -> WindowUsage {
     WindowUsage {
         used: w.used,
@@ -305,6 +317,21 @@ mod tests {
         assert_eq!(work.seven_day.unwrap().used, 20);
         assert!(work.warning);
         assert_eq!(b.folder_of(7), Some(r"C:\Users\me\.claude-work"));
+    }
+
+    #[test]
+    fn a_report_from_before_the_reset_keeps_the_newer_window() {
+        let mut b = Book::default();
+        let folder = r"C:\Users\me\.claude-work";
+        b.note(&report(folder, Some(5), Some(30)), None, NOW);
+        let mut late = report(folder, Some(90), Some(29));
+        late.usage.five_hour.as_mut().unwrap().resets_at -= FIVE_HOURS;
+        late.usage.seven_day.as_mut().unwrap().resets_at -= 60;
+        assert!(b.note(&late, None, NOW + 5));
+        let s = b.status(&config(), NOW + 5);
+        assert_eq!(s[0].five_hour.unwrap().used, 5);
+        // The same week a little later is still the latest report.
+        assert_eq!(s[0].seven_day.unwrap().used, 29);
     }
 
     #[test]

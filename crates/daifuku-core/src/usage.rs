@@ -68,9 +68,14 @@ impl Window {
             LimitWindow::SevenDay => SEVEN_DAYS,
         };
         if self.resets_at.abs_diff(old.resets_at) >= length / 2 {
-            // Another window: a later one has started over since, unless
-            // that was told already; an earlier one is a late report.
-            let started = self.resets_at > old.resets_at && !old.reset;
+            // An earlier window is a late report: what was seen stays.
+            if self.resets_at < old.resets_at {
+                return (old, None);
+            }
+            // A later one has started over since, unless that was told
+            // already. Its stop is told on the next look.
+            let started = !old.reset;
+            seen.stopped = false;
             return (
                 seen,
                 started.then_some(Change::Reset {
@@ -474,6 +479,56 @@ mod tests {
                 change
             })
             .collect()
+    }
+
+    #[test]
+    fn a_late_report_of_the_window_before_changes_nothing() {
+        let end = 1_000_000;
+        let late = (99, end - FIVE_HOURS, end - 7100);
+        assert_eq!(
+            watched(
+                &stop_rules(),
+                &[(60, end, end - 7200), late, (80, end, end - 7000)],
+            ),
+            vec![
+                None,
+                None,
+                Some(Change::Limit {
+                    used: 80,
+                    share: 75
+                })
+            ]
+        );
+        assert_eq!(
+            watched(
+                &stop_rules(),
+                &[
+                    (60, end, end - 7200),
+                    late,
+                    (60, end, end + 1),
+                    (3, end + FIVE_HOURS, end + 9),
+                ],
+            ),
+            vec![None, None, Some(Change::Reset { used: None }), None]
+        );
+    }
+
+    #[test]
+    fn a_new_window_already_at_its_stop_is_told_both() {
+        let end = 1_000_000;
+        let new = (80, end + FIVE_HOURS, end + 7200);
+        assert_eq!(
+            watched(&stop_rules(), &[(60, end, end - 10), new, new, new]),
+            vec![
+                None,
+                Some(Change::Reset { used: Some(80) }),
+                Some(Change::Limit {
+                    used: 80,
+                    share: 75
+                }),
+                None,
+            ]
+        );
     }
 
     fn stop_rules() -> Vec<StopAt> {
