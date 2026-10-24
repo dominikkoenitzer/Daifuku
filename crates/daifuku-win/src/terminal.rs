@@ -356,11 +356,11 @@ fn escape(s: &str) -> String {
 /// What both starts hand `wt.exe` about the window it opens: show it in its
 /// normal place and size without activating it.
 ///
-/// Without `STARTF_USESHOWWINDOW` the program gets `SW_SHOWDEFAULT`, and a
-/// new terminal shows activated. Windows Terminal keeps all its windows in
-/// one process, and when the command came from one of its tabs that process
-/// is in front and may activate a window of its own, so the new terminal
-/// took the front however it was started.
+/// Without `STARTF_USESHOWWINDOW` the program gets `SW_SHOWDEFAULT`, and the
+/// new terminal takes the front. With it the front stays where it was,
+/// unless a Windows Terminal window is in front: Windows Terminal runs all
+/// its windows on one thread, and that thread gives each new one the front
+/// whatever show command it was started with.
 fn startup_info() -> STARTUPINFOW {
     STARTUPINFOW {
         cb: u32::try_from(size_of::<STARTUPINFOW>()).unwrap_or(0),
