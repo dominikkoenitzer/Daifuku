@@ -23,6 +23,7 @@ Exit code 0 when every check passed, 1 otherwise. There is no JSON output.
 | `administrator fleets have an elevated daemon` | set `"elevated": true` and run `daifuku install` again, or set `"admin": false` on the named fleets |
 | `Claude Code hooks present and current` | run `daifuku install`; or repair the named file first; or make a linked file a real file in the profile; or copy the hooks into the file `CLAUDE_CONFIG_DIR` points to |
 | `Codex hooks present and current` | the same, with `CODEX_HOME`; skipped when Codex's folder does not exist |
+| `Claude Code hooks present and current for account <name>` (or Codex) | run `daifuku install` again; an account whose folder is not there yet is a note: sign the agent in there first |
 | `daemon running` | run `daifuku reload`, which starts it; an elevated daemon instead: sign out and in, or `schtasks /Run /TN \Daifuku\Daemon-<SID>` |
 | `daemon rights as the config asks` | an elevated daemon the config does not ask for: run `daifuku install` again, which stops it, removes any logon task and starts it with the user's own rights; a config with `"elevated": true` and a daemon without: run `daifuku install` again from an administrator terminal, which registers the logon task, and start the daemon through that task, not by hand |
 | `daemon up to date` | run `daifuku install` from the newer download; it restarts the daemon |
