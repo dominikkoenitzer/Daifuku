@@ -327,12 +327,12 @@ impl Launch {
         let mut script: String = self
             .environment
             .iter()
-            .map(|(name, value)| format!("$env:{name} = {}; ", quoted(value)))
+            .map(|(name, value)| format!("$env:{name}={};", quoted(value)))
             .collect();
         match &self.command {
             Some(cmd) => script.push_str(cmd),
             None if script.is_empty() => return None,
-            None => script.truncate(script.trim_end().len()),
+            None => {}
         }
         Some(script)
     }
@@ -523,7 +523,8 @@ fn token_command_line(wt: &Path, args: &[OsString]) -> std::io::Result<Vec<u16>>
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "the command line for a terminal without administrator rights is longer than the \
-             1024 characters Windows allows there; shorten the fleet's command",
+             1024 characters Windows allows there; shorten the fleet's command or its account's \
+             folders",
         ));
     }
     Ok(line)
@@ -647,7 +648,7 @@ mod tests {
         assert_eq!(
             l.script().as_deref(),
             Some(
-                r"$env:CLAUDE_CONFIG_DIR = 'C:\Users\me\.claude-work'; $env:CODEX_HOME = 'C:\it''s; $(here)'; claude"
+                r"$env:CLAUDE_CONFIG_DIR='C:\Users\me\.claude-work';$env:CODEX_HOME='C:\it''s; $(here)';claude"
             )
         );
         let args = strs(&l.args(Some(Path::new("pwsh.exe")), true));
@@ -660,10 +661,7 @@ mod tests {
             environment: vec![("CODEX_HOME".into(), r"D:\codex".into())],
             ..Launch::default()
         };
-        assert_eq!(
-            l.script().as_deref(),
-            Some(r"$env:CODEX_HOME = 'D:\codex';")
-        );
+        assert_eq!(l.script().as_deref(), Some(r"$env:CODEX_HOME='D:\codex';"));
         assert!(strs(&l.args(Some(Path::new("pwsh.exe")), true)).contains(&"-NoExit".to_owned()));
         assert_eq!(Launch::default().script(), None);
     }
