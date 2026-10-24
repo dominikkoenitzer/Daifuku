@@ -240,6 +240,18 @@ mod tests {
     }
 
     #[test]
+    fn of_two_shapes_that_cost_the_same_the_one_with_fewer_columns_wins() {
+        // Stacked or side by side, the cells are off the target aspect by a factor of two.
+        let area = Rect::new(0, 0, 1300, 1000);
+        let gaps = Gaps { outer: 0, inner: 0 };
+        assert_eq!(
+            reference_cost(2, area, gaps, 1),
+            reference_cost(2, area, gaps, 2)
+        );
+        assert_eq!(Grid::shape_for(2, area, gaps), shape(1, 2));
+    }
+
+    #[test]
     fn a_forced_shape_is_obeyed() {
         let cells = Grid::plan(6, PORTRAIT, Gaps::default(), Some(shape(3, 2)));
         let top = cells[0].top;
