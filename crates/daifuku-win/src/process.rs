@@ -7,7 +7,8 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, FILETIME, HANDLE, WAIT_OBJECT_0, WIN32_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, WAIT_OBJECT_0,
+    WIN32_ERROR,
 };
 use windows::Win32::Security::{
     DuplicateTokenEx, EqualSid, GetTokenInformation, RevertToSelf, SecurityImpersonation,
@@ -24,7 +25,7 @@ use windows::Win32::System::Threading::{
     CreateProcessW, CreateProcessWithTokenW, DETACHED_PROCESS, GetCurrentProcess,
     GetCurrentProcessId, GetProcessTimes, LOGON_WITH_PROFILE, NORMAL_PRIORITY_CLASS, OpenProcess,
     OpenProcessToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    STARTUPINFOW, SetThreadToken, WaitForSingleObject,
+    PROCESS_TERMINATE, STARTUPINFOW, SetThreadToken, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetShellWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_SHUTTINGDOWN,
@@ -145,20 +146,113 @@ pub fn ancestors(pid: u32) -> Vec<Proc> {
 /// When a process started, as a FILETIME tick count: 100 ns since 1601.
 #[must_use]
 pub fn started(pid: u32) -> Option<u64> {
-    // SAFETY: the handle is closed before returning; the FILETIMEs are
-    // valid out pointers.
+    // SAFETY: the handle is closed before returning.
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let (mut c, mut e, mut k, mut u) = (
-            FILETIME::default(),
-            FILETIME::default(),
-            FILETIME::default(),
-            FILETIME::default(),
-        );
-        let ok = GetProcessTimes(h, &raw mut c, &raw mut e, &raw mut k, &raw mut u);
+        let at = started_at(h);
         let _ = CloseHandle(h);
-        ok.ok()?;
-        Some((u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime))
+        at
+    }
+}
+
+/// When the process behind `h` started, as [`started`] says it.
+///
+/// # Safety
+///
+/// `h` must be a process handle open for at least limited queries.
+unsafe fn started_at(h: HANDLE) -> Option<u64> {
+    let (mut c, mut e, mut k, mut u) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    // SAFETY: as the caller promises; the FILETIMEs are valid out pointers.
+    unsafe { GetProcessTimes(h, &raw mut c, &raw mut e, &raw mut k, &raw mut u) }.ok()?;
+    Some((u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime))
+}
+
+/// Every process in `all` that one of `roots` started, or one of those, and
+/// so on down, the roots first, each with when it started by `started`.
+///
+/// As in [`ancestors`], a child counts only if it started after its parent:
+/// the parent id of a process whose parent ended may name a later one.
+#[must_use]
+pub fn descendants(
+    all: &HashMap<u32, Proc>,
+    started: impl Fn(u32) -> Option<u64>,
+    roots: &[u32],
+) -> Vec<(Proc, u64)> {
+    let mut children: HashMap<u32, Vec<&Proc>> = HashMap::new();
+    for p in all.values() {
+        if p.parent != p.pid {
+            children.entry(p.parent).or_default().push(p);
+        }
+    }
+    let mut out: Vec<(Proc, u64)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut at = 0;
+    for &root in roots {
+        if let Some(p) = all.get(&root)
+            && let Some(when) = started(root)
+            && seen.insert(root)
+        {
+            out.push((p.clone(), when));
+        }
+    }
+    while at < out.len() {
+        let (pid, when) = (out[at].0.pid, out[at].1);
+        at += 1;
+        let mut found: Vec<&Proc> = children.get(&pid).cloned().unwrap_or_default();
+        found.sort_by_key(|c| c.pid);
+        for child in found {
+            if seen.contains(&child.pid) {
+                continue;
+            }
+            if let Some(child_when) = started(child.pid)
+                && child_when >= when
+            {
+                seen.insert(child.pid);
+                out.push((child.clone(), child_when));
+            }
+        }
+    }
+    out
+}
+
+/// Ends process `pid` if it is still the one that started at `started`, and
+/// says whether it did: not when it ended already, or its id names a process
+/// started since.
+///
+/// # Errors
+///
+/// When it runs and cannot be ended, as one that runs elevated cannot from a
+/// process that does not.
+pub fn end(pid: u32, started: u64) -> std::io::Result<bool> {
+    use std::io::Error;
+
+    // SAFETY: the handle is closed on every path.
+    unsafe {
+        let h = match OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        ) {
+            Ok(h) => h,
+            Err(e) if WIN32_ERROR::from_error(&e) == Some(ERROR_INVALID_PARAMETER) => {
+                return Ok(false);
+            }
+            Err(e) => return Err(Error::other(e)),
+        };
+        let same = started_at(h) == Some(started);
+        let running = WaitForSingleObject(h, 0) != WAIT_OBJECT_0;
+        let ended = if same && running {
+            TerminateProcess(h, 1).map(|()| true).map_err(Error::other)
+        } else {
+            Ok(false)
+        };
+        let _ = CloseHandle(h);
+        ended
     }
 }
 
@@ -614,5 +708,72 @@ mod tests {
     #[test]
     fn elevation_of_this_process_agrees_both_ways() {
         assert_eq!(is_elevated(current()), Some(current_is_elevated()));
+    }
+
+    fn proc(pid: u32, parent: u32) -> Proc {
+        Proc {
+            pid,
+            parent,
+            name: format!("p{pid}.exe"),
+        }
+    }
+
+    #[test]
+    fn descendants_follow_children_that_started_after_their_parents() {
+        // 10 started 20, which started 30; 40 names 20 as its parent, yet
+        // started before it, so 20's id was someone else's then. 50 is not
+        // one of theirs at all.
+        let all: HashMap<u32, Proc> = [
+            proc(10, 1),
+            proc(20, 10),
+            proc(30, 20),
+            proc(40, 20),
+            proc(50, 1),
+        ]
+        .into_iter()
+        .map(|p| (p.pid, p))
+        .collect();
+        let when = |pid: u32| match pid {
+            10 => Some(100),
+            20 => Some(200),
+            30 => Some(300),
+            40 => Some(150),
+            50 => Some(50),
+            _ => None,
+        };
+        let found: Vec<(u32, u64)> = descendants(&all, when, &[10, 99])
+            .into_iter()
+            .map(|(p, at)| (p.pid, at))
+            .collect();
+        assert_eq!(found, [(10, 100), (20, 200), (30, 300)]);
+    }
+
+    #[test]
+    fn descendants_list_each_process_once() {
+        let all: HashMap<u32, Proc> = [proc(10, 1), proc(20, 10)]
+            .into_iter()
+            .map(|p| (p.pid, p))
+            .collect();
+        let found = descendants(&all, |_| Some(1), &[10, 20, 10]);
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn end_ends_only_the_process_that_started_then() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let at = started(pid).unwrap();
+        assert!(
+            !end(pid, at + 1).unwrap(),
+            "a later start is another process"
+        );
+        assert!(child.try_wait().unwrap().is_none());
+        assert!(end(pid, at).unwrap());
+        assert!(child.wait().is_ok());
+        assert!(!end(pid, at).unwrap(), "it has ended already");
     }
 }
