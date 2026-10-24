@@ -250,14 +250,19 @@ screen.
       "working": "#89b4fa",
       "waiting": "#f9e2af",
       "done": "#a6e3a1",
-      "failed": "#f38ba8"
+      "failed": "#f38ba8",
+      "warning": "#fab387"
     }
   }
 }
 ```
 
 Colours are `#rrggbb`. A key left out keeps the palette's colour (after
-0.1.1; before, it took the Catppuccin one).
+0.1.1; before, it took the Catppuccin one). `warning` is the colour of a
+working or done terminal whose account has reached its
+[`warn`](#accounts) (after 0.3.0): peach in `catppuccin`, reddish purple in
+`colorblind`, and the theme's text colour with a high contrast theme, as for
+failed. A waiting or failed terminal keeps its own colour.
 
 ## `accounts`
 
@@ -282,6 +287,7 @@ folder Claude Code keeps its sign-in and settings in, the one it reads from
 |---|---|
 | `claude` | Claude Code's folder for this account, a full path. |
 | `codex` | Codex's folder for this account, a full path. |
+| `warn` | A share of the 5-hour or the weekly limit, in percent from 1 to 100. Once either reaches it, the borders of the account's working and done terminals take the [`warning`](#colours) colour until that window resets (after 0.3.0). Needs the status line below. |
 
 Every terminal of a fleet with an `account` starts with those variables
 set, before its `command` runs, and so does a terminal `daifuku restore`
@@ -303,6 +309,30 @@ folder must be inside your profile folder. `daifuku doctor` checks each
 account's hooks, and `daifuku uninstall` removes them from the accounts
 the config names then: run it before you take an account out, or remove
 Daifuku's hooks from that folder's `settings.json` or `hooks.json` by hand.
+
+### Usage
+
+`daifuku status` shows how much of its 5-hour and weekly limits each
+account has used, when each window resets, and its pace: how far use is
+ahead of an even spread over the window, `3 over pace` or `12 under pace`
+(after 0.3.0). The numbers come from Claude Code, which hands them to its
+status line after each answer from a subscription. Set the status line of
+each account's Claude Code, in its `settings.json`, to:
+
+```json
+{ "statusLine": { "type": "command", "command": "daifuku status-line" } }
+```
+
+It reports the numbers to the daemon and shows them as one line, such as
+`5h 48% (2h 14m left), week 35% (3d 4h left)`. With a status line of your
+own, pipe the input your script gets into `daifuku status-line --quiet`,
+which reports without printing. An account is told apart by its folder:
+`CLAUDE_CONFIG_DIR`, or `.claude` in your profile when that is not set, so
+list the profile's folder under `accounts` too to give it a name or a
+`warn`. The numbers are as old as the last answer any of the account's
+agents got, and `daifuku status` says how old; once a window resets they
+no longer hold until the next answer. Codex has no status line to report
+from.
 
 ## `hotkeys`
 

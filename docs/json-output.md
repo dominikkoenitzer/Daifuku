@@ -81,7 +81,16 @@ runs.
       "last_message": "the agent needs your permission to use Bash",
       "transcript_path": "C:\\src\\transcripts\\0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80.jsonl"
     }
-  ]
+  ],
+  "usage": [{
+    "account": "work",
+    "folder": "C:\\Users\\you\\.claude-work",
+    "age_seconds": 125,
+    "five_hour": { "used": 80, "resets_at": 1792548000, "resets_in_seconds": 3720, "pace": 3 },
+    "seven_day": { "used": 35, "resets_at": 1792839600, "resets_in_seconds": 274000, "pace": -12 },
+    "warn": 77,
+    "warning": true
+  }]
 }
 ```
 
@@ -108,14 +117,28 @@ runs.
 | `agents[].last_tool` | string | The tool it ran last, or is running now. |
 | `agents[].last_message` | string | The text of its last notification, such as what it asks permission for; at most 1024 bytes. |
 | `agents[].transcript_path` | string | Its transcript file. |
+| `agents[].account` | string | The account it runs on, by its name under `accounts`, from its status line or else its fleet; left out when neither names one. |
+| `agents[].warning` | boolean | `true` when its account has reached its `warn`, so its border shows the warning colour; left out otherwise. |
 | `peers` | array of objects | Every terminal `daifuku spawn` opened that is still open. |
 | `peers[].window` | integer | Its window handle. |
 | `peers[].label` | string | Its label; left out when it has none. |
 | `peers[].directory` | string | The folder it was opened in. |
 | `peers[].session_id` | string | The last session its agent reported, which `restore` resumes; left out until it reports. |
+| `usage` | array of objects | Each account a status line reported for, most recent first (after 0.3.0). |
+| `usage[].account` | string | Its name under `accounts`; left out for a folder no account names. |
+| `usage[].folder` | string | Its Claude Code folder. |
+| `usage[].age_seconds` | integer | How long ago a status line last reported it. |
+| `usage[].five_hour`, `usage[].seven_day` | object | The 5-hour and the weekly window; left out when Claude Code has not reported it. |
+| `...used` | integer | The share used, in percent, when it was reported. |
+| `...resets_at` | integer | When the window starts over, in seconds since 1970. |
+| `...resets_in_seconds` | integer | How long until then; left out once it has, when `used` no longer holds. |
+| `...pace` | integer | How far use is ahead of an even spread over the window, in percentage points, negative to spare; left out once it has reset. |
+| `usage[].warn` | integer | The account's `warn`; left out when it has none. |
+| `usage[].warning` | boolean | Whether a window has reached `warn`. |
 
 Every field is there even when the daemon is an older version that leaves
-one out: `elevated` is then `false`, and `hotkeys` and `peers` are empty.
+one out: `elevated` is then `false`, and `hotkeys`, `peers` and `usage` are
+empty.
 
 ### `spawn`
 

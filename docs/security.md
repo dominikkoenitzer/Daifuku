@@ -73,7 +73,8 @@ terminal that is not elevated, against an elevated daemon, `daifuku status`
 reports only what files, the registry, the process list and Task Scheduler
 show any user, and names the command to run in an administrator terminal.
 
-**The hook pipe** takes state reports from agent hooks. The signed-in user,
+**The hook pipe** takes state reports from agent hooks, and usage reports
+from `daifuku status-line`. The signed-in user,
 by their own SID, may open it to read and to write data from a normal process
 (a medium label), and nothing more: not create server instances of it, so no
 other process can listen in and collect the hooks' reports. The daemon never
@@ -92,6 +93,13 @@ hook, ignores session and subagent ids longer than 128 bytes, lets one
 session have at most 32 threads waiting, keeps a folder or transcript path of
 at most 4096 bytes, a tool name of at most 128 and the first 1024 bytes of a
 notification's text, and stops tracking new sessions past 512.
+
+A usage report names an account's folder, its numbers and a window. A
+forged one can show wrong numbers in `daifuku status` and turn a border to
+the warning colour or back. The daemon keeps the numbers of at most 16
+folders and the account of at most 256 windows, never reads or writes the
+folder a report names, and keeps the numbers in `usage-<SID>.json`, beside
+the saved state.
 
 A message may also name the agent's process. The daemon believes it only
 when the pipe says the hook ran under that process: the hook waits, within
