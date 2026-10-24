@@ -38,13 +38,15 @@ for a person and may change. Read the fields you need and ignore the rest.
 | `daifuku restore [--dry-run] [--forget] --json` | every peer it looked at, below |
 | `daifuku label <window> [label] --json` | `{"ok": true}` |
 | `daifuku wait <window or label> [--until state] [--timeout seconds] --json` | the terminal once it got there, below |
+| `daifuku task --json` | every fleet's backlog, below |
+| `daifuku task release <id> --json` | `{"ok": true}` |
 | `daifuku reload --json` | `{"ok": true}` |
 | `daifuku stop --json` | `{"ok": true}` |
 | `daifuku install --dry-run --json` | the plan, below |
 | `daifuku uninstall --dry-run --json` | the plan, below |
 
 A command that worked exits with 0. The commands that talk to the daemon
-(`status`, `open`, `snap`, `next`, `close`, `stop-agents`, `demo`, `spawn`, `restore`, `label`, `wait`, `reload` and `stop`) work
+(`status`, `open`, `snap`, `next`, `close`, `stop-agents`, `demo`, `spawn`, `restore`, `label`, `wait`, `task`, `reload` and `stop`) work
 from any of your terminals when the daemon runs with your own rights, the
 default. With `"elevated": true` in the config they need an administrator
 terminal, with `--json` too. That is on purpose: an elevated daemon's
@@ -242,6 +244,39 @@ A process is found from the agent's own process, as its hook named it,
 while the agent still runs. One whose parent had already exited is not:
 start such work in a fleet with a `priority`, whose group ends with its
 terminal ([configuration](configuration.md)).
+
+### `task`
+
+```json
+{
+  "result": "tasks",
+  "fleets": [
+    {
+      "fleet": "crew",
+      "backlog": "C:\\work\\BACKLOG.md",
+      "tasks": [
+        { "id": "A1", "title": "Write the setup guide", "status": "open", "handed_to": { "window": 1050190, "label": "crew 1", "session_id": "0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80", "age_seconds": 640 } },
+        { "id": "A2", "title": "Check the links", "status": "open" }
+      ],
+      "next": "A2"
+    }
+  ]
+}
+```
+
+| Field | Type | |
+|---|---|---|
+| `fleets` | array of objects | Every fleet with a `backlog`, in the config's order. Empty when there is none. |
+| `fleets[].fleet` | string | The fleet's name. |
+| `fleets[].backlog` | string | Its backlog, as the config names it. |
+| `fleets[].error` | string | Why the file could not be read; `tasks` is empty then. |
+| `fleets[].tasks` | array of objects | Its open tasks and the ones handed out, in the file's order. |
+| `fleets[].tasks[].id` | string | The task's id. |
+| `fleets[].tasks[].title` | string | The rest of its heading's first part. |
+| `fleets[].tasks[].status` | string | Its `status:` field. |
+| `fleets[].tasks[].handed_to` | object | Who has it; left out when nobody does. `window` and `label` are the terminal and its label, left out once it closed; `session_id` is the session it went to, and `age_seconds` how long ago. |
+| `fleets[].next` | string | The task that goes out next; left out when there is none. |
+| `fleets[].stopped` | string | Why no task goes out now, as the account's `stop_at` says, such as `5h 80%, stops at 75%`; left out while tasks go out. |
 
 ### `status` from a terminal that is not elevated, when the daemon does not answer it
 
