@@ -342,6 +342,11 @@ pub struct Fleet {
     /// Left out, they use the one in your profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Keep each terminal with the session it runs, as `daifuku spawn`
+    /// keeps a peer, so the fleet opens again with every cell resuming its
+    /// last session: after Windows restarts, and after the fleet was closed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub resume: bool,
 }
 
 impl Default for Fleet {
@@ -361,6 +366,7 @@ impl Default for Fleet {
             with: Vec::new(),
             priority: None,
             account: None,
+            resume: false,
         }
     }
 }
@@ -847,6 +853,11 @@ pub enum ConfigError {
         "fleet `{0}` has a priority but no command: a priority applies to the command a terminal runs"
     )]
     PriorityWithoutCommand(String),
+    /// A fleet that resumes sessions but runs no command to resume them in.
+    #[error(
+        "fleet `{0}` resumes sessions but has no command: a session resumes in the command a terminal runs"
+    )]
+    ResumeWithoutCommand(String),
     /// A hotkey that does not parse.
     #[error("hotkey `{text}`: {reason}")]
     Hotkey {
@@ -981,6 +992,9 @@ impl Config {
             }
             if fleet.priority.is_some() && fleet.command.is_none() {
                 return Err(ConfigError::PriorityWithoutCommand(fleet.name.clone()));
+            }
+            if fleet.resume && fleet.command.is_none() {
+                return Err(ConfigError::ResumeWithoutCommand(fleet.name.clone()));
             }
             if let Some(reason) = fleet.area.part().problem() {
                 return Err(ConfigError::Area {
@@ -1697,6 +1711,16 @@ mod tests {
         assert_eq!(
             Config::from_json(r#"{"fleets":[{"name":"a","priority":"idle","command":null}]}"#),
             Err(ConfigError::PriorityWithoutCommand("a".into()))
+        );
+        assert_eq!(
+            Config::from_json(r#"{"fleets":[{"name":"a","resume":true,"command":null}]}"#),
+            Err(ConfigError::ResumeWithoutCommand("a".into()))
+        );
+        assert!(
+            Config::from_json(r#"{"fleets":[{"name":"a","resume":true}]}"#)
+                .unwrap()
+                .fleets[0]
+                .resume
         );
         assert!("low".parse::<Priority>().is_err());
         assert!(matches!(
