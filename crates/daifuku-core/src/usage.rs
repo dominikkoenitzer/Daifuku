@@ -36,6 +36,73 @@ impl Window {
         now >= self.resets_at
     }
 
+    /// What there is to tell of this window of kind `kind`, as an account
+    /// with `rules` has it at `time`, against what was seen of it
+    /// `before`: what is seen now and what changed. Nothing changed on
+    /// first sight. A report that moves the reset by less than half the
+    /// window's length is of the same window, so it never starts one over.
+    #[must_use]
+    pub fn watch(
+        &self,
+        kind: LimitWindow,
+        rules: &[StopAt],
+        time: LocalTime,
+        before: Option<Seen>,
+    ) -> (Seen, Option<Change>) {
+        let reset = self.has_reset(time.now);
+        let share = (!reset)
+            .then(|| rules.iter().find(|r| r.holds(kind, self.resets_at, time)))
+            .flatten()
+            .map(|r| r.share);
+        let mut seen = Seen {
+            resets_at: self.resets_at,
+            reset,
+            share,
+            stopped: share.is_some_and(|s| self.used >= s),
+        };
+        let Some(old) = before else {
+            return (seen, None);
+        };
+        let length = match kind {
+            LimitWindow::FiveHour => FIVE_HOURS,
+            LimitWindow::SevenDay => SEVEN_DAYS,
+        };
+        if self.resets_at.abs_diff(old.resets_at) >= length / 2 {
+            // An earlier window is a late report: what was seen stays.
+            if self.resets_at < old.resets_at {
+                return (old, None);
+            }
+            // A later one has started over since, unless that was told
+            // already. Its stop is told on the next look.
+            let started = !old.reset;
+            seen.stopped = false;
+            return (
+                seen,
+                started.then_some(Change::Reset {
+                    used: (!reset).then_some(self.used),
+                }),
+            );
+        }
+        seen.reset |= old.reset;
+        let change = if reset {
+            (!old.reset).then_some(Change::Reset { used: None })
+        } else if seen.stopped {
+            (!old.stopped).then(|| Change::Limit {
+                used: self.used,
+                share: share.unwrap_or(100),
+            })
+        } else {
+            // No stop counts as higher than any.
+            let room = |s: Option<u8>| s.map_or(u16::MAX, u16::from);
+            (room(share) > room(old.share)).then(|| Change::TopUp {
+                used: self.used,
+                share,
+                resets_in_seconds: self.resets_at - time.now,
+            })
+        };
+        (seen, change)
+    }
+
     /// How far use is ahead of an even spread over a window `length`
     /// seconds long, in percentage points: `+12` is 12 more than the time
     /// gone by would allow, `-20` is 20 to spare. `None` once the window
@@ -50,6 +117,46 @@ impl Window {
         let gone = i32::try_from(gone).unwrap_or(100);
         Some(i32::from(self.used) - gone)
     }
+}
+
+/// What was last seen of a window, to tell what changed since.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seen {
+    /// When it starts over, as last reported.
+    pub resets_at: u64,
+    /// Whether it has started over since.
+    pub reset: bool,
+    /// The share its account's `stop_at` stops it at, `None` for no stop.
+    pub share: Option<u8>,
+    /// Whether it had used that share.
+    pub stopped: bool,
+}
+
+/// A change to a window worth telling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    /// It used the share its account's `stop_at` stops at.
+    Limit {
+        /// Its share used.
+        used: u8,
+        /// The share it stops at.
+        share: u8,
+    },
+    /// It started over.
+    Reset {
+        /// The new window's share used, once a report gave it.
+        used: Option<u8>,
+    },
+    /// Its stop rose, or went, before it started over, as when a rule for
+    /// its last hour takes over: it may take more than it could.
+    TopUp {
+        /// Its share used.
+        used: u8,
+        /// The share it stops at now, `None` for no stop.
+        share: Option<u8>,
+        /// How long until it starts over.
+        resets_in_seconds: u64,
+    },
 }
 
 /// Both windows; one Claude Code did not report is `None`.
@@ -352,5 +459,213 @@ mod tests {
         };
         assert_eq!(week.stopped_by(&rules, later), None);
         assert_eq!(five(100, 7200).stopped_by(&[], monday_ten), None);
+    }
+
+    /// Feeds each `(used, resets_at, now)` to a 5-hour window in turn and
+    /// collects what changed at each.
+    fn watched(rules: &[StopAt], steps: &[(u8, u64, u64)]) -> Vec<Option<Change>> {
+        let mut seen = None;
+        steps
+            .iter()
+            .map(|&(used, resets_at, now)| {
+                let time = LocalTime {
+                    now,
+                    weekday: 0,
+                    minute: 600,
+                };
+                let w = Window { used, resets_at };
+                let (now, change) = w.watch(LimitWindow::FiveHour, rules, time, seen);
+                seen = Some(now);
+                change
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_late_report_of_the_window_before_changes_nothing() {
+        let end = 1_000_000;
+        let late = (99, end - FIVE_HOURS, end - 7100);
+        assert_eq!(
+            watched(
+                &stop_rules(),
+                &[(60, end, end - 7200), late, (80, end, end - 7000)],
+            ),
+            vec![
+                None,
+                None,
+                Some(Change::Limit {
+                    used: 80,
+                    share: 75
+                })
+            ]
+        );
+        assert_eq!(
+            watched(
+                &stop_rules(),
+                &[
+                    (60, end, end - 7200),
+                    late,
+                    (60, end, end + 1),
+                    (3, end + FIVE_HOURS, end + 9),
+                ],
+            ),
+            vec![None, None, Some(Change::Reset { used: None }), None]
+        );
+    }
+
+    #[test]
+    fn a_new_window_already_at_its_stop_is_told_both() {
+        let end = 1_000_000;
+        let new = (80, end + FIVE_HOURS, end + 7200);
+        assert_eq!(
+            watched(&stop_rules(), &[(60, end, end - 10), new, new, new]),
+            vec![
+                None,
+                Some(Change::Reset { used: Some(80) }),
+                Some(Change::Limit {
+                    used: 80,
+                    share: 75
+                }),
+                None,
+            ]
+        );
+    }
+
+    fn stop_rules() -> Vec<StopAt> {
+        serde_json::from_str(r#"[{"share":91,"last_minutes":60},{"share":75}]"#).unwrap()
+    }
+
+    #[test]
+    fn a_window_is_told_once_when_it_reaches_its_stop() {
+        let end = 1_000_000;
+        let changes = watched(
+            &stop_rules(),
+            &[
+                (70, end, end - 7200),
+                (76, end, end - 7100),
+                (80, end, end - 7000),
+            ],
+        );
+        assert_eq!(
+            changes,
+            [
+                None,
+                Some(Change::Limit {
+                    used: 76,
+                    share: 75
+                }),
+                None
+            ]
+        );
+        // Without rules nothing stops.
+        assert!(
+            watched(&[], &[(70, end, end - 7200), (100, end, end - 7100)])
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn a_window_is_told_once_when_it_starts_over() {
+        let end = 1_000_000;
+        // Seen to pass its reset, then reported anew.
+        let changes = watched(
+            &stop_rules(),
+            &[
+                (60, end, end - 10),
+                (60, end, end),
+                (60, end, end + 2),
+                (3, end + FIVE_HOURS, end + 9),
+            ],
+        );
+        assert_eq!(
+            changes,
+            [None, Some(Change::Reset { used: None }), None, None]
+        );
+        // Reported anew before the time was seen to pass.
+        let changes = watched(
+            &stop_rules(),
+            &[(60, end, end - 10), (3, end + FIVE_HOURS, end + 9)],
+        );
+        assert_eq!(changes, [None, Some(Change::Reset { used: Some(3) })]);
+    }
+
+    #[test]
+    fn a_reset_that_moves_a_little_is_the_same_window() {
+        let end = 1_000_000;
+        let changes = watched(
+            &stop_rules(),
+            &[
+                (60, end, end - 7200),
+                (61, end + 5, end - 7100),
+                (62, end - 5, end - 7000),
+                // A late report of the window before is not a reset.
+                (99, end - FIVE_HOURS, end - 6900),
+            ],
+        );
+        assert!(changes.iter().all(Option::is_none), "{changes:?}");
+    }
+
+    #[test]
+    fn a_stop_that_rises_before_the_reset_is_a_top_up() {
+        let end = 1_000_000;
+        let changes = watched(
+            &stop_rules(),
+            &[
+                // Stopped at 75 until the last hour, then 91 holds.
+                (80, end, end - 3700),
+                (80, end, end - 3500),
+                (85, end, end - 3000),
+                (92, end, end - 2000),
+            ],
+        );
+        assert_eq!(
+            changes,
+            [
+                None,
+                Some(Change::TopUp {
+                    used: 80,
+                    share: Some(91),
+                    resets_in_seconds: 3500
+                }),
+                None,
+                Some(Change::Limit {
+                    used: 92,
+                    share: 91
+                }),
+            ]
+        );
+        // A stop that goes is a top-up too; one that falls is not.
+        let hours: Vec<StopAt> = serde_json::from_str(r#"[{"share":75,"hours":"9-17"}]"#).unwrap();
+        let mut seen = None;
+        let changes: Vec<_> = [600, 1020, 600]
+            .into_iter()
+            .map(|minute| {
+                let time = LocalTime {
+                    now: end - 7200,
+                    weekday: 0,
+                    minute,
+                };
+                let w = Window {
+                    used: 50,
+                    resets_at: end,
+                };
+                let (now, change) = w.watch(LimitWindow::FiveHour, &hours, time, seen);
+                seen = Some(now);
+                change
+            })
+            .collect();
+        assert_eq!(
+            changes,
+            [
+                None,
+                Some(Change::TopUp {
+                    used: 50,
+                    share: None,
+                    resets_in_seconds: 7200
+                }),
+                None
+            ]
+        );
     }
 }

@@ -1,13 +1,15 @@
 //! The daemon's state and its message loop.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 use anyhow::Context;
 use daifuku_core::config::{Border, Config, Fleet, LocalTime};
 use daifuku_core::peer::{self, FleetCell, Kept, KeptFile, Spawn};
 use daifuku_core::protocol::{
-    AgentWindow, FleetQueue, FleetStatus, HandedTo, HookAnswer, HookMessage, Leftover, PeerStatus,
-    QueuedTask, Request, Response, RestoredPeer, Status, StoppedTerminal, UsageReport,
+    AgentWindow, FleetEvent, FleetQueue, FleetStatus, HandedTo, HookAnswer, HookMessage, Leftover,
+    LoggedEvent, PeerStatus, QueuedTask, Request, Response, RestoredPeer, Status, StoppedTerminal,
+    UsageReport,
 };
 use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
@@ -32,6 +34,10 @@ const MAX_SESSIONS: usize = 512;
 
 /// The built-in demo fleet's name.
 const DEMO: &str = "demo";
+
+/// The most events kept, the newest: as many as the terminals whose account
+/// is kept, so a caller that looks every few seconds misses none.
+const MAX_EVENTS: usize = 256;
 
 /// How often dead windows are swept, in milliseconds. Destroy events do most
 /// of the work; this catches the ones Windows did not deliver.
@@ -141,6 +147,21 @@ struct Daemon {
     warned: Vec<u64>,
     /// The tasks handed out from the fleets' backlogs.
     queue: queue::Queue,
+    /// What `daifuku events` prints, oldest first: each event with its
+    /// number and when it happened, in seconds since 1970.
+    events: VecDeque<(u64, u64, FleetEvent)>,
+    /// The number of the latest event, 0 while there is none.
+    last_event: u64,
+    /// When the daemon started, in seconds since 1970.
+    started_at: u64,
+    /// The sessions that finished their turn in a fleet terminal holding no
+    /// task, by window and session, and whether each was told idle.
+    idle: Vec<((u64, String), bool)>,
+    /// Something changed that may give such a session a task: a stop, a
+    /// release, the config. Each is then looked at again.
+    idle_stale: bool,
+    /// When each backlog last changed, as last seen.
+    backlog_stamps: HashMap<PathBuf, Option<std::time::SystemTime>>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -291,6 +312,12 @@ impl Daemon {
             usage: usage::Book::default(),
             warned: Vec::new(),
             queue: queue::Queue::default(),
+            events: VecDeque::new(),
+            last_event: 0,
+            started_at: wall_seconds(),
+            idle: Vec::new(),
+            idle_stale: false,
+            backlog_stamps: HashMap::new(),
         }
     }
 
@@ -419,7 +446,9 @@ impl Daemon {
                 fleets: self.queues(),
             },
             Request::TaskRelease { id } => self.release_task(id),
+            Request::Events { after } => self.logged_since(*after),
             Request::Reload => {
+                self.idle_stale = true;
                 self.load_config();
                 self.hotkeys.register(&self.config);
                 if let Some(b) = &self.borders {
@@ -648,11 +677,130 @@ impl Daemon {
             0 => Response::error(format!("no task `{id}` is handed out")),
             _ => {
                 self.queue.save();
+                self.idle_stale = true;
                 Response::said(format!(
-                    "took {id} back; while its backlog lists it open, the next idle agent gets it"
+                    "took {id} back; while its backlog lists it open, the next agent to stop gets it"
                 ))
             }
         }
+    }
+
+    /// Logs one event for `daifuku events`.
+    fn log_event(&mut self, event: FleetEvent) {
+        tracing::info!(event = %event.line(), "logged an event");
+        self.last_event += 1;
+        if self.events.len() >= MAX_EVENTS {
+            self.events.pop_front();
+        }
+        self.events
+            .push_back((self.last_event, wall_seconds(), event));
+    }
+
+    /// The events logged after the one numbered `after`.
+    fn logged_since(&self, after: u64) -> Response {
+        let now = wall_seconds();
+        Response::Events {
+            events: self
+                .events
+                .iter()
+                .filter(|(seq, ..)| *seq > after)
+                .map(|(seq, at, event)| LoggedEvent {
+                    seq: *seq,
+                    age_seconds: now.saturating_sub(*at),
+                    event: event.clone(),
+                })
+                .collect(),
+            last: self.last_event,
+            started_at: self.started_at,
+        }
+    }
+
+    /// Logs what changed in the accounts' windows. A stop that went may let
+    /// an agent that finished its turn take a task.
+    fn watch_limits(&mut self) {
+        let events = self.usage.watch(&self.config, local_time());
+        for event in events {
+            if !matches!(event, FleetEvent::Limit { .. }) {
+                self.idle_stale = true;
+            }
+            self.log_event(event);
+        }
+    }
+
+    /// Logs each fleet terminal's agent that finished its turn holding no
+    /// task while its backlog has one it may take: as tasks go out only as
+    /// agents stop, it gets that one only when it stops again. Told once per
+    /// turn. A backlog is read only for a session not looked at yet, or once
+    /// something changed that may give it a task.
+    fn watch_idle(&mut self) {
+        // By the state the terminal shows: a session done long ago in a
+        // terminal that runs another is not idle.
+        let done: Vec<(u64, String, String)> = self
+            .agents
+            .windows()
+            .into_iter()
+            .filter(|&(_, state)| state == AgentState::Done)
+            .filter_map(|(w, state)| {
+                let fleet = self.fleet_of(w)?;
+                self.config.fleet(&fleet)?.backlog.as_ref()?;
+                let id = shown_session(&self.agents, w, state)?;
+                self.queue.held(w, &id).is_none().then_some((w, id, fleet))
+            })
+            .collect();
+        self.idle
+            .retain(|((w, id), _)| done.iter().any(|(x, y, _)| x == w && y == id));
+        for path in self.config.fleets.iter().filter_map(|f| f.backlog.clone()) {
+            let changed = stamp(&path);
+            if self.backlog_stamps.insert(path, changed) != Some(changed) {
+                self.idle_stale = true;
+            }
+        }
+        if std::mem::take(&mut self.idle_stale) {
+            self.idle.retain(|(_, told)| *told);
+        }
+        let mut next: HashMap<String, Option<String>> = HashMap::new();
+        for (w, id, fleet) in done {
+            if self.idle.iter().any(|((x, y), _)| *x == w && *y == id) {
+                continue;
+            }
+            let Some(config) = self.config.fleet(&fleet).cloned() else {
+                continue;
+            };
+            let task = match next.get(&fleet) {
+                Some(task) => task.clone(),
+                None => {
+                    let task = self.next_task(&config);
+                    next.insert(fleet.clone(), task.clone());
+                    task
+                }
+            };
+            let task = task.filter(|_| self.stop_reason(&config, Some(w)).is_none());
+            let told = task.is_some();
+            if let Some(task) = task {
+                let label = self.label_of(w);
+                self.log_event(FleetEvent::Idle {
+                    window: w,
+                    label,
+                    fleet,
+                    task,
+                });
+            }
+            self.idle.push(((w, id), told));
+        }
+    }
+
+    /// The id of the task `fleet`'s next agent to stop would get.
+    fn next_task(&mut self, fleet: &Fleet) -> Option<String> {
+        let path = fleet.backlog.as_ref()?;
+        let backlog = queue::read(path, self.elevated)
+            .inspect_err(|error| {
+                tracing::warn!(path = %path.display(), %error, "could not read a backlog");
+            })
+            .ok()?;
+        if self.queue.settle(path, &backlog) {
+            self.queue.save();
+        }
+        self.queue.next(path, &backlog).map(|t| t.id.clone())
     }
 
     /// One status line's report of its account's limits. Kept on disk only
@@ -661,6 +809,9 @@ impl Daemon {
         let window = report.window.and_then(daifuku_win::console::visible_window);
         if self.usage.note(report, window, wall_seconds()) {
             self.usage.save();
+            // The first numbers of an account with rules may lift its stop.
+            self.idle_stale = true;
+            self.watch_limits();
         }
         if self.update_warnings() {
             self.paint_borders();
@@ -1418,6 +1569,7 @@ impl Daemon {
         if self.update_warnings() {
             self.paint_borders();
         }
+        self.watch_limits();
         let gone = away();
         if gone != self.away {
             tracing::info!(away = gone, "the desktop was left or came back");
@@ -1443,6 +1595,7 @@ impl Daemon {
         if !dead.is_empty() {
             self.refresh_borders();
         }
+        self.watch_idle();
         self.save(false);
     }
 
@@ -4195,5 +4348,76 @@ mod tests {
         noted = second;
         retry_once(&mut failed, &mut noted);
         assert_eq!((failed, noted), (second, None), "a new save gets its retry");
+    }
+
+    #[test]
+    fn an_agent_done_with_no_task_while_its_backlog_has_one_is_told_idle_once_a_turn() {
+        use daifuku_core::state::HookEvent;
+        let dir = std::env::temp_dir().join(format!("daifuku-idle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let backlog = dir.join("BACKLOG.md");
+        std::fs::write(
+            &backlog,
+            "### A1. Write the guide | owner: | status: open
+",
+        )
+        .unwrap();
+        let mut d = daemon();
+        d.config.fleets[0].backlog = Some(backlog);
+        let fleet = d.config.fleets[0].name.clone();
+        let mut record = OpenFleet::new(&fleet);
+        record.slots = vec![Some(1), Some(2)];
+        d.fleets.push(record);
+        let event = |session: &str, name: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: name.into(),
+            ..HookEvent::default()
+        };
+        d.agents.apply(1, &event("a", "Stop"));
+        d.agents.apply(2, &event("b", "UserPromptSubmit"));
+        d.watch_idle();
+        d.watch_idle();
+        let idle = FleetEvent::Idle {
+            window: 1,
+            label: Some(format!("{fleet} 1")),
+            fleet: fleet.clone(),
+            task: "A1".into(),
+        };
+        let Response::Events { events, last, .. } = d.logged_since(0) else {
+            panic!("not events");
+        };
+        assert_eq!(last, 1, "told once, and the working agent not at all");
+        assert_eq!(events[0].event, idle);
+        // Its next turn ends idle again.
+        d.agents.apply(1, &event("a", "UserPromptSubmit"));
+        d.watch_idle();
+        d.agents.apply(1, &event("a", "Stop"));
+        d.watch_idle();
+        let Response::Events { events, last, .. } = d.logged_since(1) else {
+            panic!("not events");
+        };
+        assert_eq!((last, events.len()), (2, 1));
+        assert_eq!(events[0].seq, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_event_log_keeps_the_newest() {
+        let mut d = daemon();
+        for window in 0..u64::try_from(MAX_EVENTS).unwrap() + 3 {
+            d.log_event(FleetEvent::Idle {
+                window,
+                label: None,
+                fleet: "crew".into(),
+                task: "A1".into(),
+            });
+        }
+        let Response::Events { events, last, .. } = d.logged_since(0) else {
+            panic!("not events");
+        };
+        assert_eq!(events.len(), MAX_EVENTS);
+        assert_eq!(events[0].seq, 4);
+        assert_eq!(last, events[MAX_EVENTS - 1].seq);
+        assert_eq!(events[MAX_EVENTS - 1].seq, events[0].seq + 255);
     }
 }
