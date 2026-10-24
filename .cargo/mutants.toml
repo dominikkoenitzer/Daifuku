@@ -9,7 +9,7 @@ exclude_re = [
     'geometry\.rs:68:30: replace > with >= in Rect::shrink$',
     # A cell of no size on one side only costs NaN or infinity, which never wins.
     'grid\.rs:96:30: replace \|\| with && in Grid::shape_for$',
-    # Adds the same count to every shape's empty cells, so the cheapest stays the cheapest.
+    # Adds one offset to every shape's cost: equal in exact arithmetic, and a wide search found no float input that differs.
     'grid\.rs:99:50: replace - with \+ in Grid::shape_for$',
     # Without the shortcut, the number goes through the same parse and comes out the same.
     "peer\\.rs:88:35: replace match guard n >= 1 with false in <impl Deserialize<'de> for Cell>::deserialize$",
