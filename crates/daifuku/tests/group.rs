@@ -16,13 +16,16 @@ fn cli() -> PathBuf {
 }
 
 /// `daifuku`, on a heavy-job queue of this test run's own, so a test never
-/// waits for a real build on the machine, nor a build for a test.
+/// waits for a real build on the machine, nor a build for a test. A heavy
+/// job the suite itself runs in holds its turn on the real queue, not on
+/// this one, so its mark is not passed on.
 fn daifuku() -> Command {
     let mut c = Command::new(cli());
     c.env(
         "DAIFUKU_HEAVY_QUEUE",
         format!(r"Local\Daifuku.Heavy.test-{}", std::process::id()),
-    );
+    )
+    .env_remove("DAIFUKU_HEAVY");
     c
 }
 
@@ -47,10 +50,21 @@ fn powershell_in(args: &[&str], line: &str) -> String {
 #[test]
 fn the_group_s_priority_reaches_the_program_and_what_it_starts() {
     let own = "[Console]::Out.Write((Get-Process -Id $PID).PriorityClass)";
-    assert_eq!(powershell_in(&["group", "--priority", "idle"], own), "Idle");
+    // A group the suite itself runs in caps every group in it at its own
+    // priority, as a heavy job does at idle.
+    let ceiling = powershell_in(&["group", "--priority", "normal"], own);
+    let capped = |asked: &'static str| {
+        let order = ["Idle", "BelowNormal", "Normal"];
+        let rank = |p: &str| order.iter().position(|o| *o == p).unwrap();
+        order[rank(asked).min(rank(&ceiling))]
+    };
+    assert_eq!(
+        powershell_in(&["group", "--priority", "idle"], own),
+        capped("Idle")
+    );
     assert_eq!(
         powershell_in(&["group", "--priority", "below-normal"], own),
-        "BelowNormal"
+        capped("BelowNormal")
     );
     assert_eq!(powershell_in(&["heavy"], own), "Idle", "heavy runs at idle");
     // A child the program starts, asking to run higher, stays at idle.
