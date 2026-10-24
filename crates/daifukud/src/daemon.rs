@@ -1318,12 +1318,27 @@ impl Daemon {
     /// Windows before that are dropped, as is one closed in this start of
     /// Windows while no daemon ran. Written back at once, so the file says
     /// which start of Windows its dormant peers are from.
+    ///
+    /// A file that is there but does not read, held by another program for
+    /// longer than [`read_while_held`] waits or written by a version this one
+    /// cannot read, stays as it is: this run keeps its peers in memory only,
+    /// as saving would lose the ones in it.
     fn load_peers(&mut self) {
-        let Some(file) = &self.peers_file else {
+        let Some(file) = self.peers_file.clone() else {
             return;
         };
-        let Ok(text) = std::fs::read_to_string(file) else {
-            return;
+        let read = match read_while_held(&file) {
+            Ok(text) => peer::read_kept(&text).map_err(std::io::Error::other),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => Err(e),
+        };
+        let kept = match read {
+            Ok(kept) => kept,
+            Err(e) => {
+                tracing::warn!(path = %file.display(), error = %e, "the peers file does not read; it stays as it is and the peers are not saved until the daemon starts again");
+                self.peers_file = None;
+                return;
+            }
         };
         let boot = saved::boot(wall_seconds(), clock::ticks());
         let Sorted {
@@ -1331,7 +1346,7 @@ impl Daemon {
             dormant,
             closed,
             from: dormant_boot,
-        } = sort_kept(peer::read_kept(&text), boot, |w| {
+        } = sort_kept(kept, boot, |w| {
             window::exists(w) && window::class(w) == WINDOW_CLASS
         });
         let mut seats = Vec::new();
@@ -2030,6 +2045,25 @@ fn stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Reads `file`, again for half a second while another program holds it, as
+/// a scanner or a backup tool may for a moment while the daemon starts at
+/// logon.
+fn read_while_held(file: &std::path::Path) -> std::io::Result<String> {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        match std::fs::read_to_string(file) {
+            // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+            Err(e)
+                if matches!(e.raw_os_error(), Some(32 | 33))
+                    && std::time::Instant::now() < until =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            read => return read,
+        }
+    }
+}
+
 /// Notes that reading the config file saved at `stamp` failed. An editor can
 /// hold the file for a moment while it saves: forget the stamp so the next
 /// sweep reads it once more. Only once per save: a file that stays unreadable
@@ -2629,7 +2663,7 @@ mod tests {
             });
         }
         d.save_peers();
-        let read = peer::read_kept(&std::fs::read_to_string(&file).unwrap());
+        let read = peer::read_kept(&std::fs::read_to_string(&file).unwrap()).unwrap();
         let cells: Vec<_> = read.peers.iter().map(|k| k.in_cell.clone()).collect();
         let seat = FleetCell {
             fleet: "crew".into(),
@@ -2665,6 +2699,7 @@ mod tests {
         d.save_peers();
         assert_eq!(
             peer::read_kept(&std::fs::read_to_string(&file).unwrap())
+                .unwrap()
                 .peers
                 .len(),
             1
@@ -2672,9 +2707,107 @@ mod tests {
         d.window_destroyed(w);
         assert!(
             peer::read_kept(&std::fs::read_to_string(&file).unwrap())
+                .unwrap()
                 .peers
                 .is_empty()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_peers_file_that_does_not_read_is_never_saved_over() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("daifuku-unread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("peers.json");
+        let spawn_one = |d: &mut Daemon| {
+            d.peers.push(Peer {
+                window: 0x7fff_ffe8,
+                spawn: Spawn {
+                    directory: r"C:\src".into(),
+                    resume: Some("abc".into()),
+                    ..Spawn::default()
+                },
+            });
+            d.save_peers();
+        };
+        // Written by a later version, with a cell this one does not know.
+        let foreign = r#"{"boot": 1, "dormant_boot": 1, "peers": [{"spawn": {"directory": "C:\\old", "resume": "def", "cell": "last"}, "window": 0, "boot": 1}]}"#;
+        // Whole, but held by another program while the daemon starts.
+        let dormant = KeptFile {
+            boot: 1,
+            dormant_boot: 1,
+            peers: vec![Kept {
+                spawn: Spawn {
+                    directory: r"C:\old".into(),
+                    resume: Some("def".into()),
+                    ..Spawn::default()
+                },
+                window: 0,
+                boot: 1,
+                closed_with_fleet: false,
+                in_cell: None,
+            }],
+        };
+        let held = serde_json::to_string(&dormant).unwrap();
+        for (text, lock) in [(foreign, false), (held.as_str(), true)] {
+            std::fs::write(&file, text).unwrap();
+            let mut d = daemon();
+            d.peers_file = Some(file.clone());
+            let holder = lock.then(|| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&file)
+                    .unwrap()
+            });
+            d.load_peers();
+            drop(holder);
+            spawn_one(&mut d);
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_peers_file_held_for_a_moment_at_start_is_read() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("daifuku-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("peers.json");
+        let kept = KeptFile {
+            boot: 1,
+            dormant_boot: 1,
+            peers: vec![Kept {
+                spawn: Spawn {
+                    directory: r"C:\old".into(),
+                    resume: Some("def".into()),
+                    ..Spawn::default()
+                },
+                window: 0,
+                boot: 1,
+                closed_with_fleet: false,
+                in_cell: None,
+            }],
+        };
+        std::fs::write(&file, serde_json::to_string(&kept).unwrap()).unwrap();
+        // A scanner or a backup tool lets go of it soon after the daemon
+        // starts at logon.
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(holder);
+        });
+        let mut d = daemon();
+        d.peers_file = Some(file.clone());
+        d.load_peers();
+        release.join().unwrap();
+        assert_eq!(d.dormant.len(), 1);
+        assert!(d.peers_file.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
