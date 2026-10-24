@@ -2283,12 +2283,19 @@ fn a_fleet_that_resumes_opens_each_terminal_back_in_its_cell_and_session() {
     assert!(file.contains("e2e-resume-2"), "{file}");
     steps += 1;
 
-    // A fleet that does not resume keeps nothing: its hook ran before the
-    // script wrote its file.
+    // A fleet that does not resume keeps nothing, once the daemon has its
+    // agent's report.
     let _ = run(&["open", "plain"]);
     ran_full(&dir, "plain");
     let plain = fleet_windows("plain");
     assert_eq!(plain.len(), 1);
+    wait_for("the plain fleet's agent", Duration::from_secs(20), || {
+        status()?
+            .agents
+            .iter()
+            .any(|a| a.window == plain[0])
+            .then_some(())
+    });
     assert!(
         sessions().iter().all(|(w, _)| *w != plain[0]),
         "{:?}",
