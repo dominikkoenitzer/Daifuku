@@ -142,6 +142,7 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku close [fleet]` | close a fleet |
 | `daifuku close --all` | close every open fleet |
 | `daifuku close --terminal <window or label>` | close one terminal |
+| `daifuku stop-agents [--dry-run]` | close every agent terminal, keep its session for `restore`, end what the agents left running |
 | `daifuku status` | fleets, agents and hotkeys |
 | `daifuku demo` | six scripted agents |
 | `daifuku spawn [--dir] [--label] [--resume] [--cell]` | one agent terminal on its own, in a folder, or in a cell of a fleet |

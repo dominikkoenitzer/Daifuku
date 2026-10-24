@@ -780,7 +780,9 @@ fn expect_failure(what: &str, passed: bool) {
 /// file `ping-me` beside it, it first starts a hidden `ping`
 /// that would outlive it; with `agent-me`, a second PowerShell on its
 /// console plays the agent, reports the event two seconds later instead and
-/// stays, its process id in `agent-pid.txt`.
+/// stays, its process id in `agent-pid.txt`. With `leftover-me` as well, that
+/// agent first starts a hidden `ping` of its own, its id in
+/// `leftover-pid.txt`.
 fn peer_script(dir: &Path) -> PathBuf {
     let script = dir.join("peer.ps1");
     let text = format!(
@@ -798,7 +800,11 @@ $event = Join-Path $here 'peer-event.json'
 $own = Join-Path $here ('peer-event-' + ($args -join '-') + '.json')
 if ($args.Count -gt 0 -and (Test-Path $own)) {{ $event = $own }}
 if (Test-Path (Join-Path $here 'agent-me')) {{
-    $agent = Start-Process powershell.exe -NoNewWindow -PassThru -ArgumentList '-NoProfile','-Command',"Start-Sleep 2; Get-Content -Raw '$event' | & '{cli}' hook; Start-Sleep 120"
+    $leftover = ''
+    if (Test-Path (Join-Path $here 'leftover-me')) {{
+        $leftover = "Set-Content -LiteralPath '$here\leftover-pid.txt' -Value (Start-Process ping.exe -ArgumentList '-n','120','127.0.0.1' -PassThru -WindowStyle Hidden).Id;"
+    }}
+    $agent = Start-Process powershell.exe -NoNewWindow -PassThru -ArgumentList '-NoProfile','-Command',"Start-Sleep 2; $leftover Get-Content -Raw '$event' | & '{cli}' hook; Start-Sleep 120"
     Set-Content -LiteralPath (Join-Path $here 'agent-pid.txt') -Value $agent.Id
 }} elseif (Test-Path $event) {{
     Get-Content -Raw $event | & '{cli}' hook
@@ -1903,6 +1909,116 @@ fn a_peer_in_a_cell_stays_in_its_fleet_when_the_daemon_was_gone_for_long() {
         Duration::from_secs(15),
         || (!window::exists(own)).then_some(()),
     );
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
+
+#[test]
+fn stop_agents_closes_every_agent_ends_what_it_left_and_restore_brings_it_back() {
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    let dir = scratch().join("stop-agents");
+    let work = dir.join("work");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let config = peer_config(&dir);
+    // The agent reports its folder, which the fleet's terminal does not
+    // start in, and starts a ping that outlives its terminal.
+    let event = serde_json::json!({
+        "session_id": "e2e-stop-1",
+        "hook_event_name": "Stop",
+        "cwd": work.display().to_string(),
+    });
+    std::fs::write(dir.join("peer-event.json"), event.to_string()).unwrap();
+    std::fs::write(dir.join("agent-me"), "").unwrap();
+    std::fs::write(dir.join("leftover-me"), "").unwrap();
+    let mut steps = 0;
+    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
+
+    run(&["open", "e2e"]);
+    let w = wait_for("the fleet's terminal", Duration::from_secs(30), || {
+        fleet_windows("e2e").first().copied()
+    });
+    let leftover: u32 = wait_for("the agent's ping", Duration::from_secs(30), || {
+        std::fs::read_to_string(dir.join("leftover-pid.txt"))
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+    });
+    wait_for("the agent's session", Duration::from_secs(30), || {
+        status()?.agents.into_iter().find(|a| {
+            a.window == w && a.session_id.as_deref() == Some("e2e-stop-1") && a.cwd.is_some()
+        })
+    });
+    steps += 1;
+
+    // A dry run says what it would do and does none of it.
+    let planned = json(&run(&["stop-agents", "--dry-run", "--json"]));
+    println!("e2e: stop-agents --dry-run --json: {planned}");
+    assert_eq!(planned["dry_run"], true, "{planned}");
+    let terminal = &planned["terminals"][0];
+    assert_eq!(terminal["window"], w, "{planned}");
+    assert_eq!(terminal["fleet"], "e2e", "{planned}");
+    assert_eq!(terminal["cell"], 1, "{planned}");
+    assert_eq!(terminal["session_id"], "e2e-stop-1", "{planned}");
+    assert_eq!(terminal["kept"], true, "{planned}");
+    assert_eq!(terminal["closed"], false, "{planned}");
+    let listed = |reply: &serde_json::Value| {
+        reply["leftovers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|l| l["pid"] == leftover)
+            .cloned()
+    };
+    assert!(listed(&planned).is_some(), "{planned}");
+    assert!(window::exists(w) && alive(leftover));
+    steps += 1;
+
+    let stopped = json(&run(&["stop-agents", "--json"]));
+    println!("e2e: stop-agents --json: {stopped}");
+    assert_eq!(stopped["terminals"][0]["closed"], true, "{stopped}");
+    assert_eq!(stopped["terminals"][0]["kept"], true, "{stopped}");
+    let ping = listed(&stopped).unwrap_or_else(|| panic!("the ping is not listed: {stopped}"));
+    assert_eq!(ping["ended"], true, "{stopped}");
+    assert!(!window::exists(w));
+    wait_for("the ping to end", Duration::from_secs(5), || {
+        (!alive(leftover)).then_some(())
+    });
+    assert!(fleet_windows("e2e").is_empty());
+    steps += 1;
+
+    // Restore opens it again in its cell, on its session, in its folder.
+    let listed = json(&run(&["restore", "--dry-run", "--json"]));
+    assert_eq!(listed["peers"][0]["session_id"], "e2e-stop-1", "{listed}");
+    std::fs::remove_file(dir.join("leftover-me")).unwrap();
+    std::fs::remove_file(dir.join("agent-me")).unwrap();
+    let restored = json(&run(&["restore", "--json"]));
+    let again = restored["peers"][0]["window"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("restore opened nothing: {restored}"));
+    let (folder, args, _, _) = ran(&dir, "--resume-e2e-stop-1");
+    assert!(same_dir(&folder, &work), "{folder}");
+    assert_eq!(args, "--resume e2e-stop-1");
+    assert_eq!(fleet_windows("e2e"), vec![again]);
+    steps += 1;
+
+    // Opened again, it is a peer, and the next stop keeps it the same way.
+    let stopped = json(&run(&["stop-agents", "--json"]));
+    assert_eq!(stopped["terminals"][0]["window"], again, "{stopped}");
+    assert_eq!(stopped["terminals"][0]["closed"], true, "{stopped}");
+    assert_eq!(stopped["terminals"][0]["kept"], true, "{stopped}");
+    let listed = json(&run(&["restore", "--dry-run", "--json"]));
+    assert_eq!(listed["peers"][0]["session_id"], "e2e-stop-1", "{listed}");
+    steps += 1;
+
     stop(&mut cleanup);
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
