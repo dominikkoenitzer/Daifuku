@@ -5,6 +5,7 @@
 //! daifuku snap           put every fleet terminal back in its cell
 //! daifuku close [fleet]  close a fleet's terminals
 //! daifuku close --all    close every fleet's terminals
+//! daifuku stop-agents    stop every agent, for restore to bring back later
 //! daifuku next           focus the agent that has waited longest
 //! daifuku demo           open six scripted demo agents
 //! daifuku spawn          open one agent terminal on its own, in a folder
@@ -142,6 +143,16 @@ enum Command {
         /// with it.
         #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "free", conflicts_with_all = ["monitor", "area"])]
         cell: Option<daifuku_core::peer::Cell>,
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Stop every agent at once: close every fleet's terminals and every
+    /// peer, keep each session for `daifuku restore`, and end what the agents
+    /// started that outlives its terminal.
+    StopAgents {
+        /// Only say what it would close, keep and end.
+        #[arg(long)]
+        dry_run: bool,
         #[command(flatten)]
         format: Format,
     },
@@ -425,6 +436,9 @@ fn main() -> ExitCode {
             all: true, format, ..
         } => control(&Request::CloseAll, format.json),
         Command::Close { fleet, format, .. } => control(&Request::Close { fleet }, format.json),
+        Command::StopAgents { dry_run, format } => {
+            control(&Request::StopAgents { dry_run }, format.json)
+        }
         Command::Next { format } => control(&Request::Next, format.json),
         Command::Demo { format } => control(&Request::Demo, format.json),
         Command::Spawn {
@@ -1168,6 +1182,23 @@ fn answer(reply: &str, request: &Request, json: bool) -> ExitCode {
             print_restored(&peers, request);
             ExitCode::SUCCESS
         }
+        Ok(stopped @ Response::Stopped { .. }) if json => {
+            print!(
+                "{}",
+                output::ascii_json(&to_line(&stopped).unwrap_or_default())
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(Response::Stopped {
+            dry_run,
+            terminals,
+            leftovers,
+        }) => {
+            for line in stopped_lines(dry_run, &terminals, &leftovers) {
+                println!("{line}");
+            }
+            ExitCode::SUCCESS
+        }
         Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
         Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
     }
@@ -1239,6 +1270,8 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Open { fleet } => with_fleet("open", fleet),
         Request::Close { fleet } => with_fleet("close", fleet),
         Request::CloseAll => "close --all".to_owned(),
+        Request::StopAgents { dry_run: true } => "stop-agents --dry-run".to_owned(),
+        Request::StopAgents { dry_run: false } => "stop-agents".to_owned(),
         Request::CloseTerminal { terminal } => {
             format!("close --terminal {}", shell_word(terminal))
         }
@@ -1642,6 +1675,59 @@ fn print_restored(peers: &[daifuku_core::protocol::RestoredPeer], request: &Requ
     }
 }
 
+/// What `daifuku stop-agents` did, one line a terminal and one a process
+/// an agent left running. Labels and folders come from hooks, so each goes
+/// through `one_line`.
+fn stopped_lines(
+    dry_run: bool,
+    terminals: &[daifuku_core::protocol::StoppedTerminal],
+    leftovers: &[daifuku_core::protocol::Leftover],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if terminals.is_empty() {
+        lines.push("no agent terminal is open".to_owned());
+    }
+    for t in terminals {
+        let name = t
+            .label
+            .as_deref()
+            .map_or_else(|| format!("{:#010x}", t.window), one_line);
+        let what = match (dry_run, t.closed) {
+            (true, _) => format!("would close {name}"),
+            (false, true) => format!("closed {name}"),
+            (false, false) => format!("{name} is still open"),
+        };
+        let keep = match (&t.session_id, &t.directory) {
+            (Some(id), Some(dir)) if t.kept && dry_run => {
+                format!(
+                    ", would keep session {} in {} for restore",
+                    one_line(id),
+                    one_line(dir)
+                )
+            }
+            (Some(id), Some(dir)) if t.kept => {
+                format!(
+                    ", kept session {} in {} for restore",
+                    one_line(id),
+                    one_line(dir)
+                )
+            }
+            _ => String::new(),
+        };
+        lines.push(format!("{what}{keep}"));
+    }
+    for l in leftovers {
+        let name = format!("{} ({})", one_line(&l.name), l.pid);
+        lines.push(match (&l.reason, l.ended) {
+            (Some(why), _) => format!("left {name} running: {}", one_line(why)),
+            (None, true) => format!("ended {name}"),
+            (None, false) if dry_run => format!("would end {name} if it outlives its terminal"),
+            (None, false) => format!("{name} ended with its terminal"),
+        });
+    }
+    lines
+}
+
 /// The agents most urgent first: waiting, failed, working, done, and within
 /// each the one in that state longest first.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1920,6 +2006,62 @@ mod tests {
     }
 
     #[test]
+    fn stop_agents_says_what_it_closed_kept_and_ended() {
+        use daifuku_core::protocol::{Leftover, StoppedTerminal};
+        let terminal = |label: Option<&str>, kept: bool, closed: bool| StoppedTerminal {
+            window: 0x1234,
+            label: label.map(str::to_owned),
+            fleet: Some("crew".into()),
+            cell: Some(1),
+            session_id: Some("abc-1".into()),
+            directory: Some(r"C:\work".into()),
+            kept,
+            closed,
+        };
+        let leftover = |ended: bool, reason: Option<&str>| Leftover {
+            pid: 42,
+            name: "node.exe".into(),
+            window: 0x1234,
+            ended,
+            reason: reason.map(str::to_owned),
+        };
+        assert_eq!(
+            stopped_lines(
+                false,
+                &[
+                    terminal(Some("crew 1"), true, true),
+                    terminal(None, false, false)
+                ],
+                &[
+                    leftover(true, None),
+                    leftover(false, Some("access is denied"))
+                ],
+            ),
+            [
+                r"closed crew 1, kept session abc-1 in C:\work for restore",
+                "0x00001234 is still open",
+                "ended node.exe (42)",
+                "left node.exe (42) running: access is denied",
+            ]
+        );
+        assert_eq!(
+            stopped_lines(
+                true,
+                &[terminal(Some("crew 1"), true, false)],
+                &[leftover(false, None)]
+            ),
+            [
+                r"would close crew 1, would keep session abc-1 in C:\work for restore",
+                "would end node.exe (42) if it outlives its terminal",
+            ]
+        );
+        assert_eq!(
+            stopped_lines(false, &[], &[]),
+            ["no agent terminal is open"]
+        );
+    }
+
+    #[test]
     fn spawn_says_the_cell_a_peer_took() {
         assert_eq!(
             spawned_line(0x1234, Some("Site QA"), Some("crew"), Some(2)),
@@ -1956,6 +2098,8 @@ mod tests {
             Request::CloseTerminal {
                 terminal: "0x10064e".into(),
             },
+            Request::StopAgents { dry_run: false },
+            Request::StopAgents { dry_run: true },
             Request::Next,
             Request::Demo,
             Request::Status,
@@ -1975,6 +2119,7 @@ mod tests {
                 } => Request::CloseTerminal { terminal },
                 Command::Close { all: true, .. } => Request::CloseAll,
                 Command::Close { fleet, .. } => Request::Close { fleet },
+                Command::StopAgents { dry_run, .. } => Request::StopAgents { dry_run },
                 Command::Next { .. } => Request::Next,
                 Command::Demo { .. } => Request::Demo,
                 Command::Status { .. } => Request::Status,
@@ -2121,6 +2266,7 @@ mod tests {
             Command::Open { format, .. }
             | Command::Snap { format }
             | Command::Close { format, .. }
+            | Command::StopAgents { format, .. }
             | Command::Next { format }
             | Command::Demo { format }
             | Command::Spawn { format, .. }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `daifuku stop-agents` stops every agent at once: it closes every fleet's
+  terminals and every spawned one, keeps the session of each for
+  `daifuku restore`, which opens it again in its folder and in its cell,
+  and ends what the agents started that still runs once their terminals
+  closed. A program that shows a window of its own is left running.
+  `--dry-run` says what it would do, `--json` prints it as documented in
+  the JSON output page.
 - The daemon no longer saves over its peers file when it cannot read it at
   start, such as one a later version wrote. It logs a warning, keeps the
   terminals of this run in memory only and leaves the file as it is, so the
