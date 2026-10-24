@@ -38,6 +38,22 @@
   Scheduler could not be asked, as with its service stopped. They stop
   with "could not remove the logon task" and the reason, as for a task
   that could not be deleted.
+- A fleet can sign its agents in to an account other than the one in your
+  profile: `accounts` names each by a name of your own, with the folder
+  Claude Code takes from `CLAUDE_CONFIG_DIR`, the one Codex takes from
+  `CODEX_HOME`, or both, and a fleet's `account` picks one. Its terminals
+  start with those variables set, as do the ones `restore` and `spawn`
+  open for it, so one config runs fleets on two accounts side by side. A
+  fleet naming an account that is not there, a name or a folder two
+  accounts share in any case, or a folder that is not a full path makes
+  the config invalid.
+- `daifuku spawn` without `--fleet` takes the fleet of the terminal it runs
+  in, and with it that fleet's account, so a peer an agent opens signs in
+  where the agent did. Outside a fleet it still takes the first one.
+- `daifuku install` adds the hooks to each account's folders too, once the
+  agent has made them, and `uninstall` removes them. `daifuku doctor`
+  checks them, and says when an agent has not signed in to an account yet;
+  install says so too, so it can be run again once the agent has.
 
 ## 0.4.1, 2026-10-22
 

@@ -248,10 +248,13 @@ new hooks only after you trust them in its `/hooks` menu.
 
 A settings file behind a link that leads out of your profile is left alone,
 and the installer says so; make it a real file in your profile and install
-again. Install adds hooks to these two files only. If `CLAUDE_CONFIG_DIR` or
-`CODEX_HOME` moves an agent's settings elsewhere, copy Daifuku's hooks into
-the file there yourself, and remove them there when you uninstall; install
-names that file, and doctor names it when the hooks there are missing.
+again. Install adds hooks to these two files, and to the same files in
+the folders of each account your config names under
+[`accounts`](docs/configuration.md#accounts). If `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME` moves an agent's settings anywhere else, copy Daifuku's hooks
+into the file there yourself, and remove them there when you uninstall;
+install names that file, and doctor names it when the hooks there are
+missing.
 
 The config, the saved state and the logs live in `C:\ProgramData\Daifuku`;
 the daemon logs to its `logs` folder, a file a day.

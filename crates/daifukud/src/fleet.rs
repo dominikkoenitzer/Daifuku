@@ -191,6 +191,7 @@ pub fn open(
                 title: Some(format!("{} {}", fleet.name, n)),
                 clean: fleet.no_profile,
                 group: group_for(fleet.priority)?,
+                environment: environment(fleet, config),
             };
             match start_one(&wt, &launch, fleet.admin, elevated, record)? {
                 Some(w) => {
@@ -294,6 +295,7 @@ pub fn spawn(
             .or_else(|| cell.map(|_| format!("{} {n}", base.name))),
         clean: base.no_profile,
         group: group_for(spawn.priority.or(base.priority))?,
+        environment: environment(base, config),
     };
     let wt = terminal::find().context("Windows Terminal is not installed")?;
     let mut known = OpenFleet::new("");
@@ -445,6 +447,20 @@ fn group_for(
             anyhow!("a terminal with a priority runs in daifuku.exe, and there is none next to the daemon")
         })?;
     Ok(Some((exe, priority)))
+}
+
+/// The variables that point a fleet's agents at its account, so a terminal
+/// started again for it, or for a peer it spawns, signs in the same way.
+fn environment(fleet: &Fleet, config: &Config) -> Vec<(String, String)> {
+    config
+        .account_of(fleet)
+        .map(|a| {
+            a.variables()
+                .into_iter()
+                .map(|(name, folder)| (name.to_owned(), folder.to_string_lossy().into_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A fleet of one with the monitor and area a peer asked for, the base
@@ -642,6 +658,29 @@ fn numbered(path: &Path, n: usize) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fleet_on_an_account_opens_its_terminals_pointed_at_it() {
+        let config = Config::from_json(
+            r#"{"accounts":{"work":{"claude":"C:\\Users\\me\\.claude-work","codex":"C:\\Users\\me\\.codex-work"}},
+                "fleets":[{"name":"crew","account":"Work"},{"name":"home","hotkey":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            environment(&config.fleets[0], &config),
+            [
+                (
+                    "CLAUDE_CONFIG_DIR".to_owned(),
+                    r"C:\Users\me\.claude-work".to_owned()
+                ),
+                (
+                    "CODEX_HOME".to_owned(),
+                    r"C:\Users\me\.codex-work".to_owned()
+                ),
+            ]
+        );
+        assert!(environment(&config.fleets[1], &config).is_empty());
+    }
 
     #[test]
     fn a_numbered_directory_gives_each_terminal_its_own_folder() {

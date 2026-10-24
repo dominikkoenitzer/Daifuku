@@ -59,6 +59,13 @@
         }
       ]
     },
+    "accounts": {
+      "description": "Accounts the agents sign in with, by a name of your own, for fleets\nthat should not all run on the one in your profile.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Account"
+      }
+    },
     "sound": {
       "description": "Play Windows' Asterisk sound when an agent starts waiting for you,\nfor when you are not looking at the screen.",
       "type": "boolean",
@@ -357,6 +364,13 @@
               "type": "null"
             }
           ]
+        },
+        "account": {
+          "description": "The account its agents sign in with, by its name under `accounts`.\nLeft out, they use the one in your profile.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -478,6 +492,27 @@
           "const": "normal"
         }
       ]
+    },
+    "Account": {
+      "description": "An account, as the folders the agents keep it in: the sign-in, settings,\nhooks and sessions. A fleet that names it starts its agents with these\nfolders, so one fleet can work on one subscription and the next on\nanother.",
+      "type": "object",
+      "properties": {
+        "claude": {
+          "description": "Claude Code's folder, which it takes from `CLAUDE_CONFIG_DIR`. Left\nout, Claude Code uses its own, `.claude` in your profile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codex": {
+          "description": "Codex's folder, which it takes from `CODEX_HOME`. Left out, Codex\nuses its own, `.codex` in your profile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

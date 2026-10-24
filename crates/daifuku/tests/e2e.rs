@@ -459,6 +459,151 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
     println!("e2e: {steps} steps passed");
 }
 
+#[test]
+fn a_fleet_on_an_account_signs_every_terminal_in_to_it_and_no_other_fleet() {
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    let dir = scratch();
+    let config = dir.join("daifuku.json");
+    // A quote in the folder, which has to reach the shell as a quote and not
+    // end the string it is set in.
+    let account = dir.join("it's work");
+    let (work, home) = (dir.join("work"), dir.join("home"));
+    for d in [&work, &home] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    // Each terminal writes what it was given into a file of its own, named
+    // by its shell's process.
+    let command = |into: &Path| {
+        format!(
+            r#"Set-Content -LiteralPath ('{}\' + $PID + '.txt') -Value "[$env:CLAUDE_CONFIG_DIR][$env:CODEX_HOME]""#,
+            into.display()
+        )
+    };
+    // Crew's first terminal also opens a peer as an agent would, naming no
+    // fleet: it has to take crew's, not e2e's, the first in the config.
+    let inner = dir.join("inner");
+    let crew = format!(
+        "{}; if (-not (Test-Path -LiteralPath '{}')) {{ New-Item -ItemType File -Path '{}' | Out-Null; & '{}' spawn --dir '{}' --label 'e2e inner' }}",
+        command(&home),
+        inner.display(),
+        inner.display(),
+        cli().display(),
+        home.display()
+    );
+    let json = serde_json::json!({
+        "accounts": { "Work": { "claude": account } },
+        "fleets": [
+            {
+                "name": "e2e", "count": 2, "monitor": "primary", "area": "left",
+                "command": command(&work), "account": "work",
+                "admin": true, "no_profile": true, "hotkey": null
+            },
+            {
+                "name": "crew", "count": 1, "monitor": "primary", "area": "right",
+                "command": crew,
+                "admin": true, "no_profile": true, "hotkey": null
+            }
+        ],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, json.to_string()).unwrap();
+    let mut steps = 0;
+    // Peers of its own, so a failed run leaves the real ones as they were.
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let (mut cleanup, _) = start_with(&config, Some(&state), &[]);
+
+    // Whole files only: Set-Content ends each with a line break.
+    let said = |folder: &Path| -> Vec<String> {
+        std::fs::read_dir(folder)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok())
+                    .filter(|t| t.ends_with('\n'))
+                    .map(|t| t.trim_end().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let expected = format!("[{}][]", account.display());
+
+    for fleet in ["e2e", "crew"] {
+        let opened = run(&["open", fleet]);
+        assert!(opened.contains(&format!("opened {fleet}")), "{opened}");
+    }
+    let lines = wait_for(
+        "both terminals of e2e to write",
+        Duration::from_secs(30),
+        || {
+            let lines = said(&work);
+            (lines.len() == 2).then_some(lines)
+        },
+    );
+    assert!(
+        lines.iter().all(|l| *l == expected),
+        "{lines:?}, not {expected}"
+    );
+    steps += 1;
+
+    // The fleet with no account leaves the variables as they were: unset on
+    // a runner, so the agent reads the folder in the profile. So does the
+    // peer its terminal opened without naming a fleet.
+    let lines = wait_for(
+        "crew's terminal and its peer to write",
+        Duration::from_secs(45),
+        || {
+            let lines = said(&home);
+            (lines.len() == 2).then_some(lines)
+        },
+    );
+    assert!(
+        lines.iter().all(|l| !l.contains("it's work")),
+        "crew got e2e's account: {lines:?}"
+    );
+    assert_eq!(said(&work).len(), 2, "crew's peer opened in e2e");
+    steps += 1;
+
+    // A peer the fleet's agent opens signs in to the same account.
+    let peer = spawn(&[
+        "--fleet",
+        "e2e",
+        "--dir",
+        &work.display().to_string(),
+        "--label",
+        "e2e account",
+    ]);
+    let lines = wait_for("the peer to write", Duration::from_secs(30), || {
+        let lines = said(&work);
+        (lines.len() == 3).then_some(lines)
+    });
+    assert!(
+        lines.iter().all(|l| *l == expected),
+        "{lines:?}, not {expected}"
+    );
+    steps += 1;
+
+    let _ = run(&["close", "--terminal", "e2e account"]);
+    let _ = run(&["close", "--terminal", "e2e inner"]);
+    let _ = run(&["close", "--all"]);
+    wait_for("the peer to close", Duration::from_secs(15), || {
+        (!window::exists(peer)).then_some(())
+    });
+    let _ = run(&["stop"]);
+    let mut daemon = cleanup.0.pop().unwrap();
+    wait_for("the daemon to exit", Duration::from_secs(10), || {
+        daemon.try_wait().ok().flatten()
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
+
 /// A window as a line: handle, class, title and, for the foreground, which
 /// of its children has the keyboard and whether it is in a menu.
 fn describe(w: u64) -> String {
