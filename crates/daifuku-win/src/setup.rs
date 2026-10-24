@@ -592,7 +592,7 @@ fn schtasks_output(args: &[&str]) -> std::io::Result<Vec<u8>> {
 fn oem_text(bytes: &[u8]) -> String {
     // Declared as the `windows` crate declares it, which keeps it behind a
     // feature this crate needs for nothing else.
-    windows_core::link!("kernel32.dll" "system" fn MultiByteToWideChar(codepage: u32, flags: u32, multi: PCSTR, multi_len: i32, wide: PWSTR, wide_len: i32) -> i32);
+    windows::core::link!("kernel32.dll" "system" fn MultiByteToWideChar(codepage: u32, flags: u32, multi: PCSTR, multi_len: i32, wide: PWSTR, wide_len: i32) -> i32);
     /// `CP_OEMCP`.
     const CP_OEMCP: u32 = 1;
     if bytes.is_empty() {
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn what_schtasks_writes_is_read_in_the_oem_code_page() {
-        windows_core::link!("kernel32.dll" "system" fn GetOEMCP() -> u32);
+        windows::core::link!("kernel32.dll" "system" fn GetOEMCP() -> u32);
         assert_eq!(oem_text(b""), "");
         assert_eq!(oem_text(b"ERROR: no task.\r\n"), "ERROR: no task.\r\n");
         // SAFETY: no arguments.
