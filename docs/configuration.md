@@ -90,6 +90,7 @@ A list of fleets. Each opens with its own hotkey or with `daifuku open <name>`.
 | `hotkey` | `"ctrl + alt + return"` | The key that opens this fleet, or brings it back when it is open. `null` for none. Every fleet without one gets the default, so a second fleet needs its own key or `null`. |
 | `with` | none | Other fleets, by name, that open with this one, or come back with it. They open first, so this fleet opens last and asks for the focus. Their own `with` is not followed (after 0.1.3). |
 | `priority` | none | `"idle"`, `"below-normal"` or `"normal"`: each terminal runs in a group of its own at that priority. Everything started in it runs at it and cannot raise it, and all of it ends when the terminal closes, shells and watchers an agent left behind included. Left out, the terminals run as any other program (after 0.1.3). |
+| `account` | the one in your profile | The account its agents sign in with, by its name under [`accounts`](#accounts) (after 0.3.0). |
 
 Opening a fleet that is already open brings it back: terminals that were
 closed are opened again, each in its own cell with its own number (after
@@ -215,6 +216,44 @@ screen.
 
 Colours are `#rrggbb`. A key left out keeps the palette's colour (after
 0.1.1; before, it took the Catppuccin one).
+
+## `accounts`
+
+Accounts the agents sign in with, by a name of your own, for fleets that
+should not all use the one in your profile (after 0.3.0). Each names the
+folder Claude Code keeps its sign-in and settings in, the one it reads from
+`CLAUDE_CONFIG_DIR`, the folder Codex reads from `CODEX_HOME`, or both.
+
+```json
+{
+  "accounts": {
+    "work": { "claude": "C:\\Users\\you\\.claude-work" }
+  },
+  "fleets": [
+    { "name": "agents", "count": 6, "monitor": "portrait" },
+    { "name": "crew", "count": 3, "account": "work", "hotkey": "ctrl + alt + shift + w" }
+  ]
+}
+```
+
+| Key | |
+|---|---|
+| `claude` | Claude Code's folder for this account, a full path. |
+| `codex` | Codex's folder for this account, a full path. |
+
+Every terminal of a fleet with an `account` starts with those variables
+set, before its `command` runs, and so does a terminal `daifuku restore`
+opens for it or one an agent of it opens with `daifuku spawn`. With no
+`command` the shell opens with them set, ready for one you type.
+
+Account names are not case sensitive, and two accounts cannot share one. A
+fleet that names an account missing here makes the config invalid.
+
+`daifuku install` adds the hooks to each account's folder as well as to
+the one in your profile, once the agent has made the folder by signing in
+there: run it again after you add an account. Like the profile's, the
+folder must be inside your profile folder. `daifuku doctor` checks each
+account's hooks, and `daifuku uninstall` removes them.
 
 ## `hotkeys`
 
