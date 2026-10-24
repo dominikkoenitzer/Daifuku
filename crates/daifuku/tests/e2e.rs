@@ -633,6 +633,7 @@ fn an_account_s_status_line_shows_its_use_and_warns_on_its_borders() {
     let dir = scratch();
     let config = dir.join("daifuku.json");
     let account = dir.join("work account");
+    std::fs::create_dir_all(&account).unwrap();
     let json = serde_json::json!({
         "accounts": { "work": { "claude": account, "warn": 77 } },
         "fleets": [{ "name": "e2e", "hotkey": null }],
