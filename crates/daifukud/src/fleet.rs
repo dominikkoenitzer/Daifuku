@@ -606,7 +606,7 @@ pub fn terminals_count(n: usize) -> String {
 /// process has one of its own, so a `subst` or mapped drive the user's
 /// terminal sees may not exist for the daemon: the folder is looked for as
 /// the user.
-fn directory(fleet: &Fleet, n: usize, as_user: bool) -> PathBuf {
+pub fn directory(fleet: &Fleet, n: usize, as_user: bool) -> PathBuf {
     fleet
         .directory
         .as_ref()
