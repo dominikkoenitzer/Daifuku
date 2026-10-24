@@ -393,13 +393,15 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
         Duration::from_secs(15),
         || (!window::exists(second)).then_some(()),
     );
-    let front = settled_front();
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let reopened = run(&["open", "e2e"]);
     assert!(reopened.contains("opened e2e (4 terminals"), "{reopened}");
-    expect_failure(
-        "daifuku open leaves the window in front where it was",
+    assert!(
         front_stays(front),
+        "daifuku open leaves the window in front where it was"
     );
+    drop(bystander);
     let fleet = wait_for("the reopened fleet", Duration::from_secs(10), || {
         status()?
             .fleets
@@ -1117,6 +1119,103 @@ fn stop(cleanup: &mut Cleanup) {
     });
 }
 
+/// A plain window of the test's own, on a thread of its own that answers its
+/// messages, closed when dropped.
+///
+/// The checks that the front stays where it was put it in front first.
+/// Windows Terminal 1.23 runs all its windows on one thread, and while one of
+/// them is in front each new one takes the front, whatever show command it
+/// was started with; the runner starts with a terminal in front. So the
+/// window in front has to be another program's for the check to be about
+/// Daifuku.
+struct Bystander {
+    window: u64,
+    thread: u32,
+    pump: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Bystander {
+    fn new() -> Self {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CW_USEDEFAULT, CreateWindowExW, DispatchMessageW, GetMessageW,
+            GetWindowThreadProcessId, MSG, TranslateMessage, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
+            WS_VISIBLE,
+        };
+        use windows::core::w;
+
+        let (sent, received) = std::sync::mpsc::channel();
+        let pump = std::thread::spawn(move || {
+            // SAFETY: a top-level window of a system class, and the message
+            // loop runs on the thread that owns it.
+            unsafe {
+                let h = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("Static"),
+                    w!("daifuku e2e bystander"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    CW_USEDEFAULT,
+                    CW_USEDEFAULT,
+                    480,
+                    320,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                sent.send(h.0 as usize as u64).unwrap();
+                let mut msg = MSG::default();
+                while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
+                    let _ = TranslateMessage(&raw const msg);
+                    DispatchMessageW(&raw const msg);
+                }
+            }
+        });
+        let window = received.recv().unwrap();
+        // SAFETY: plain call on a handle.
+        let thread = unsafe {
+            GetWindowThreadProcessId(HWND(window as usize as *mut core::ffi::c_void), None)
+        };
+        Self {
+            window,
+            thread,
+            pump: Some(pump),
+        }
+    }
+
+    /// Puts the window in front and returns it once it stayed there.
+    fn front(&self) -> u64 {
+        assert!(
+            window::focus(self.window),
+            "Windows did not give the test's own window the front"
+        );
+        let front = settled_front();
+        assert_eq!(
+            front,
+            self.window,
+            "the front went to {} before the check",
+            describe(front)
+        );
+        front
+    }
+}
+
+impl Drop for Bystander {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+
+        // SAFETY: a message with no pointers to a thread id.
+        unsafe {
+            let _ = PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
+        if let Some(pump) = self.pump.take() {
+            let _ = pump.join();
+        }
+    }
+}
+
 /// The window in front once it has stayed the same for half a second, so a
 /// switch still under way from an earlier step is not taken for the start.
 fn settled_front() -> u64 {
@@ -1420,7 +1519,8 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         ],
     );
 
-    let front = settled_front();
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let w = spawn(&[
         "--dir",
         &work.display().to_string(),
@@ -1431,10 +1531,11 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         "--area",
         "right",
     ]);
-    expect_failure(
-        "daifuku spawn leaves the window in front where it was",
+    assert!(
         front_stays(front),
+        "daifuku spawn leaves the window in front where it was"
     );
+    drop(bystander);
     let first = ran_full(&dir, "");
     assert!(
         same_dir(&first.folder, &work),
@@ -1669,15 +1770,17 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
     assert!(listed["peers"][0]["window"].is_null(), "{listed}");
     steps += 1;
 
-    let front = settled_front();
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let restored = json(&run(&["restore", "--json"]));
     let again = restored["peers"][0]["window"]
         .as_u64()
         .unwrap_or_else(|| panic!("restore opened nothing: {restored}"));
-    expect_failure(
-        "daifuku restore leaves the window in front where it was",
+    assert!(
         front_stays(front),
+        "daifuku restore leaves the window in front where it was"
     );
+    drop(bystander);
     let (folder, args, _, _) = ran(&dir, "--resume-e2e-restore-1");
     assert!(same_dir(&folder, &work), "{folder}");
     assert_eq!(args, "--resume e2e-restore-1");
@@ -1726,17 +1829,19 @@ fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
     let mut steps = 0;
     let (mut cleanup, _) = start_with(&config, None, &[]);
 
-    let front = settled_front();
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let opened = run(&["open", "lead"]);
     assert!(
         opened.contains("opened crew (3 terminals") && opened.contains("opened lead (1 terminal"),
         "{opened}"
     );
     // Opened by a command, not by its key, so neither fleet takes the front.
-    expect_failure(
-        "daifuku open of a fleet with another leaves the window in front where it was",
+    assert!(
         front_stays(front),
+        "daifuku open of a fleet with another leaves the window in front where it was"
     );
+    drop(bystander);
     let s = wait_for("both fleets in the status", Duration::from_secs(10), || {
         status().filter(|s| s.fleets.len() == 2)
     });
