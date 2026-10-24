@@ -103,10 +103,18 @@ pub struct Spawn {
     /// A session to resume, by its id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<String>,
-    /// The fleet whose command, profile and administrator setting the peer
-    /// takes. The first fleet in the config when left out.
+    /// The fleet whose command, profile, account and administrator setting
+    /// the peer takes. Left out, the fleet of the terminal in [`from`], and
+    /// without one the first fleet in the config.
+    ///
+    /// [`from`]: Spawn::from
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet: Option<String>,
+    /// The terminal window `daifuku spawn` ran in, so a peer an agent opens
+    /// without naming a fleet takes the agent's own, and with it the
+    /// agent's account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<u64>,
     /// The monitor to put it on. With neither this nor `area`, the peer
     /// stays where Windows Terminal puts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
