@@ -159,8 +159,22 @@ impl Queue {
         changed
     }
 
-    /// Reads [`Queue::file`].
-    pub fn load(&mut self) {
+    /// The terminals that fail `alive` are gone, as [`Queue::window_closed`]
+    /// says for one. True when a task's was.
+    pub fn windows_gone(&mut self, alive: impl Fn(u64) -> bool) -> bool {
+        let mut changed = false;
+        for c in self.claims.iter_mut().filter(|c| c.window != 0) {
+            if !alive(c.window) {
+                c.window = 0;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Reads [`Queue::file`]. A terminal that fails `alive` is gone, so its
+    /// handle, which Windows may give a new window, holds nothing.
+    pub fn load(&mut self, alive: impl Fn(u64) -> bool) {
         let Some(file) = &self.file else { return };
         let Ok(text) = std::fs::read_to_string(file) else {
             return;
@@ -170,6 +184,7 @@ impl Queue {
                 claims.retain(|c| backlog::id_ok(&c.id));
                 claims.truncate(MAX_CLAIMS);
                 self.claims = claims;
+                self.windows_gone(alive);
             }
             Err(_) => tracing::warn!(path = %file.display(), "ignored an unreadable tasks file"),
         }
@@ -264,6 +279,38 @@ mod tests {
         assert!(q.held(7, "other").is_none());
         assert!(q.held(0, "other").is_none());
         assert!(q.held(9, "s1").is_some());
+    }
+
+    #[test]
+    fn a_restored_claim_for_a_window_that_is_gone_loses_its_window() {
+        let dir = std::env::temp_dir().join(format!("daifuku-claims-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("tasks.json");
+        let saved = vec![claim("A1", 7, "s1"), claim("A2", 8, "s2")];
+        std::fs::write(&file, serde_json::to_string(&saved).unwrap()).unwrap();
+        let mut q = Queue {
+            file: Some(file),
+            ..Queue::default()
+        };
+        q.load(|w| w == 7);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(q.held(7, "other").map(|c| c.id.as_str()), Some("A1"));
+        assert!(q.held(8, "other").is_none(), "a new window got the handle");
+        assert_eq!(q.held(9, "s2").map(|c| c.id.as_str()), Some("A2"));
+        assert_eq!(q.claims[1].window, 0);
+    }
+
+    #[test]
+    fn a_terminal_found_gone_keeps_its_task_with_the_session_alone() {
+        let mut q = Queue::default();
+        q.claim(claim("A1", 7, "s1"));
+        q.claim(claim("A2", 8, "s2"));
+        assert!(q.windows_gone(|w| w == 7));
+        assert!(!q.windows_gone(|w| w == 7));
+        assert!(q.held(7, "other").is_some());
+        assert!(q.held(8, "other").is_none());
+        assert!(q.held(9, "s2").is_some());
     }
 
     #[test]
