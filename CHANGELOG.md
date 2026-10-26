@@ -84,6 +84,10 @@
   how old the numbers are, and an account's `warn` turns the borders of its
   working and done terminals the new `warning` colour once either window
   reaches that share, until it resets.
+- A backlog read with no task in it, as when an agent or an editor is
+  writing it anew, no longer takes back the tasks handed out from it. The
+  terminal holding one could get a second task at its next stop, and a
+  task its agent had not marked yet could go out again.
 
 ## 0.4.1, 2026-10-22
 
