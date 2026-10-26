@@ -100,8 +100,12 @@ impl Queue {
     }
 
     /// Lets go of the tasks from `path` its backlog now lists as finished or
-    /// no longer lists. True when any went.
+    /// no longer lists. True when any went. A backlog that lists no task at
+    /// all lets go of none: it may be one read halfway through a rewrite.
     pub fn settle(&mut self, path: &Path, backlog: &Backlog) -> bool {
+        if backlog.tasks.is_empty() {
+            return false;
+        }
         let key = folder_key(path);
         let before = self.claims.len();
         self.claims.retain(|c| {
@@ -250,6 +254,24 @@ mod tests {
         let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(left, ["A1"]);
         assert!(!q.settle(Path::new(FILE), &backlog(now)));
+    }
+
+    #[test]
+    fn an_empty_read_does_not_let_go_of_claims() {
+        let mut q = Queue::default();
+        q.claim(claim("A1", 7, "s1"));
+        q.claim(claim("A2", 8, "s2"));
+        // Read between the truncate and the write of a rewrite, or after
+        // only its first lines went out.
+        for cut in ["", "# Backlog\n\nNotes", "### A1"] {
+            assert!(!q.settle(Path::new(FILE), &backlog(cut)), "{cut:?}");
+            assert_eq!(q.claims.len(), 2, "{cut:?}");
+        }
+        assert!(q.held(7, "other").is_some());
+        // Once the file lists tasks again, a dropped one is let go.
+        assert!(q.settle(Path::new(FILE), &backlog(&TEXT.replace("A2", "B2"))));
+        let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(left, ["A1"]);
     }
 
     #[test]
