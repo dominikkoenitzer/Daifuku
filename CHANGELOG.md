@@ -45,10 +45,11 @@
   `--follow` prints each new one as it comes, one JSON object per line
   with `--json`, and `--after` picks up from an event's number.
 - A fleet's `backlog` names a markdown file of tasks, and its Claude Code
-  agents work through it: when an agent's main thread stops and its
-  terminal holds no task, Daifuku hands it the next open one, and the
-  agent goes on with it instead of stopping. A task stays with its
-  terminal, or its session, until the file marks it done or closed.
+  agents work through it: when an agent's main thread stops and it holds
+  no task, Daifuku hands it the next open one, and the agent goes on with
+  it instead of stopping. A task stays with its session, or with its
+  terminal once that session ended there, until the file marks it done or
+  closed.
   An account's `stop_at` rules say how much of each limit its agents may
   use before no more tasks go out, by window, day, hour, or the minutes
   before a reset. `daifuku task` lists each backlog's open tasks, who has
