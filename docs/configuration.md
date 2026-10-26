@@ -244,7 +244,8 @@ by hand. Codex agents get no tasks.
 An agent gets a task only while its account's [`stop_at`](#stopping) lets
 it work on. `daifuku task` lists each backlog's open tasks, which terminal
 has which, and the one that goes out next; `daifuku task release <id>`
-takes a task back, so the terminal that had it can get another. Tasks go
+takes a task back, so the terminal that had it can get another, unless
+two fleets' backlogs have that id out; then it names the fleets. Tasks go
 out only as agents stop: one that stopped while none could go out, or
 while Daifuku answered four others at once, waits for you and gets one at
 the end of its next turn. `daifuku events` says when that happens, and
