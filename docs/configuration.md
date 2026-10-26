@@ -231,12 +231,13 @@ most 32. A task is open while it has no owner and its status starts with
 `open`, and finished once its status starts with `done` or `closed`.
 Headings in fenced code are not tasks.
 
-When the main thread of one of the fleet's Claude Code agents stops and its
-terminal holds no task, Daifuku hands it the first open task nobody has, in
-the order of the file: the agent goes on with it instead of stopping, told
-which file and id it is. The task stays with that terminal, and with its
-session if it moves to another, until the file says it is finished; until
-then the agent gets no other. Daifuku only reads the file, so the agent
+When the main thread of one of the fleet's Claude Code agents stops and it
+holds no task, Daifuku hands it the first open task nobody has, in the
+order of the file: the agent goes on with it instead of stopping, told
+which file and id it is. The task stays with that session, in whichever
+terminal it runs, and with its terminal once the session ended there, as
+after a clear, until the file says it is finished; until then the agent
+gets no other. An agent in another tab of that terminal gets its own. Daifuku only reads the file, so the agent
 writes its own name and status in as it works. A task with a folder of its
 id in `claims` beside the file counts as taken, for agents that claim tasks
 by hand. Codex agents get no tasks.
