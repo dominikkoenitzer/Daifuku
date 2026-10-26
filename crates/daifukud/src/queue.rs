@@ -141,10 +141,31 @@ impl Queue {
         true
     }
 
-    /// Takes back the task `id`, from every backlog. How many went.
-    pub fn release(&mut self, id: &str) -> usize {
+    /// The backlogs the task `id` is handed out from, each once.
+    pub fn backlogs_with(&self, id: &str) -> Vec<&Path> {
+        let mut keys = Vec::new();
+        self.claims
+            .iter()
+            .filter(|c| c.id == id)
+            .filter(|c| {
+                let key = folder_key(&c.backlog);
+                let new = !keys.contains(&key);
+                if new {
+                    keys.push(key);
+                }
+                new
+            })
+            .map(|c| c.backlog.as_path())
+            .collect()
+    }
+
+    /// Takes back the task `id` handed out from the backlog at `path`. How
+    /// many went.
+    pub fn release(&mut self, path: &Path, id: &str) -> usize {
+        let key = folder_key(path);
         let before = self.claims.len();
-        self.claims.retain(|c| c.id != id);
+        self.claims
+            .retain(|c| c.id != id || folder_key(&c.backlog) != key);
         before - self.claims.len()
     }
 
@@ -271,9 +292,26 @@ mod tests {
         let mut q = Queue::default();
         let b = backlog(TEXT);
         q.claim(claim("A1", 7, "s1"));
-        assert_eq!(q.release("A1"), 1);
-        assert_eq!(q.release("A1"), 0);
+        assert_eq!(q.release(Path::new(FILE), "A1"), 1);
+        assert_eq!(q.release(Path::new(FILE), "A1"), 0);
         assert_eq!(q.next(Path::new(FILE), &b).unwrap().id, "A1");
+    }
+
+    #[test]
+    fn release_takes_back_one_backlogs_task_only() {
+        const OTHER: &str = r"C:\other\BACKLOG.md";
+        let mut q = Queue::default();
+        q.claim(claim("A1", 7, "s1"));
+        q.claim(Claim {
+            backlog: PathBuf::from(OTHER),
+            ..claim("A1", 8, "s2")
+        });
+        assert_eq!(q.backlogs_with("A1").len(), 2);
+        assert_eq!(q.release(Path::new(r"c:\WORK\backlog.md"), "A1"), 1);
+        assert_eq!(q.claims_in(Path::new(FILE)).count(), 0);
+        assert_eq!(q.claims_in(Path::new(OTHER)).count(), 1);
+        assert_eq!(q.backlogs_with("A1"), [Path::new(OTHER)]);
+        assert_eq!(q.release(Path::new(FILE), "A1"), 0);
     }
 
     #[test]

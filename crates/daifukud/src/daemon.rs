@@ -673,15 +673,55 @@ impl Daemon {
     }
 
     fn release_task(&mut self, id: &str) -> Response {
-        match self.queue.release(id) {
-            0 => Response::error(format!("no task `{id}` is handed out")),
-            _ => {
+        let backlogs: Vec<PathBuf> = self
+            .queue
+            .backlogs_with(id)
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        match backlogs.as_slice() {
+            [] => Response::error(format!("no task `{id}` is handed out")),
+            [path] => {
+                self.queue.release(path, id);
                 self.queue.save();
                 self.idle_stale = true;
                 Response::said(format!(
                     "took {id} back; while its backlog lists it open, the next agent to stop gets it"
                 ))
             }
+            _ => Response::error(format!(
+                "task `{id}` is handed out in {}, so none was taken back",
+                self.fleets_with(&backlogs)
+            )),
+        }
+    }
+
+    /// The fleets whose backlog is one of `backlogs`, as "a, in b and in c",
+    /// with a backlog no fleet has any more by its path.
+    fn fleets_with(&self, backlogs: &[PathBuf]) -> String {
+        let mut names = Vec::new();
+        for path in backlogs {
+            let key = daifuku_core::config::folder_key(path);
+            let before = names.len();
+            names.extend(
+                self.config
+                    .fleets
+                    .iter()
+                    .filter(|f| {
+                        f.backlog
+                            .as_ref()
+                            .is_some_and(|b| daifuku_core::config::folder_key(b) == key)
+                    })
+                    .map(|f| f.name.clone()),
+            );
+            if names.len() == before {
+                names.push(path.display().to_string());
+            }
+        }
+        match names.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and in {last}", rest.join(", in ")),
+            None => String::new(),
         }
     }
 
@@ -4399,6 +4439,50 @@ mod tests {
         assert_eq!((last, events.len()), (2, 1));
         assert_eq!(events[0].seq, 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_task_out_in_two_fleets_is_not_released_by_its_id_alone() {
+        let mut d = daemon();
+        let mut docs = d.config.fleets[0].clone();
+        docs.name = "docs".into();
+        docs.backlog = Some(PathBuf::from(r"C:\docs\BACKLOG.md"));
+        d.config.fleets[0].backlog = Some(PathBuf::from(r"C:\work\BACKLOG.md"));
+        let crew = d.config.fleets[0].name.clone();
+        d.config.fleets.push(docs);
+        let claim = |backlog: &str, id: &str, window| queue::Claim {
+            backlog: PathBuf::from(backlog),
+            id: id.into(),
+            window,
+            session: format!("s{window}"),
+            at: 1,
+        };
+        d.queue.claim(claim(r"C:\work\BACKLOG.md", "A1", 1));
+        d.queue.claim(claim(r"C:\docs\BACKLOG.md", "A1", 2));
+        d.queue.claim(claim(r"C:\docs\BACKLOG.md", "A2", 3));
+        let Response::Error { message } = d.release_task("A1") else {
+            panic!("released an id out in two fleets");
+        };
+        assert_eq!(
+            message,
+            format!("task `A1` is handed out in {crew} and in docs, so none was taken back")
+        );
+        assert!(d.queue.held(1, "-").is_some() && d.queue.held(2, "-").is_some());
+        assert!(matches!(d.release_task("A2"), Response::Ok { .. }));
+        assert!(d.queue.held(3, "-").is_none());
+        assert!(d.queue.held(2, "-").is_some(), "the other A1 stays out");
+        assert!(matches!(d.release_task("A9"), Response::Error { .. }));
+        // A backlog no fleet names any more goes by its path.
+        d.queue.claim(claim(r"C:\gone\BACKLOG.md", "A1", 4));
+        let Response::Error { message } = d.release_task("A1") else {
+            panic!("released an id out in three backlogs");
+        };
+        assert_eq!(
+            message,
+            format!(
+                r"task `A1` is handed out in {crew}, in docs and in C:\gone\BACKLOG.md, so none was taken back"
+            )
+        );
     }
 
     #[test]
