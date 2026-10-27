@@ -562,7 +562,11 @@ impl Daemon {
         if self.queue.settle(&path, &backlog) {
             self.queue.save();
         }
-        if self.queue.held(w, &event.session_id).is_some() {
+        if self
+            .queue
+            .held(w, &event.session_id, |s| self.agents.knows(s))
+            .is_some()
+        {
             return None;
         }
         if let Some(reason) = self.stop_reason(&fleet, Some(w)) {
@@ -785,7 +789,10 @@ impl Daemon {
                 let fleet = self.fleet_of(w)?;
                 self.config.fleet(&fleet)?.backlog.as_ref()?;
                 let id = shown_session(&self.agents, w, state)?;
-                self.queue.held(w, &id).is_none().then_some((w, id, fleet))
+                self.queue
+                    .held(w, &id, |s| self.agents.knows(s))
+                    .is_none()
+                    .then_some((w, id, fleet))
             })
             .collect();
         self.idle
