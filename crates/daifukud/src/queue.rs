@@ -118,12 +118,13 @@ impl Queue {
         self.claims.len() != before
     }
 
-    /// The task terminal `w`, or the session `session` wherever it runs,
-    /// still works on.
-    pub fn held(&self, w: u64, session: &str) -> Option<&Claim> {
+    /// The task the session `session` wherever it runs still works on, or
+    /// terminal `w` once the session it went to no longer runs, as after a
+    /// clear or a restart there. `running` says whether a session still runs.
+    pub fn held(&self, w: u64, session: &str, running: impl Fn(&str) -> bool) -> Option<&Claim> {
         self.claims
             .iter()
-            .find(|c| (w != 0 && c.window == w) || c.session == session)
+            .find(|c| c.session == session || (w != 0 && c.window == w && !running(&c.session)))
     }
 
     /// The first open task of the backlog at `path` that nobody has: not
@@ -313,15 +314,35 @@ mod tests {
     #[test]
     fn a_terminal_or_its_session_holds_its_task() {
         let mut q = Queue::default();
+        let ended = |_: &str| false;
         q.claim(claim("A1", 7, "s1"));
-        assert!(q.held(7, "other").is_some());
-        assert!(q.held(8, "s1").is_some());
-        assert!(q.held(8, "s2").is_none());
+        assert!(q.held(7, "other", ended).is_some());
+        assert!(q.held(8, "s1", ended).is_some());
+        assert!(q.held(8, "s2", ended).is_none());
         // A closed terminal's task stays with its session alone.
         assert!(q.window_closed(7));
-        assert!(q.held(7, "other").is_none());
-        assert!(q.held(0, "other").is_none());
-        assert!(q.held(9, "s1").is_some());
+        assert!(q.held(7, "other", ended).is_none());
+        assert!(q.held(0, "other", ended).is_none());
+        assert!(q.held(9, "s1", ended).is_some());
+    }
+
+    #[test]
+    fn a_second_session_in_a_held_terminal_is_not_held() {
+        let mut q = Queue::default();
+        q.claim(claim("A1", 7, "s1"));
+        let both_run = |s: &str| s == "s1" || s == "s2";
+        assert!(q.held(7, "s2", both_run).is_none());
+        assert!(q.held(7, "s1", both_run).is_some());
+    }
+
+    #[test]
+    fn a_new_session_in_a_held_terminal_holds_its_task() {
+        let mut q = Queue::default();
+        q.claim(claim("A1", 7, "s1"));
+        // After a clear or a restart only the new session runs there.
+        let new_only = |s: &str| s == "s2";
+        assert_eq!(q.held(7, "s2", new_only).unwrap().id, "A1");
+        assert!(q.held(8, "s2", new_only).is_none());
     }
 
     #[test]
