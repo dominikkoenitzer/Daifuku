@@ -304,7 +304,7 @@ mod tests {
             assert!(!q.settle(Path::new(FILE), &backlog(cut)), "{cut:?}");
             assert_eq!(q.claims.len(), 2, "{cut:?}");
         }
-        assert!(q.held(7, "other").is_some());
+        assert!(q.held(7, "other", |_| false).is_some());
         // Once the file lists tasks again, a dropped one is let go.
         assert!(q.settle(Path::new(FILE), &backlog(&TEXT.replace("A2", "B2"))));
         let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
@@ -359,9 +359,18 @@ mod tests {
         };
         q.load(|w| w == 7);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(q.held(7, "other").map(|c| c.id.as_str()), Some("A1"));
-        assert!(q.held(8, "other").is_none(), "a new window got the handle");
-        assert_eq!(q.held(9, "s2").map(|c| c.id.as_str()), Some("A2"));
+        assert_eq!(
+            q.held(7, "other", |_| false).map(|c| c.id.as_str()),
+            Some("A1")
+        );
+        assert!(
+            q.held(8, "other", |_| false).is_none(),
+            "a new window got the handle"
+        );
+        assert_eq!(
+            q.held(9, "s2", |_| false).map(|c| c.id.as_str()),
+            Some("A2")
+        );
         assert_eq!(q.claims[1].window, 0);
     }
 
@@ -372,9 +381,9 @@ mod tests {
         q.claim(claim("A2", 8, "s2"));
         assert!(q.windows_gone(|w| w == 7));
         assert!(!q.windows_gone(|w| w == 7));
-        assert!(q.held(7, "other").is_some());
-        assert!(q.held(8, "other").is_none());
-        assert!(q.held(9, "s2").is_some());
+        assert!(q.held(7, "other", |_| false).is_some());
+        assert!(q.held(8, "other", |_| false).is_none());
+        assert!(q.held(9, "s2", |_| false).is_some());
     }
 
     #[test]
