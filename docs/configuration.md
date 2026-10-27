@@ -237,10 +237,11 @@ order of the file: the agent goes on with it instead of stopping, told
 which file and id it is. The task stays with that session, in whichever
 terminal it runs, and with its terminal once the session ended there, as
 after a clear, until the file says it is finished; until then the agent
-gets no other. An agent in another tab of that terminal gets its own. Daifuku only reads the file, so the agent
-writes its own name and status in as it works. A task with a folder of its
-id in `claims` beside the file counts as taken, for agents that claim tasks
-by hand. Codex agents get no tasks.
+gets no other. An agent in another tab of that terminal gets its own.
+Daifuku only reads the file, so the agent writes its own name and status
+in as it works. A task with a folder of its id in `claims` beside the
+file counts as taken, for agents that claim tasks by hand. Codex agents
+get no tasks.
 
 An agent gets a task only while its account's [`stop_at`](#stopping) lets
 it work on. `daifuku task` lists each backlog's open tasks, which terminal
