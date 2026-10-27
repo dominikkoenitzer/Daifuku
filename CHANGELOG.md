@@ -56,6 +56,11 @@
   back, though not an id that two fleets' backlogs have out at once.
   Claude Code's `Stop` hook now waits for the daemon so that it can
   hand over a task: run `daifuku install` again to update it.
+- A task whose terminal is gone stays with its session alone, also when
+  the daemon only finds the terminal gone on its regular check or after a
+  restart. A new window that Windows gave the old terminal's handle no
+  longer counts as holding the task, and `daifuku task` no longer names
+  the closed terminal as its holder.
 - A fleet can sign its agents in to an account other than the one in your
   profile: `accounts` names each by a name of your own, with the folder
   Claude Code takes from `CLAUDE_CONFIG_DIR`, the one Codex takes from

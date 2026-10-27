@@ -211,7 +211,8 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
     }
     d.load_config();
     d.usage.load(wall_seconds());
-    d.queue.load();
+    d.queue
+        .load(|w| window::exists(w) && window::class(w) == WINDOW_CLASS);
     d.borders = BorderManager::new(BorderConfig::from(&d.config.border))
         .inspect_err(|e| tracing::error!(error = %e, "no borders"))
         .ok();
@@ -1616,11 +1617,27 @@ impl Daemon {
             self.away = gone;
             self.refresh_borders();
         }
+        let dead = self.forget_dead(window::exists);
+        for f in &mut self.fleets {
+            f.prune();
+        }
+        self.drop_closed_fleets();
+        if dead {
+            self.refresh_borders();
+        }
+        self.watch_idle();
+        self.save(false);
+    }
+
+    /// Lets go of the agents' windows and the tasks' terminals that fail
+    /// `alive`, gone without the event that says so. True when an agent's
+    /// window went.
+    fn forget_dead(&mut self, alive: impl Fn(u64) -> bool) -> bool {
         let dead: Vec<u64> = self
             .agents
             .windows()
             .into_keys()
-            .filter(|&w| !window::exists(w))
+            .filter(|&w| !alive(w))
             .collect();
         for w in &dead {
             self.agents.forget_window(*w);
@@ -1628,15 +1645,10 @@ impl Daemon {
         if !dead.is_empty() {
             self.note_states();
         }
-        for f in &mut self.fleets {
-            f.prune();
+        if self.queue.windows_gone(alive) {
+            self.queue.save();
         }
-        self.drop_closed_fleets();
-        if !dead.is_empty() {
-            self.refresh_borders();
-        }
-        self.watch_idle();
-        self.save(false);
+        !dead.is_empty()
     }
 
     /// Writes the state to [`Daemon::state_file`] when it changed since the
@@ -4326,6 +4338,24 @@ mod tests {
             "a fleet whose windows are not terminals is not open"
         );
         assert!(stale.agents.is_empty(), "a save from another start");
+    }
+
+    #[test]
+    fn the_sweep_takes_a_task_off_a_terminal_that_is_gone() {
+        let mut d = daemon();
+        let claim = |id: &str, window, session: &str| queue::Claim {
+            backlog: PathBuf::from(r"C:\work\BACKLOG.md"),
+            id: id.to_owned(),
+            window,
+            session: session.to_owned(),
+            at: 1,
+        };
+        d.queue.claim(claim("A1", 7, "s1"));
+        d.queue.claim(claim("A2", 8, "s2"));
+        assert!(!d.forget_dead(|w| w == 7), "no agent's window went");
+        assert!(d.queue.held(7, "other").is_some());
+        assert!(d.queue.held(8, "other").is_none());
+        assert!(d.queue.held(9, "s2").is_some());
     }
 
     #[test]
