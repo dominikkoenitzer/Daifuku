@@ -53,7 +53,8 @@
   use before no more tasks go out, by window, day, hour, or the minutes
   before a reset. `daifuku task` lists each backlog's open tasks, who has
   which and what goes out next, and `daifuku task release <id>` takes one
-  back. Claude Code's `Stop` hook now waits for the daemon so that it can
+  back, though not an id that two fleets' backlogs have out at once.
+  Claude Code's `Stop` hook now waits for the daemon so that it can
   hand over a task: run `daifuku install` again to update it.
 - A fleet can sign its agents in to an account other than the one in your
   profile: `accounts` names each by a name of your own, with the folder
