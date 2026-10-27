@@ -4360,9 +4360,9 @@ mod tests {
         d.queue.claim(claim("A1", 7, "s1"));
         d.queue.claim(claim("A2", 8, "s2"));
         assert!(!d.forget_dead(|w| w == 7), "no agent's window went");
-        assert!(d.queue.held(7, "other").is_some());
-        assert!(d.queue.held(8, "other").is_none());
-        assert!(d.queue.held(9, "s2").is_some());
+        assert!(d.queue.held(7, "other", |_| false).is_some());
+        assert!(d.queue.held(8, "other", |_| false).is_none());
+        assert!(d.queue.held(9, "s2", |_| false).is_some());
     }
 
     #[test]
@@ -4504,10 +4504,15 @@ mod tests {
             message,
             format!("task `A1` is handed out in {crew} and in docs, so none was taken back")
         );
-        assert!(d.queue.held(1, "-").is_some() && d.queue.held(2, "-").is_some());
+        assert!(
+            d.queue.held(1, "-", |_| false).is_some() && d.queue.held(2, "-", |_| false).is_some()
+        );
         assert!(matches!(d.release_task("A2"), Response::Ok { .. }));
-        assert!(d.queue.held(3, "-").is_none());
-        assert!(d.queue.held(2, "-").is_some(), "the other A1 stays out");
+        assert!(d.queue.held(3, "-", |_| false).is_none());
+        assert!(
+            d.queue.held(2, "-", |_| false).is_some(),
+            "the other A1 stays out"
+        );
         assert!(matches!(d.release_task("A9"), Response::Error { .. }));
         // A backlog no fleet names any more goes by its path.
         d.queue.claim(claim(r"C:\gone\BACKLOG.md", "A1", 4));
