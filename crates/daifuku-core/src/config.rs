@@ -1248,6 +1248,25 @@ fn plain_value(got: &str) -> String {
         })
 }
 
+/// A config's top level, an object only: a derived struct reads `[]` as the default config.
+struct TopLevel(Config);
+
+impl<'de> Deserialize<'de> for TopLevel {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Object;
+        impl<'de> serde::de::Visitor<'de> for Object {
+            type Value = Config;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("struct Config")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Config, A::Error> {
+                Config::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+        }
+        deserializer.deserialize_map(Object).map(Self)
+    }
+}
+
 impl Config {
     /// Reads and validates a config file's text. An empty or whitespace-only
     /// file is the default config. A byte order mark, which Notepad and other
@@ -1261,7 +1280,9 @@ impl Config {
         let config = if text.trim().is_empty() {
             Self::default()
         } else {
-            serde_json::from_str(text).map_err(|e| ConfigError::Parse(plain_json_error(&e)))?
+            serde_json::from_str::<TopLevel>(text)
+                .map_err(|e| ConfigError::Parse(plain_json_error(&e)))?
+                .0
         };
         config.validate()?;
         Ok(config)
@@ -1639,6 +1660,36 @@ mod tests {
     #[test]
     fn an_empty_object_is_the_default_too() {
         assert_eq!(Config::from_json("{}").unwrap(), Config::default());
+    }
+
+    #[test]
+    fn a_list_at_the_top_is_refused_as_the_wrong_type() {
+        for text in ["[]", "[ ]", "\n  [\n  ]\n", r#"["x"]"#, r#"[{"name":"a"}]"#] {
+            let e = Config::from_json(text).unwrap_err();
+            let ConfigError::Parse(message) = &e else {
+                panic!("{text}: {e}");
+            };
+            assert!(
+                message.starts_with("expected an object in { }, not a list at line "),
+                "{text}: {message}"
+            );
+        }
+        let other = Config::from_json(r#""x""#).unwrap_err().to_string();
+        assert!(
+            other.contains("expected an object in { }, not \"x\" at line "),
+            "{other}"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_blank_file_and_an_empty_object_still_load() {
+        for text in ["", "   ", " \r\n\t\n", "{}", " { } "] {
+            assert_eq!(
+                Config::from_json(text).unwrap(),
+                Config::default(),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]
