@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A border colour with a `+` in it, such as `#+f+0+0`, no longer loads.
+  The config check refuses it, as the schema always did.
 - While the daemon runs with the user's own rights, install lets the user
   who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
   delete it or change who may, and no other user. `daifuku config` then
