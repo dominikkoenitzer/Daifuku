@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `daifuku wait` and `daifuku events --follow` name themselves in the
+  command to run from an administrator terminal. `wait` used to name
+  `daifuku status`, and `events --follow` left out `--follow`.
 - When `daifuku spawn` needs an administrator terminal, the command it says
   to run there keeps the folder, label, fleet and every other argument
   given. It used to say only `daifuku spawn`, which opened the agent in the
