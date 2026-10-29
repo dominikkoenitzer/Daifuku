@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A config or backlog that cannot be read says why in the words Windows has
+  for it, without the error number after them, in `daifuku status`,
+  `doctor`, `task` and `config validate`.
 - A config or backlog saved in another encoding than UTF-8 or UTF-16 names
   the line that is not UTF-8 and says to save the file as UTF-8, instead of
   a byte index.

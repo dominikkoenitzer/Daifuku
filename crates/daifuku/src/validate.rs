@@ -32,7 +32,11 @@ pub fn file(path: &Path) -> Result<(), Problem> {
         message: if e.kind() == std::io::ErrorKind::NotFound {
             format!("there is no config at {}", path.display())
         } else {
-            format!("could not read {}: {e}", path.display())
+            format!(
+                "could not read {}: {}",
+                path.display(),
+                config::io_reason(&e)
+            )
         },
     })?;
     bytes_of(&bytes)
@@ -130,6 +134,14 @@ mod tests {
             p.message,
             "line 1 is not UTF-8 text: save the file as UTF-8"
         );
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_says_why_without_an_error_number() {
+        let p = file(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap_err();
+        assert_eq!(p.code, ErrorCode::Config);
+        assert!(p.message.starts_with("could not read "), "{}", p.message);
+        assert!(!p.message.contains("os error"), "{}", p.message);
     }
 
     #[test]

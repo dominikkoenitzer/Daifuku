@@ -111,7 +111,10 @@ pub fn gather(probe: &impl Probe, command: &str) -> LocalStatus {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (false, None, false),
             Err(e) => (
                 true,
-                Some(one_line(&format!("could not read it: {e}"))),
+                Some(one_line(&format!(
+                    "could not read it: {}",
+                    config::io_reason(&e)
+                ))),
                 false,
             ),
         },
