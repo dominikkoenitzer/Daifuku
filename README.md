@@ -49,7 +49,8 @@ editor for `.json` files, or Notepad when there is none. While the daemon
 runs with your own rights, install lets you write that file. Once it sets
 `"elevated": true` only administrators may, so from an ordinary terminal
 Windows asks for permission first. The daemon picks up every saved change
-within two seconds; `daifuku reload` applies it at once.
+within two seconds; `daifuku reload` from an administrator terminal applies
+it at once.
 
 Do not take ownership of the folder or give your account write access to it:
 the next install would delete it, config and all. An editor that reads the
