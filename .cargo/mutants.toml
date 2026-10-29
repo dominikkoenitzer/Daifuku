@@ -22,4 +22,6 @@ exclude_re = [
     "peer\\.rs:\\d+:35: replace match guard n >= 1 with false in <impl Deserialize<'de> for Cell>::deserialize$",
     # A message of exactly the limit is cut at its own end, which changes nothing.
     'state\.rs:\d+:24: replace > with >= in HookEvent::trim$',
+    # Only reached when the two reset times are at least half a window apart, so they are never equal there.
+    'usage\.rs:\d+:31: replace < with <= in Window::watch$',
 ]
