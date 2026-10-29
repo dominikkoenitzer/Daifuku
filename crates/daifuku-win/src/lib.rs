@@ -22,6 +22,7 @@
 //! - [`apps`]: the entry Settings > Apps lists Daifuku by.
 //! - [`user_env`]: the environment a terminal starts with.
 //! - [`job`]: a process tree that runs at one priority and ends as one.
+//! - [`saver`]: starting the screen saver a new window put off.
 
 #![cfg(windows)]
 
@@ -37,6 +38,7 @@ pub mod monitor;
 pub mod paths;
 pub mod pipe;
 pub mod process;
+pub mod saver;
 pub mod setup;
 pub mod terminal;
 pub mod user_env;
