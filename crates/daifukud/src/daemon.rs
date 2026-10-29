@@ -1208,7 +1208,7 @@ impl Daemon {
                 } else {
                     match process::end(p.pid, at) {
                         Ok(ended) => (ended, None),
-                        Err(e) => (false, Some(e.to_string())),
+                        Err(e) => (false, Some(daifuku_core::config::io_reason(&e))),
                     }
                 };
                 if ended {

@@ -9,6 +9,8 @@
   settings file that install or doctor cannot read or write, an install,
   removal or editor that Windows could not start, and `daifuku group` and
   `heavy` when they cannot start the program or take their turn.
+- So do the lines install and uninstall print for a step Windows refused,
+  and what `daifuku stop-agents` says of a program it could not end.
 - A config or backlog saved in another encoding than UTF-8 or UTF-16 names
   the line that is not UTF-8 and says to save the file as UTF-8, instead of
   a byte index.
