@@ -2565,7 +2565,11 @@ fn a_fleet_opened_while_nobody_is_at_the_desk_does_not_put_the_saver_off() {
     );
     steps += 1;
 
-    assert_eq!(press_shift(), 2);
+    // While the saver is up, Windows takes no input from the test (measured on
+    // CI), so the saver is ended the other way.
+    let _ = Command::new("taskkill.exe")
+        .args(["/f", "/im", "scrnsave.scr"])
+        .output();
     wait_for("the saver to end", Duration::from_secs(10), || {
         (!saver::Now::read().running).then_some(())
     });
