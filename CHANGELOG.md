@@ -17,6 +17,9 @@
   to half a second.
 - `install --dry-run` and `uninstall --dry-run` list `remove_task` only
   when this user has a logon task to remove.
+- Install and uninstall no longer remove the task earlier installs shared
+  when it runs for a local user who only shares a name with a domain
+  account signed in.
 - While the daemon runs with the user's own rights, install lets the user
   who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
   delete it or change who may, and no other user. `daifuku config` then

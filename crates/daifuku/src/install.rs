@@ -268,6 +268,7 @@ impl Facts {
             &setup::task_xml(LEGACY_TASK_NAME),
             &sid,
             this_account().as_deref(),
+            this_machine().as_deref(),
         );
         let shell = !matches!(
             process::as_shell_user(|| ()),
@@ -1264,7 +1265,12 @@ impl local::Probe for Here {
                 .ok()
                 .flatten()
                 .is_some_and(|definition| {
-                    runs_for(&task_users(&definition), &sid, this_account().as_deref())
+                    runs_for(
+                        &task_users(&definition),
+                        &sid,
+                        this_account().as_deref(),
+                        this_machine().as_deref(),
+                    )
                 })
     }
 
@@ -1658,7 +1664,12 @@ fn remove_legacy_task(sid: &str) {
             return;
         }
     };
-    if !runs_for(&task_users(&definition), sid, this_account().as_deref()) {
+    if !runs_for(
+        &task_users(&definition),
+        sid,
+        this_account().as_deref(),
+        this_machine().as_deref(),
+    ) {
         return;
     }
     match setup::delete_task(LEGACY_TASK_NAME) {
@@ -1668,15 +1679,17 @@ fn remove_legacy_task(sid: &str) {
 }
 
 /// Whether the task earlier installs shared, as [`setup::task_xml`] gave it
-/// back, may run for the user with SID `sid`, whose account is `account`.
-/// When Task Scheduler could not be asked that is unknown, so it may.
+/// back, may run for the user with SID `sid`, whose account is `account`, on
+/// the machine named `machine`. When Task Scheduler could not be asked that
+/// is unknown, so it may.
 fn legacy_task_for(
     definition: &std::io::Result<Option<String>>,
     sid: &str,
     account: Option<&str>,
+    machine: Option<&str>,
 ) -> bool {
     match definition {
-        Ok(Some(definition)) => runs_for(&task_users(definition), sid, account),
+        Ok(Some(definition)) => runs_for(&task_users(definition), sid, account, machine),
         Ok(None) => false,
         Err(_) => true,
     }
@@ -1689,18 +1702,25 @@ fn this_account() -> Option<String> {
     Some(format!(r"{domain}\{name}"))
 }
 
+/// This machine's name, the domain of its local accounts.
+fn this_machine() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok()
+}
+
 /// Whether a task whose XML names `users` runs for the user with SID `sid`,
-/// whose account is `account`, `DOMAIN\name`. A user named without a domain
-/// is this machine's. One that names no user, or anyone else, does not.
-fn runs_for(users: &[String], sid: &str, account: Option<&str>) -> bool {
+/// whose account is `account`, `DOMAIN\name`, on the machine named
+/// `machine`. A user named without a domain is this machine's. One that names
+/// no user, or anyone else, does not.
+fn runs_for(users: &[String], sid: &str, account: Option<&str>, machine: Option<&str>) -> bool {
     let is_account = |u: &str| {
-        account.is_some_and(|a| {
-            u.eq_ignore_ascii_case(a)
-                || (!u.contains('\\')
-                    && a.rsplit('\\')
-                        .next()
-                        .is_some_and(|n| u.eq_ignore_ascii_case(n)))
-        })
+        let named = if u.contains('\\') {
+            Some(u.to_owned())
+        } else {
+            machine.map(|m| format!(r"{m}\{u}"))
+        };
+        account
+            .zip(named)
+            .is_some_and(|(a, n)| n.eq_ignore_ascii_case(a))
     };
     !users.is_empty()
         && users
@@ -3004,22 +3024,35 @@ mod tests {
             u.iter().map(|&s| s.to_owned()).collect()
         }
         let sid = "S-1-5-21-1-2-3-1001";
-        assert!(runs_for(&users(&[sid, sid]), sid, None));
-        assert!(runs_for(&users(&["s-1-5-21-1-2-3-1001"]), sid, None));
-        assert!(runs_for(&users(&[r"PC\ada"]), sid, Some(r"pc\Ada")));
-        assert!(runs_for(&users(&["ada", sid]), sid, Some(r"PC\Ada")));
-        assert!(!runs_for(&users(&[r"WORK\ada"]), sid, Some(r"PC\Ada")));
+        let pc = Some("PC");
+        assert!(runs_for(&users(&[sid, sid]), sid, None, pc));
+        assert!(runs_for(&users(&["s-1-5-21-1-2-3-1001"]), sid, None, pc));
+        assert!(runs_for(&users(&[r"PC\ada"]), sid, Some(r"pc\Ada"), pc));
+        assert!(runs_for(&users(&["ada", sid]), sid, Some(r"PC\Ada"), pc));
+        assert!(!runs_for(&users(&[r"WORK\ada"]), sid, Some(r"PC\Ada"), pc));
         assert!(!runs_for(
             &users(&["S-1-5-21-1-2-3-1002"]),
             sid,
-            Some(r"PC\x")
+            Some(r"PC\x"),
+            pc
         ));
-        assert!(!runs_for(&users(&[sid, "S-1-5-21-1-2-3-1002"]), sid, None));
-        assert!(!runs_for(&users(&[r"PC\other"]), sid, None));
+        assert!(!runs_for(
+            &users(&[sid, "S-1-5-21-1-2-3-1002"]),
+            sid,
+            None,
+            pc
+        ));
+        assert!(!runs_for(&users(&[r"PC\other"]), sid, None, pc));
         assert!(
-            !runs_for(&[], sid, Some(r"PC\x")),
+            !runs_for(&[], sid, Some(r"PC\x"), pc),
             "a task that names no one"
         );
+        // A user named without a domain is this machine's, so a domain
+        // account of the same name is someone else.
+        assert!(runs_for(&users(&["ada"]), sid, Some(r"PC\Ada"), pc));
+        assert!(!runs_for(&users(&["ada"]), sid, Some(r"CORP\Ada"), pc));
+        assert!(!runs_for(&users(&["ada", sid]), sid, Some(r"CORP\Ada"), pc));
+        assert!(!runs_for(&users(&["ada"]), sid, Some(r"PC\Ada"), None));
     }
 
     /// The users of a real `\Daifuku\Daemon` task as Task Scheduler gives
@@ -3030,14 +3063,23 @@ mod tests {
         let legacy = include_str!("../../daifuku-win/tests/fixtures/legacy-task.xml");
         let users = task_users(legacy);
         let sid = "S-1-5-21-1-2-3-1001";
-        assert!(runs_for(&users, sid, Some(r"PC\ada")));
-        assert!(runs_for(&users, sid, Some(r"pc\ADA")), "names ignore case");
+        let pc = Some("PC");
+        assert!(runs_for(&users, sid, Some(r"PC\ada"), pc));
         assert!(
-            !runs_for(&users, sid, None),
+            runs_for(&users, sid, Some(r"pc\ADA"), pc),
+            "names ignore case"
+        );
+        assert!(
+            !runs_for(&users, sid, None, pc),
             "without the account the trigger's user is unknown, so it stays"
         );
-        assert!(!runs_for(&users, "S-1-5-21-1-2-3-1002", Some(r"PC\bob")));
-        assert!(!runs_for(&users, sid, Some(r"WORK\ada")));
+        assert!(!runs_for(
+            &users,
+            "S-1-5-21-1-2-3-1002",
+            Some(r"PC\bob"),
+            pc
+        ));
+        assert!(!runs_for(&users, sid, Some(r"WORK\ada"), pc));
     }
 
     #[test]
@@ -3045,17 +3087,24 @@ mod tests {
         let legacy = include_str!("../../daifuku-win/tests/fixtures/legacy-task.xml");
         let sid = "S-1-5-21-1-2-3-1001";
         let account = Some(r"PC\ada");
-        assert!(legacy_task_for(&Ok(Some(legacy.to_owned())), sid, account));
+        let pc = Some("PC");
+        assert!(legacy_task_for(
+            &Ok(Some(legacy.to_owned())),
+            sid,
+            account,
+            pc
+        ));
         assert!(!legacy_task_for(
             &Ok(Some(legacy.to_owned())),
             "S-1-5-21-1-2-3-1002",
-            Some(r"PC\bob")
+            Some(r"PC\bob"),
+            pc
         ));
-        assert!(!legacy_task_for(&Ok(None), sid, account));
+        assert!(!legacy_task_for(&Ok(None), sid, account, pc));
         // Task Scheduler could not be asked, so whether the task is there and
         // whose it is is unknown: the step runs and says what it found.
         let stopped = std::io::Error::other("ERROR: The service has not been started.");
-        assert!(legacy_task_for(&Err(stopped), sid, account));
+        assert!(legacy_task_for(&Err(stopped), sid, account, pc));
     }
 
     #[test]
