@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A config file that does not read as JSON says what is wrong in plain
+  words, such as a missing closing brace, a comment, a single backslash or
+  text where a number goes, instead of the parser's own terms.
 - `daifuku stop-agents` stops every agent at once: it closes every fleet's
   terminals and every spawned one, keeps the session of each for
   `daifuku restore`, which opens it again in its folder and in its cell,
