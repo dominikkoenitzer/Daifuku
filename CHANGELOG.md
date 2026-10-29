@@ -20,6 +20,11 @@
 - Install and uninstall no longer remove the task earlier installs shared
   when it runs for a local user who only shares a name with a domain
   account signed in.
+- When `daifuku` and the daemon differ in version and one cannot read what
+  the other sent, the message names the version that could not and says to
+  run `daifuku install` from the newer `daifuku`, in place of the JSON
+  parser's words. The daemon log keeps those for a command it could not
+  read.
 - While the daemon runs with the user's own rights, install lets the user
   who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
   delete it or change who may, and no other user. `daifuku config` then
