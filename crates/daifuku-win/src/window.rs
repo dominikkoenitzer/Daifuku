@@ -334,7 +334,9 @@ pub fn foreground() -> u64 {
 ///    movement, no button and no key, so this process has the last input. A
 ///    key would reach the window still in front: a lone Alt opens its menu
 ///    bar, Sticky Keys latches it, and its release lets go of an Alt the
-///    user is still holding from the hotkey.
+///    user is still holding from the hotkey. Not while the screen saver is
+///    due: Windows would take the input for someone coming back and start
+///    the saver's countdown over.
 ///
 /// A window whose thread is not answering is left alone and the result is
 /// `false`: restoring and raising it would wait for that thread.
@@ -351,7 +353,7 @@ pub fn focus(w: u64) -> bool {
     }
     for attempt in 0..3 {
         if foreground() != w {
-            if attempt > 0 {
+            if attempt > 0 && !crate::saver::due() {
                 claim_last_input();
             }
             switch_to(h);

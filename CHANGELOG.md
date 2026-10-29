@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A terminal that a fleet or `daifuku spawn` opens while nobody is at the
+  desk no longer keeps the screen saver off. Windows starts the saver's
+  countdown over when a new window comes up, so peers opened a few minutes
+  apart at night kept the screen lit; the daemon now starts the saver when
+  it was due, unless a program holds the display on. A focus retry no
+  longer counts as input while the saver is due.
 - A config file that is only a list, such as `[]`, no longer loads as the
   default config. The config check refuses it, as it does a file that is
   only text or a number.
