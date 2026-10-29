@@ -33,9 +33,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
     GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible,
-    IsZoomed, PostMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_RESTORE, SWP_ASYNCWINDOWPOS,
-    SWP_NOACTIVATE, SWP_NOZORDER, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
-    ShowWindow, ShowWindowAsync, WM_CLOSE, WM_NULL,
+    IsZoomed, PostMessageW, SHOW_WINDOW_CMD, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_RESTORE,
+    SW_SHOWNOACTIVATE, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageTimeoutW,
+    SetForegroundWindow, SetWindowPos, ShowWindow, ShowWindowAsync, WM_CLOSE, WM_NULL,
 };
 
 use crate::monitor::rect;
@@ -174,8 +174,9 @@ pub const fn outer_for(target: Rect, outer: Rect, frame: Rect) -> Rect {
 /// Moves and sizes the window so its visible frame is exactly `target`, and
 /// returns the frame it ended up with.
 ///
-/// A minimised or maximised window is restored first, because Windows keeps
-/// both in a rectangle of their own and would ignore the move. The loop runs
+/// A minimised or maximised window is restored first, without activating it,
+/// because Windows keeps both in a rectangle of their own and would ignore
+/// the move. Nothing here changes the foreground window. The loop runs
 /// until the frame matches or three passes are spent: the second pass is for
 /// the DPI change a window goes through when it lands on another monitor,
 /// the third is slack for a slow app.
@@ -190,8 +191,8 @@ pub fn place(w: u64, target: Rect) -> Option<Rect> {
     }
     // SAFETY: plain calls on a handle.
     unsafe {
-        if IsIconic(h).as_bool() || IsZoomed(h).as_bool() {
-            let _ = ShowWindow(h, SW_RESTORE);
+        if let Some(show) = unfold(IsIconic(h).as_bool(), IsZoomed(h).as_bool()) {
+            let _ = ShowWindow(h, show);
         }
     }
     for _ in 0..3 {
@@ -238,8 +239,8 @@ fn place_later(w: u64, target: Rect) -> Option<Rect> {
     // SAFETY: plain calls on a handle; the restore and the move are only
     // posted to the thread that owns it.
     unsafe {
-        if IsIconic(h).as_bool() || IsZoomed(h).as_bool() {
-            let _ = ShowWindowAsync(h, SW_RESTORE);
+        if let Some(show) = unfold(IsIconic(h).as_bool(), IsZoomed(h).as_bool()) {
+            let _ = ShowWindowAsync(h, show);
             return None;
         }
         let want = outer_for(target, outer(w)?, frame(w)?);
@@ -254,6 +255,17 @@ fn place_later(w: u64, target: Rect) -> Option<Rect> {
         );
     }
     None
+}
+
+/// How [`place`] takes a window out of its minimised or maximised state
+/// before the move, or `None` for a window in neither. `SW_RESTORE` would
+/// also activate it, and placing a window must leave the foreground alone.
+const fn unfold(minimised: bool, maximised: bool) -> Option<SHOW_WINDOW_CMD> {
+    if minimised || maximised {
+        Some(SW_SHOWNOACTIVATE)
+    } else {
+        None
+    }
 }
 
 /// How long [`answers`] gives a window's thread to handle a message, in
@@ -470,6 +482,14 @@ mod tests {
         // SAFETY: a mouse input, so `mi` is the field that was written.
         let mi = unsafe { input.Anonymous.mi };
         assert_eq!((mi.dx, mi.dy, mi.mouseData, mi.dwFlags.0), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn placing_restores_a_minimised_or_maximised_window_without_activating_it() {
+        for (minimised, maximised) in [(true, false), (false, true), (true, true)] {
+            assert_eq!(unfold(minimised, maximised), Some(SW_SHOWNOACTIVATE));
+        }
+        assert_eq!(unfold(false, false), None);
     }
 
     #[test]

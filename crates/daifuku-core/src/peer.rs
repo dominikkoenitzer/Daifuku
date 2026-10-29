@@ -117,7 +117,8 @@ pub struct Spawn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<u64>,
     /// The monitor to put it on. With neither this nor `area`, the peer
-    /// stays where Windows Terminal puts it.
+    /// takes a free cell of its fleet while the fleet is open, else the
+    /// fleet's monitor and area.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monitor: Option<MonitorPick>,
     /// The part of the monitor it fills.
@@ -165,8 +166,7 @@ impl Spawn {
         None
     }
 
-    /// Whether the peer is to be placed, rather than left where Windows
-    /// Terminal opens it.
+    /// Whether the peer names a monitor or an area of its own.
     #[must_use]
     pub const fn placed(&self) -> bool {
         self.monitor.is_some() || self.area.is_some()
