@@ -86,15 +86,7 @@ pub struct Seen {
     pub worked: bool,
 }
 
-/// A window handle as typed: decimal, as `status --json` writes it, or hex
-/// with `0x`, as `status` prints it.
-#[must_use]
-pub fn window_number(text: &str) -> Option<u64> {
-    match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => text.parse().ok(),
-    }
-}
+pub use daifuku_core::protocol::window_number;
 
 /// Where `target`, a window handle or a label in any case, is in `status`,
 /// with `seen` what earlier statuses showed of it, brought up to date.
@@ -198,6 +190,14 @@ mod tests {
         assert_eq!(window_number("0X1F"), Some(31));
         assert_eq!(window_number("site"), None);
         assert_eq!(window_number("0xzz"), None);
+    }
+
+    #[test]
+    fn a_window_takes_digits_only() {
+        for bad in ["+1050190", "0x+10064e", "0X+1F", "abc"] {
+            assert_eq!(window_number(bad), None, "{bad}");
+        }
+        assert_eq!(first(&status(), "+12", Until::Done).0, Step::Unknown);
     }
 
     #[test]

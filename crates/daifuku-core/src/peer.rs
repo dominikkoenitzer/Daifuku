@@ -52,7 +52,8 @@ impl std::str::FromStr for Cell {
             return Ok(Self::Free);
         }
         match s.parse::<u32>() {
-            Ok(n) if n >= 1 => Ok(Self::At(n)),
+            // parse alone also takes a leading +.
+            Ok(n) if n >= 1 && s.bytes().all(|b| b.is_ascii_digit()) => Ok(Self::At(n)),
             _ => Err(format!("`{s}` is not a cell: free, or a number from 1")),
         }
     }
@@ -692,6 +693,18 @@ mod tests {
             (Cell::At(2).to_string(), Cell::Free.to_string()),
             ("2".into(), "free".into())
         );
+    }
+
+    #[test]
+    fn a_cell_takes_digits_only() {
+        for bad in ["+3", "+1", "abc"] {
+            assert_eq!(
+                bad.parse::<Cell>(),
+                Err(format!("`{bad}` is not a cell: free, or a number from 1"))
+            );
+        }
+        assert!(serde_json::from_str::<Cell>(r#""+3""#).is_err());
+        assert_eq!("03".parse::<Cell>(), Ok(Cell::At(3)));
     }
 
     #[test]
