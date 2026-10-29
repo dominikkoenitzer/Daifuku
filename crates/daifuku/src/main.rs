@@ -1446,6 +1446,18 @@ fn control_error(e: &std::io::Error, elevated: bool, command: &str) -> String {
             "the daemon runs elevated and answers only an administrator terminal: open Terminal as administrator (Win+X, then Terminal (Admin)) and run: {command}"
         )
     } else {
+        pipe_failure(e)
+    }
+}
+
+/// What a failed exchange with the daemon says: the pipe client's own words,
+/// or one plain sentence for a Windows error it did not put in words.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pipe_failure(e: &std::io::Error) -> String {
+    if e.raw_os_error().is_some() {
+        "Daifuku could not be reached; try again, and run `daifuku doctor` if it fails again"
+            .to_owned()
+    } else {
         e.to_string()
     }
 }
@@ -2406,8 +2418,22 @@ mod tests {
         let spoofed = std::io::Error::from_raw_os_error(5);
         assert_eq!(
             control_error(&spoofed, true, "daifuku status"),
-            spoofed.to_string()
+            "Daifuku could not be reached; try again, and run `daifuku doctor` if it fails again"
         );
+    }
+
+    #[test]
+    fn a_pipe_failure_windows_gave_no_words_for_is_said_plainly() {
+        // What the pipe client returns for a failure it did not name, such as
+        // ERROR_BAD_PIPE: Windows's text and its number.
+        let failed = std::io::Error::from_raw_os_error(230);
+        for elevated in [false, true] {
+            assert_eq!(
+                control_error(&failed, elevated, "daifuku status"),
+                "Daifuku could not be reached; try again, and run `daifuku doctor` if it fails again"
+            );
+        }
+        assert_eq!(control_code(&failed, false), ErrorCode::Ipc);
     }
 
     #[test]

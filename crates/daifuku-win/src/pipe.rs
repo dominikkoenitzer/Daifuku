@@ -24,9 +24,9 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA,
-    ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
-    GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
-    WAIT_TIMEOUT, WIN32_ERROR,
+    ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
+    ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, HLOCAL,
+    INVALID_HANDLE_VALUE, LocalFree, WAIT_TIMEOUT, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -315,7 +315,8 @@ fn overlapped(
 }
 
 /// Reads one line, at most [`MAX_LINE`] bytes, from an overlapped handle.
-/// A peer that hangs up ends the line where it is.
+/// A peer that hangs up ends the line where it is, as does a server that
+/// disconnects the client.
 fn read_line(handle: HANDLE, event: HANDLE, deadline: Option<Instant>) -> io::Result<String> {
     let mut line = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -327,7 +328,14 @@ fn read_line(handle: HANDLE, event: HANDLE, deadline: Option<Instant>) -> io::Re
         match read {
             Ok(0) => break,
             Ok(n) => line.extend_from_slice(&chunk[..usize::try_from(n).unwrap_or(0)]),
-            Err(e) if os_error(&e) == Some(ERROR_BROKEN_PIPE) => break,
+            Err(e)
+                if matches!(
+                    os_error(&e),
+                    Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED)
+                ) =>
+            {
+                break;
+            }
             Err(e) => return Err(e),
         }
     }
@@ -491,19 +499,18 @@ fn send_to(name: &str, pipe: Pipe, line: &str, wait: Duration) -> io::Result<Opt
             NOT_THE_DAEMON,
         ));
     }
-    // A server that never reads, such as one that took the name while no
-    // daemon ran, would otherwise hold the write for ever.
     let event = event()?;
-    write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
     if pipe == Pipe::Hook {
+        // A server that never reads, such as one that took the name while no
+        // daemon ran, would otherwise hold the write for ever.
+        write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
         // Until the daemon has read the line, within the same short wait,
         // so it finds this process and the agent it ran under still there
         // and can tell who sent it.
         wait_until_read(h, deadline);
         return Ok(None);
     }
-    // The daemon bounds how long it takes to answer.
-    read_reply(h, raw(&event)).map(Some)
+    exchange(h, raw(&event), line, wait).map(Some)
 }
 
 /// Sends one hook line and reads the daemon's one-line answer: `wait` for a
@@ -539,10 +546,7 @@ fn ask_at(name: &str, line: &str, wait: Duration, answer: Duration) -> io::Resul
     write_all(h, raw(&event), line.as_bytes(), Some(Instant::now() + wait))?;
     let reply = read_line(h, raw(&event), Some(Instant::now() + answer))?;
     if !reply.ends_with('\n') {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "Daifuku stopped before it answered",
-        ));
+        return Err(stopped());
     }
     Ok(reply)
 }
@@ -608,6 +612,20 @@ fn connect(name: &str, access: u32, deadline: Instant) -> io::Result<OwnedHandle
     Ok(unsafe { OwnedHandle::from_raw_handle(h.0) })
 }
 
+/// Writes `line` to the daemon within `wait`, so a server that never reads
+/// cannot hold the write, and reads its reply, which the daemon bounds. A
+/// daemon that closes its end before it reads the line stopped before it
+/// answered, as one that closes it mid-reply.
+fn exchange(handle: HANDLE, event: HANDLE, line: &str, wait: Duration) -> io::Result<String> {
+    write_all(handle, event, line.as_bytes(), Some(Instant::now() + wait)).map_err(|e| {
+        match os_error(&e) {
+            Some(ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED) => stopped(),
+            _ => e,
+        }
+    })?;
+    read_reply(handle, event)
+}
+
 /// Whether the control client may talk to process `server`: an elevated one,
 /// which only an administrator could have started, or one of this same
 /// account, which can do nothing with a request the account could not do
@@ -622,12 +640,17 @@ fn trusted_server(server: u32) -> bool {
 fn read_reply(handle: HANDLE, event: HANDLE) -> io::Result<String> {
     let reply = read_line(handle, event, None)?;
     if !reply.ends_with('\n') {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "Daifuku stopped before it answered",
-        ));
+        return Err(stopped());
     }
     Ok(reply)
+}
+
+/// The daemon closed its end of the pipe before it answered.
+fn stopped() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "Daifuku stopped before it answered",
+    )
 }
 
 /// The pipe is there but every instance stayed taken: the daemon runs and is
@@ -787,6 +810,29 @@ mod tests {
     }
 
     #[test]
+    fn a_daemon_that_hung_up_after_the_request_stopped_before_it_answered() {
+        let name = private_name();
+        let mut instance = instances_at(&name, &Pipe::Control.sddl(false), 1)
+            .unwrap()
+            .remove(0);
+        let server = std::thread::spawn(move || {
+            let mut connection = instance.accept().unwrap();
+            // The daemon reads the request, then disconnects without a reply.
+            connection.read_line(Duration::from_secs(2)).unwrap()
+        });
+        let reply = send_to(
+            &name,
+            Pipe::Control,
+            "{\"command\":\"status\"}\n",
+            Duration::from_secs(2),
+        );
+        assert_eq!(server.join().unwrap(), "{\"command\":\"status\"}\n");
+        let e = reply.unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{e}");
+        assert_eq!(e.to_string(), "Daifuku stopped before it answered");
+    }
+
+    #[test]
     fn a_control_server_of_another_account_is_not_answered() {
         // The System process runs as SYSTEM, not elevated as this user is.
         // From an elevated run it counts as elevated, which only an
@@ -912,6 +958,20 @@ mod tests {
                 assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{sent:?}: {e}");
             }
         }
+    }
+
+    #[test]
+    fn a_daemon_that_hung_up_before_the_request_stopped_before_it_answered() {
+        let sddl = &Pipe::Hook.sddl(process::current_is_elevated());
+        let name = private_name();
+        let server = create(&name, sddl, true, 1).unwrap();
+        let client = control_client(&name);
+        // The daemon exits before it reads the request.
+        drop(server);
+        let wait = Duration::from_secs(1);
+        let e = exchange(raw(&client), raw(&event().unwrap()), "{}\n", wait).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{e}");
+        assert_eq!(e.to_string(), "Daifuku stopped before it answered");
     }
 
     #[test]
