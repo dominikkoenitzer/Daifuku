@@ -779,7 +779,8 @@ impl Area {
     }
 
     /// The name it is written with, for the four halves and the whole.
-    const fn name(self) -> Option<&'static str> {
+    #[must_use]
+    pub const fn name(self) -> Option<&'static str> {
         match self {
             Self::Full => Some("full"),
             Self::Left => Some("left"),

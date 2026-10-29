@@ -1467,7 +1467,7 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Snap => "snap".to_owned(),
         Request::Next => "next".to_owned(),
         Request::Demo => "demo".to_owned(),
-        Request::Spawn(_) => "spawn".to_owned(),
+        Request::Spawn(spawn) => spawn_line(spawn),
         Request::Label { window, label } => match label {
             Some(l) => format!("label {window} {}", shell_word(l)),
             None => format!("label {window}"),
@@ -1491,6 +1491,37 @@ fn command_line(request: &Request, json: bool) -> String {
     } else {
         format!("daifuku {command}")
     }
+}
+
+/// The arguments of `spawn` that ask for `spawn`, with its folder written
+/// out, as another terminal starts in another one.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn spawn_line(spawn: &daifuku_core::peer::Spawn) -> String {
+    let mut line = format!(
+        "spawn --dir {}",
+        shell_word(&spawn.directory.to_string_lossy())
+    );
+    let words = [
+        ("--label", spawn.label.clone()),
+        ("--resume", spawn.resume.clone()),
+        ("--fleet", spawn.fleet.clone()),
+        ("--monitor", spawn.monitor.as_ref().map(ToString::to_string)),
+        (
+            "--area",
+            spawn
+                .area
+                .and_then(daifuku_core::config::Area::name)
+                .map(str::to_owned),
+        ),
+        ("--priority", spawn.priority.map(|p| p.name().to_owned())),
+        ("--cell", spawn.cell.map(|c| c.to_string())),
+    ];
+    for (flag, value) in words {
+        if let Some(value) = value {
+            line.push_str(&format!(" {flag} {}", shell_word(&value)));
+        }
+    }
+    line
 }
 
 /// `word` as one argument for PowerShell or the command prompt: as it is
@@ -2519,6 +2550,36 @@ mod tests {
         assert_eq!(shell_word("my agents"), "\"my agents\"");
         assert_eq!(shell_word("a&b"), "\"a&b\"");
         assert_eq!(shell_word(""), "\"\"");
+    }
+
+    #[test]
+    fn the_spawn_to_run_again_keeps_its_arguments() {
+        use daifuku_core::config::{Area, MonitorPick, Priority};
+        use daifuku_core::peer::{Cell, Spawn};
+        let placed = Spawn {
+            directory: r"C:\work\my app".into(),
+            label: Some("crew 1".into()),
+            resume: Some("0e9b6c1a".into()),
+            fleet: Some("agents".into()),
+            monitor: Some(MonitorPick::Portrait),
+            area: Some(Area::Left),
+            priority: Some(Priority::BelowNormal),
+            ..Spawn::default()
+        };
+        assert_eq!(
+            command_line(&Request::Spawn(placed), true),
+            r#"daifuku spawn --dir "C:\work\my app" --label "crew 1" --resume 0e9b6c1a --fleet agents --monitor portrait --area left --priority below-normal --json"#
+        );
+        let in_cell = Spawn {
+            directory: r"C:\work".into(),
+            cell: Some(Cell::At(2)),
+            from: Some(7),
+            ..Spawn::default()
+        };
+        assert_eq!(
+            command_line(&Request::Spawn(in_cell), false),
+            r#"daifuku spawn --dir "C:\work" --cell 2"#
+        );
     }
 
     #[test]
