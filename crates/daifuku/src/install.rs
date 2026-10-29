@@ -988,7 +988,10 @@ fn run(step: &Step) -> anyhow::Result<()> {
         }
         Step::AppEntry { values } => match apps::write(values) {
             Ok(()) => println!("listed       in Settings > Apps > Installed apps"),
-            Err(e) => println!("not listed   in Settings > Apps > Installed apps: {e}"),
+            Err(e) => println!(
+                "not listed   in Settings > Apps > Installed apps: {}",
+                config::io_reason(&e)
+            ),
         },
         Step::AddToPath { dir, .. } => match environment::add_to_machine_path(dir) {
             Ok(true) => {
@@ -996,7 +999,11 @@ fn run(step: &Step) -> anyhow::Result<()> {
                 println!("on PATH      {}", dir.display());
             }
             Ok(false) => println!("kept PATH    {}", dir.display()),
-            Err(e) => println!("PATH         {} not added: {e}", dir.display()),
+            Err(e) => println!(
+                "PATH         {} not added: {}",
+                dir.display(),
+                config::io_reason(&e)
+            ),
         },
         Step::DataFolder { dir, .. } => {
             let removed = setup::harden_dir(dir)
@@ -1020,7 +1027,8 @@ fn run(step: &Step) -> anyhow::Result<()> {
                 Ok(()) => {}
                 // Only the right to edit it without a prompt is missing.
                 Err(e) if writer.is_some() => println!(
-                    "config       only administrators may change it ({e}); `daifuku config` asks for permission"
+                    "config       only administrators may change it ({}); `daifuku config` asks for permission",
+                    config::io_reason(&e)
                 ),
                 Err(e) => {
                     return Err(e).with_context(|| {
@@ -1054,7 +1062,8 @@ fn run(step: &Step) -> anyhow::Result<()> {
         Step::StartDaemon { daemon } => match process::start_detached(daemon) {
             Ok(()) => println!("started      daifukud"),
             Err(e) => println!(
-                "not started  daifukud ({e}); the first daifuku command or agent hook starts it"
+                "not started  daifukud ({}); the first daifuku command or agent hook starts it",
+                config::io_reason(&e)
             ),
         },
         Step::Hooks {
@@ -1114,7 +1123,11 @@ fn run(step: &Step) -> anyhow::Result<()> {
                 println!("removed      {} from PATH", dir.display());
             }
             Ok(false) => {}
-            Err(e) => println!("left         {} on PATH ({e})", dir.display()),
+            Err(e) => println!(
+                "left         {} on PATH ({})",
+                dir.display(),
+                config::io_reason(&e)
+            ),
         },
         Step::RemoveBinaries { dir, .. } => {
             let (left, removed) = remove_binaries(dir, &std::env::temp_dir());
@@ -1125,20 +1138,24 @@ fn run(step: &Step) -> anyhow::Result<()> {
                     for file in &left {
                         println!("left         {}", file.display());
                     }
-                    println!("left         {} ({e})", dir.display());
+                    println!("left         {} ({})", dir.display(), config::io_reason(&e));
                 }
             }
         }
         Step::RemoveAppEntry { .. } => match apps::remove() {
             Ok(true) => println!("removed      from Settings > Apps > Installed apps"),
             Ok(false) => {}
-            Err(e) => println!("left         in Settings > Apps > Installed apps ({e})"),
+            Err(e) => println!(
+                "left         in Settings > Apps > Installed apps ({})",
+                config::io_reason(&e)
+            ),
         },
         Step::LockKeptConfig { file, owner } => match setup::keep_config(file, owner) {
             Ok(()) => println!("config       {} no longer writable by you", file.display()),
             Err(e) => println!(
-                "config       {} still writable by you ({e})",
-                file.display()
+                "config       {} still writable by you ({})",
+                file.display(),
+                config::io_reason(&e)
             ),
         },
         Step::RemoveData { dir, .. } => {
@@ -1684,7 +1701,10 @@ fn remove_legacy_task(sid: &str) {
     }
     match setup::delete_task(LEGACY_TASK_NAME) {
         Ok(()) => println!("removed      logon task {LEGACY_TASK_NAME} of an earlier install"),
-        Err(e) => println!("left         logon task {LEGACY_TASK_NAME}: {e}"),
+        Err(e) => println!(
+            "left         logon task {LEGACY_TASK_NAME}: {}",
+            config::io_reason(&e)
+        ),
     }
 }
 
@@ -2014,7 +2034,7 @@ fn shell_refused(e: std::io::Error, path: &Path) -> anyhow::Error {
             path.display()
         )
     } else {
-        anyhow::Error::new(e).context(format!("could not edit {}", path.display()))
+        anyhow!(config::io_reason(&e)).context(format!("could not edit {}", path.display()))
     }
 }
 
@@ -3036,6 +3056,19 @@ mod tests {
             format!("{other:#}"),
             r"could not edit C:\Users\ada\.claude\settings.json: refused"
         );
+    }
+
+    #[test]
+    fn a_settings_file_windows_refused_is_told_without_the_error_number() {
+        let file = Path::new(r"C:\Users\ada\settings.json");
+        let denied = shell_refused(std::io::Error::from_raw_os_error(5), file);
+        let text = format!("{denied:#}");
+        assert!(
+            text.starts_with(r"could not edit C:\Users\ada\settings.json: "),
+            "{text}"
+        );
+        assert!(text.contains("Access is denied"), "{text}");
+        assert!(!text.contains("os error"), "{text}");
     }
 
     #[test]

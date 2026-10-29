@@ -254,8 +254,6 @@ pub fn runs(pid: u32, started: u64) -> bool {
 /// When it runs and cannot be ended, as one that runs elevated cannot from a
 /// process that does not.
 pub fn end(pid: u32, started: u64) -> std::io::Result<bool> {
-    use std::io::Error;
-
     // SAFETY: the handle is closed on every path.
     unsafe {
         let h = match OpenProcess(
@@ -267,12 +265,12 @@ pub fn end(pid: u32, started: u64) -> std::io::Result<bool> {
             Err(e) if WIN32_ERROR::from_error(&e) == Some(ERROR_INVALID_PARAMETER) => {
                 return Ok(false);
             }
-            Err(e) => return Err(Error::other(e)),
+            Err(e) => return Err(plain(e)),
         };
         let same = started_at(h) == Some(started);
         let running = WaitForSingleObject(h, 0) != WAIT_OBJECT_0;
         let ended = if same && running {
-            TerminateProcess(h, 1).map(|()| true).map_err(Error::other)
+            TerminateProcess(h, 1).map(|()| true).map_err(plain)
         } else {
             Ok(false)
         };
@@ -406,8 +404,6 @@ pub fn session_of(pid: u32) -> Option<u32> {
 /// process, as it does when an administrator's password was typed into a
 /// standard user's prompt. `f` does not run then.
 pub fn as_shell_user<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
-    use std::io::Error;
-
     /// Goes back to the process's own rights, also when `f` panics.
     struct Revert(HANDLE);
     impl Drop for Revert {
@@ -433,11 +429,11 @@ pub fn as_shell_user<T>(f: impl FnOnce() -> T) -> std::io::Result<T> {
             TokenImpersonation,
             &raw mut user,
         )
-        .map_err(Error::other)?;
+        .map_err(plain)?;
         drop(token);
         if let Err(e) = SetThreadToken(None, Some(user)) {
             let _ = CloseHandle(user);
-            return Err(Error::other(e));
+            return Err(plain(e));
         }
         let _revert = Revert(user);
         Ok(f())
@@ -464,8 +460,7 @@ fn shell_token() -> std::io::Result<OwnedHandle> {
         }
         let mut pid = 0u32;
         GetWindowThreadProcessId(shell, Some(&raw mut pid));
-        let process =
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(Error::other)?;
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(plain)?;
         let mut token = HANDLE::default();
         let opened = OpenProcessToken(
             process,
@@ -473,7 +468,7 @@ fn shell_token() -> std::io::Result<OwnedHandle> {
             &raw mut token,
         );
         let _ = CloseHandle(process);
-        opened.map_err(Error::other)?;
+        opened.map_err(plain)?;
         let token = OwnedHandle::from_raw_handle(token.0);
         let mut own = HANDLE::default();
         let same = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut own).is_ok() && {
@@ -510,8 +505,6 @@ fn shell_token() -> std::io::Result<OwnedHandle> {
 /// there is no desktop shell and `PermissionDenied` when the shell runs as
 /// another account.
 pub fn start_detached(exe: &Path) -> std::io::Result<()> {
-    use std::io::Error;
-
     let app: Vec<u16> = exe.as_os_str().encode_wide().chain(once(0)).collect();
     // CreateProcess may write to the command line, so it gets a copy of its
     // own: the program's path in quotes.
@@ -552,7 +545,7 @@ pub fn start_detached(exe: &Path) -> std::io::Result<()> {
                 TokenPrimary,
                 &raw mut primary,
             )
-            .map_err(Error::other)?;
+            .map_err(plain)?;
             let primary = OwnedHandle::from_raw_handle(primary.0);
             let environment = crate::user_env::block_for(HANDLE(primary.as_raw_handle()));
             // The Secondary Logon service starts it, so it is in none of this
@@ -568,7 +561,7 @@ pub fn start_detached(exe: &Path) -> std::io::Result<()> {
                 &raw const si,
                 &raw mut pi,
             )
-            .map_err(Error::other)?;
+            .map_err(plain)?;
         }
     } else {
         let environment = crate::user_env::block(&crate::user_env::for_terminal());
@@ -603,7 +596,7 @@ pub fn start_detached(exe: &Path) -> std::io::Result<()> {
             Err(e) if WIN32_ERROR::from_error(&e) == Some(ERROR_ACCESS_DENIED) => start(flags),
             started => started,
         }
-        .map_err(Error::other)?;
+        .map_err(plain)?;
     }
     // SAFETY: both handles were just returned by the start and are not used
     // again.
@@ -612,6 +605,16 @@ pub fn start_detached(exe: &Path) -> std::io::Result<()> {
         let _ = CloseHandle(pi.hProcess);
     }
     Ok(())
+}
+
+/// A Windows error in its own words without the code after them, still of kind `Other`.
+fn plain(e: windows::core::Error) -> std::io::Error {
+    let words = e.message();
+    std::io::Error::other(if words.is_empty() {
+        e.to_string()
+    } else {
+        words
+    })
 }
 
 /// Whether two tokens belong to the same account.
@@ -818,5 +821,48 @@ mod tests {
         assert!(!end(pid, at).unwrap(), "it has ended already");
         // The child's handle is still open here, so its id still names it.
         assert!(!runs(pid, at), "it has ended, though its handle is held");
+    }
+
+    #[test]
+    fn a_windows_error_reads_as_the_same_error_from_rust() {
+        use daifuku_core::config::io_reason;
+        use windows::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_SHARING_VIOLATION,
+        };
+        for code in [
+            ERROR_FILE_NOT_FOUND,
+            ERROR_ACCESS_DENIED,
+            ERROR_SHARING_VIOLATION,
+        ] {
+            let e = plain(windows::core::Error::from(code.to_hresult()));
+            let from_rust = std::io::Error::from_raw_os_error(i32::try_from(code.0).unwrap());
+            assert_eq!(io_reason(&e), io_reason(&from_rust), "code {}", code.0);
+            assert!(!io_reason(&e).contains("(0x"), "code {}", code.0);
+            assert!(
+                !io_reason(&from_rust).contains("os error"),
+                "code {}",
+                code.0
+            );
+            assert_eq!(e.kind(), std::io::ErrorKind::Other, "code {}", code.0);
+        }
+    }
+
+    #[test]
+    fn a_process_that_cannot_be_ended_is_told_without_the_windows_code() {
+        // Windows refuses to end System (pid 4), and 0 is never its start time.
+        if let Err(e) = end(4, 0) {
+            let reason = daifuku_core::config::io_reason(&e);
+            assert!(!reason.is_empty() && !reason.contains("(0x"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_program_that_cannot_be_started_is_told_without_the_windows_code() {
+        let missing = std::env::current_exe()
+            .unwrap()
+            .with_file_name("daifuku-no-such-program.exe");
+        let e = start_detached(&missing).expect_err("there is no such program");
+        let reason = daifuku_core::config::io_reason(&e);
+        assert!(!reason.is_empty() && !reason.contains("(0x"), "{reason}");
     }
 }
