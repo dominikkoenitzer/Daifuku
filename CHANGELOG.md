@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Help and usage errors name the command `daifuku`, as it is typed, not
+  `daifuku.exe`.
 - `daifuku spawn --json` with a monitor or area it does not know exits
   with 2, as the JSON output page says and as it does without `--json`.
   It used to exit with 1.
