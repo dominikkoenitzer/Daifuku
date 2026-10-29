@@ -276,7 +276,9 @@ real command's other options: `--no-hooks` and `--no-start` for install,
     { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifukud.exe", "detail": "carried inside C:\\Users\\you\\Downloads\\daifuku.exe" },
     { "action": "add_app_entry", "target": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Daifuku", "detail": "Settings > Apps > Installed apps lists Daifuku 0.4.1" },
     { "action": "add_to_path", "target": "C:\\Program Files\\Daifuku", "detail": "the machine PATH" },
-    { "action": "start_task", "target": "\\Daifuku\\Daemon-S-1-5-21-...", "detail": null }
+    { "action": "create_folder", "target": "C:\\ProgramData\\Daifuku", "detail": "locked to administrators" },
+    { "action": "write_config", "target": "C:\\ProgramData\\Daifuku\\daifuku.json", "detail": "the starter config, writable by you" },
+    { "action": "start_daemon", "target": "C:\\Program Files\\Daifuku\\daifukud.exe", "detail": "with your own rights, no logon task" }
   ],
   "notes": ["the real `daifuku install` needs an administrator terminal"]
 }
@@ -307,7 +309,8 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 | `keep_config` | both | Keep the config there is; `detail` is `writable by you` or `writable by administrators only`, and in an uninstall `no longer writable by you`. |
 | `register_task` | install | Register this user's logon task. |
 | `remove_task` | both | Remove this user's logon task, or the one task earlier installs shared. |
-| `start_task` | install | Start the daemon now. |
+| `start_task` | install | Start the daemon now through its logon task. |
+| `start_daemon` | install | Start the daemon now with your own rights, no logon task. |
 | `add_hooks` | install | Add or update Daifuku's hooks in an agent's settings. |
 | `keep_hooks` | install | The settings have the hooks already. |
 | `leave_hooks` | both | The settings stay as they are; `detail` says why. |
