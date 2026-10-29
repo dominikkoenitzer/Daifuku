@@ -1081,12 +1081,19 @@ pub fn decode(bytes: &[u8]) -> std::io::Result<String> {
     let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
         let (pairs, _) = rest.as_chunks::<2>();
         let units: Vec<u16> = pairs.iter().map(|&pair| unit(pair)).collect();
-        String::from_utf16(&units).map_err(|e| invalid(e.to_string()))
+        String::from_utf16(&units)
+            .map_err(|_| invalid("the file is not whole UTF-16 text: save it as UTF-8".to_owned()))
     };
     match bytes {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
-        _ => String::from_utf8(bytes.to_vec()).map_err(|e| invalid(e.to_string())),
+        _ => String::from_utf8(bytes.to_vec()).map_err(|e| {
+            let good = &bytes[..e.utf8_error().valid_up_to()];
+            let line = good.iter().filter(|&&b| b == b'\n').count() + 1;
+            invalid(format!(
+                "line {line} is not UTF-8 text: save the file as UTF-8"
+            ))
+        }),
     }
 }
 
@@ -1561,6 +1568,17 @@ mod tests {
             assert_eq!(c.fleets[0].name, "ä");
         }
         assert!(decode(&[0xC3]).is_err());
+    }
+
+    #[test]
+    fn a_file_in_another_encoding_says_which_line_in_plain_words() {
+        let ansi = b"{\"fleets\": [\n  {\"name\": \"Gr\xfcezi\"}\n]}";
+        let said = decode(ansi).unwrap_err().to_string();
+        assert_eq!(said, "line 2 is not UTF-8 text: save the file as UTF-8");
+        let mut lone = vec![0xFF, 0xFE];
+        lone.extend(0xD800u16.to_le_bytes());
+        let said = decode(&lone).unwrap_err().to_string();
+        assert_eq!(said, "the file is not whole UTF-16 text: save it as UTF-8");
     }
 
     #[test]
