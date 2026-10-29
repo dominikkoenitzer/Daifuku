@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `daifuku spawn --json` with a monitor or area it does not know exits
+  with 2, as the JSON output page says and as it does without `--json`.
+  It used to exit with 1.
 - `daifuku wait` and `daifuku events --follow` name themselves in the
   command to run from an administrator terminal. `wait` used to name
   `daifuku status`, and `events --follow` left out `--follow`.

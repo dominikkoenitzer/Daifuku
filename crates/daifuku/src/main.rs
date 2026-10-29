@@ -518,11 +518,7 @@ fn main() -> ExitCode {
                 }),
                 format.json,
             ),
-            Err(message) if format.json => fail_json(ErrorCode::Usage, &message),
-            Err(message) => {
-                eprintln!("daifuku: {message}");
-                ExitCode::from(2)
-            }
+            Err(message) => spawn_usage(&message, format.json),
         },
         Command::DemoAgent { number } => {
             demo_agent(number);
@@ -579,6 +575,17 @@ fn usage_error(e: &clap::Error, json: bool) -> ExitCode {
     }
     output::print_json(&ErrorDoc::new(ErrorCode::Usage, &usage_message(e)));
     // What clap exits with on a usage error.
+    ExitCode::from(2)
+}
+
+/// `spawn` arguments clap took that still make no request, such as a
+/// misspelt monitor: a usage error as clap's own, with or without `--json`.
+fn spawn_usage(message: &str, json: bool) -> ExitCode {
+    if json {
+        output::print_json(&ErrorDoc::new(ErrorCode::Usage, message));
+    } else {
+        eprintln!("daifuku: {message}");
+    }
     ExitCode::from(2)
 }
 
@@ -2611,6 +2618,12 @@ mod tests {
             command_line(&Request::Spawn(in_cell), false),
             r#"daifuku spawn --dir "C:\work" --cell 2"#
         );
+    }
+
+    #[test]
+    fn spawn_arguments_that_do_not_fit_exit_2_with_or_without_json() {
+        assert_eq!(spawn_usage("x", true), ExitCode::from(2));
+        assert_eq!(spawn_usage("x", false), ExitCode::from(2));
     }
 
     #[test]
