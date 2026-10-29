@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A daemon that closes the pipe before it reads a command now gets the
+  same "Daifuku stopped before it answered" as one that closes it while it
+  answers. Any other failure Windows reports on the pipe says "Daifuku
+  could not be reached; try again, and run `daifuku doctor` if it fails
+  again" in place of the Windows text and its error number. The `--json`
+  error code stays `ipc`.
 - While the daemon runs with the user's own rights, install lets the user
   who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
   delete it or change who may, and no other user. `daifuku config` then
