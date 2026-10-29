@@ -1493,6 +1493,34 @@ fn command_line(request: &Request, json: bool) -> String {
     }
 }
 
+/// The `wait` that was asked, as a person would type it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn wait_line(target: &str, until: wait::Until, timeout: u64, json: bool) -> String {
+    use clap::ValueEnum;
+    let until = until
+        .to_possible_value()
+        .map(|v| v.get_name().to_owned())
+        .unwrap_or_default();
+    let line = format!(
+        "daifuku wait {} --until {until} --timeout {timeout}",
+        shell_word(target)
+    );
+    if json { format!("{line} --json") } else { line }
+}
+
+/// The `events --follow` that was asked, as a person would type it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn events_line(after: Option<u64>, json: bool) -> String {
+    let mut line = "daifuku events --follow".to_owned();
+    if let Some(after) = after {
+        line.push_str(&format!(" --after {after}"));
+    }
+    if json {
+        line.push_str(" --json");
+    }
+    line
+}
+
 /// The arguments of `spawn` that ask for `spawn`, with its folder written
 /// out, as another terminal starts in another one.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1746,11 +1774,12 @@ fn parse_window(text: &str) -> Result<u64, String> {
 }
 
 /// Sends `request` to the daemon and reads its answer, or says why it could
-/// not, as [`control`] does.
+/// not, as [`control`] does. `asked` is the command to run again from an
+/// administrator terminal.
 #[cfg(windows)]
 fn ask(
     request: &Request,
-    json: bool,
+    asked: &str,
 ) -> Result<daifuku_core::protocol::Response, (ErrorCode, String)> {
     use daifuku_core::protocol::{Response, from_line, to_line};
     use daifuku_win::pipe::{Pipe, send};
@@ -1768,7 +1797,7 @@ fn ask(
             let elevated = daifuku_win::process::current_is_elevated();
             return Err((
                 control_code(&e, elevated),
-                control_error(&e, elevated, &command_line(request, json)),
+                control_error(&e, elevated, asked),
             ));
         }
     };
@@ -1790,10 +1819,11 @@ fn wait_cmd(target: &str, until: wait::Until, timeout: u64, json: bool) -> ExitC
             ExitCode::FAILURE
         }
     };
+    let asked = wait_line(target, until, timeout, json);
     let start = std::time::Instant::now();
     let mut seen = wait::Seen::default();
     loop {
-        let status = match ask(&Request::Status, json) {
+        let status = match ask(&Request::Status, &asked) {
             Ok(Response::Status(s)) => s,
             Ok(Response::Error { message }) => return fail(ErrorCode::Daemon, &message),
             Ok(_) => return fail(ErrorCode::Ipc, "the daemon did not answer with its status"),
@@ -1873,13 +1903,14 @@ fn events_cmd(after: Option<u64>, follow: bool, json: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     };
+    let asked = events_line(after, json);
     let mut after = after;
     let mut daemon = None;
     loop {
         let request = Request::Events {
             after: after.unwrap_or(0),
         };
-        let (events, last, started_at) = match ask(&request, json) {
+        let (events, last, started_at) = match ask(&request, &asked) {
             Ok(Response::Events {
                 events,
                 last,
@@ -2580,6 +2611,27 @@ mod tests {
             command_line(&Request::Spawn(in_cell), false),
             r#"daifuku spawn --dir "C:\work" --cell 2"#
         );
+    }
+
+    #[test]
+    fn a_wait_or_a_follow_to_run_again_is_the_one_asked() {
+        assert_eq!(
+            wait_line("crew 1", wait::Until::Done, 60, true),
+            "daifuku wait \"crew 1\" --until done --timeout 60 --json"
+        );
+        assert_eq!(
+            events_line(Some(7), false),
+            "daifuku events --follow --after 7"
+        );
+        assert_eq!(events_line(None, true), "daifuku events --follow --json");
+        for line in [
+            wait_line("0x10064e", wait::Until::Turn, 3600, true),
+            events_line(Some(7), true),
+        ] {
+            let cli =
+                Cli::try_parse_from(line.split(' ')).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(json_flag(&cli.command), Some(true), "{line}");
+        }
     }
 
     #[test]
