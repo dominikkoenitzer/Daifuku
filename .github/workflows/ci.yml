@@ -126,6 +126,28 @@ jobs:
           if ($known) {
               "### Known failures`n" + (($known | ForEach-Object { "- $_" }) -join "`n") | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           }
+      # A one-minute screen saver and nothing else on the desktop: a new
+      # terminal window starts the saver's countdown over, and the daemon has
+      # to start the saver when it was due all the same.
+      - name: The screen saver starts on time
+        shell: pwsh
+        env:
+          DAIFUKU_E2E: "1"
+          DAIFUKU_E2E_SAVER: "1"
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Continue'
+          Add-Type -Namespace E2e -Name Saver -MemberDefinition '[DllImport("user32.dll")] public static extern bool SystemParametersInfoW(uint action, uint param, System.IntPtr value, uint flags);'
+          $desk = 'HKCU:\Control Panel\Desktop'
+          Set-ItemProperty $desk -Name 'SCRNSAVE.EXE' -Value "$env:WINDIR\System32\scrnsave.scr"
+          Set-ItemProperty $desk -Name 'ScreenSaverIsSecure' -Value '0'
+          # The timeout, then the saver on, both written and announced.
+          [void][E2e.Saver]::SystemParametersInfoW(0x000F, 60, [IntPtr]::Zero, 3)
+          [void][E2e.Saver]::SystemParametersInfoW(0x0011, 1, [IntPtr]::Zero, 3)
+          $output = cargo test --locked -p daifuku --test e2e -- --nocapture --exact a_fleet_opened_while_nobody_is_at_the_desk_does_not_put_the_saver_off 2>&1 | Out-String
+          Write-Output $output
+          if ($LASTEXITCODE -ne 0) { throw "the screen saver test failed with $LASTEXITCODE" }
+          if ($output -notmatch 'e2e: \d+ steps passed') { throw "the screen saver test did not run to the end" }
       - name: The daemon's log
         if: always()
         shell: pwsh
