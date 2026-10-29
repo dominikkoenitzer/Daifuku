@@ -2704,14 +2704,7 @@ fn pick_terminal(target: &str, known: &[(u64, Option<String>)]) -> Result<u64, S
             ));
         }
     }
-    let number = match target
-        .strip_prefix("0x")
-        .or_else(|| target.strip_prefix("0X"))
-    {
-        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => target.parse().ok(),
-    };
-    match number {
+    match daifuku_core::protocol::window_number(target) {
         Some(n) if known.iter().any(|&(w, _)| w == n) => Ok(n),
         Some(n) => Err(format!("window {n:#010x} is no terminal Daifuku knows")),
         None => Err(format!("no terminal is called `{target}`")),
@@ -3346,6 +3339,17 @@ mod tests {
                     .into()
             )
         );
+    }
+
+    #[test]
+    fn a_terminal_window_takes_digits_only() {
+        let known = [(0x30, None), (0x10_064e, None)];
+        for bad in ["+48", "0x+30", "0X+10064e", "abc"] {
+            assert_eq!(
+                pick_terminal(bad, &known),
+                Err(format!("no terminal is called `{bad}`"))
+            );
+        }
     }
 
     #[test]
