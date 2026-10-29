@@ -315,7 +315,8 @@ fn overlapped(
 }
 
 /// Reads one line, at most [`MAX_LINE`] bytes, from an overlapped handle.
-/// A peer that hangs up ends the line where it is.
+/// A peer that hangs up ends the line where it is, as does a server that
+/// disconnects the client.
 fn read_line(handle: HANDLE, event: HANDLE, deadline: Option<Instant>) -> io::Result<String> {
     let mut line = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -327,7 +328,14 @@ fn read_line(handle: HANDLE, event: HANDLE, deadline: Option<Instant>) -> io::Re
         match read {
             Ok(0) => break,
             Ok(n) => line.extend_from_slice(&chunk[..usize::try_from(n).unwrap_or(0)]),
-            Err(e) if os_error(&e) == Some(ERROR_BROKEN_PIPE) => break,
+            Err(e)
+                if matches!(
+                    os_error(&e),
+                    Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED)
+                ) =>
+            {
+                break;
+            }
             Err(e) => return Err(e),
         }
     }
@@ -751,6 +759,29 @@ mod tests {
         );
         assert_eq!(reply.unwrap().as_deref(), Some("{\"result\":\"ok\"}\n"));
         assert_eq!(server.join().unwrap(), "{\"command\":\"status\"}\n");
+    }
+
+    #[test]
+    fn a_daemon_that_hung_up_after_the_request_stopped_before_it_answered() {
+        let name = private_name();
+        let mut instance = instances_at(&name, &Pipe::Control.sddl(false), 1)
+            .unwrap()
+            .remove(0);
+        let server = std::thread::spawn(move || {
+            let mut connection = instance.accept().unwrap();
+            // The daemon reads the request, then disconnects without a reply.
+            connection.read_line(Duration::from_secs(2)).unwrap()
+        });
+        let reply = send_to(
+            &name,
+            Pipe::Control,
+            "{\"command\":\"status\"}\n",
+            Duration::from_secs(2),
+        );
+        assert_eq!(server.join().unwrap(), "{\"command\":\"status\"}\n");
+        let e = reply.unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{e}");
+        assert_eq!(e.to_string(), "Daifuku stopped before it answered");
     }
 
     #[test]
