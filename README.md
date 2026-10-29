@@ -174,9 +174,9 @@ from anywhere.
 ## Use it from a script or an AI assistant
 
 Every command in the table but `group` and `heavy` takes `--json`,
-`install` and `uninstall` only with `--dry-run`: it prints one JSON document on standard output, errors
-included, for a script or an assistant to read. These work from any
-terminal:
+`install` and `uninstall` only with `--dry-run`: it prints one JSON
+document on standard output, errors included, for a script or an assistant
+to read. These work from any terminal:
 
 ```powershell
 daifuku status --json
