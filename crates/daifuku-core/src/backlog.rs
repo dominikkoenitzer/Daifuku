@@ -214,6 +214,37 @@ Steps and sources.
     }
 
     #[test]
+    fn only_a_bare_fence_of_the_same_mark_and_length_ends_code() {
+        let tasks = parse(
+            "~~~~\n\
+             ```\n\
+             ### X1. Other mark | status: open\n\
+             ~~~\n\
+             ### X2. Too short | status: open\n\
+             ~~~~ text\n\
+             ### X3. Not bare | status: open\n\
+             ~~~~\n\
+             ### A1. Real | status: open\n\
+             \x20\x20\x20```\n\
+             ### X4. After a fence indented three spaces | status: open\n",
+        );
+        let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["A1"]);
+    }
+
+    #[test]
+    fn a_dash_for_an_owner_is_nobody_and_a_name_is_someone() {
+        let open: Vec<String> = parse(
+            "### A1. x | owner: - | status: open\n### A2. y | owner: crew-1 | status: open\n",
+        )
+        .into_iter()
+        .filter(Task::is_open)
+        .map(|t| t.id)
+        .collect();
+        assert_eq!(open, ["A1"]);
+    }
+
+    #[test]
     fn titles_and_fields_are_cut_and_plain() {
         let long = "x".repeat(MAX_TEXT + 50);
         let tasks = parse(&format!(
