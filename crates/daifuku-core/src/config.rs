@@ -1169,6 +1169,9 @@ fn plain_data(message: &str) -> String {
     if let Some(rest) = message.strip_prefix("unknown field ") {
         return format!("unknown key {rest}");
     }
+    if let Some(rest) = message.strip_prefix("unknown variant ") {
+        return format!("unknown value {rest}");
+    }
     if let Some(name) = message.strip_prefix("missing field ") {
         return format!("{name} is missing");
     }
@@ -1712,6 +1715,25 @@ mod tests {
         for (text, words) in cases {
             let message = Config::from_json(text).unwrap_err().to_string();
             assert!(message.contains(words), "{text}: {message}");
+        }
+    }
+
+    #[test]
+    fn a_misspelt_choice_says_so_in_plain_words() {
+        let cases = [
+            (
+                r#"{"border":{"palette":"catpuccin"}}"#,
+                "unknown value `catpuccin`, expected `catppuccin` or `colorblind`",
+            ),
+            (
+                r#"{"accounts":{"me":{"stop_at":[{"share":90,"window":"five_hours"}]}}}"#,
+                "unknown value `five_hours`, expected `five_hour` or `seven_day`",
+            ),
+        ];
+        for (text, words) in cases {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(message.contains(words), "{text}: {message}");
+            assert!(!message.contains("variant"), "{text}: {message}");
         }
     }
 
