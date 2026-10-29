@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `install --dry-run` and `uninstall --dry-run` list `remove_task` only
+  when this user has a logon task to remove.
 - While the daemon runs with the user's own rights, install lets the user
   who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
   delete it or change who may, and no other user. `daifuku config` then
