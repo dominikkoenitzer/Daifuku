@@ -1516,19 +1516,33 @@ fn command_line(request: &Request, json: bool) -> String {
     }
 }
 
-/// `word` as one argument for PowerShell or the command prompt: as it is
-/// when it is plain, in double quotes otherwise.
+/// `word` as one argument: as it is when it is plain, in double quotes when
+/// both PowerShell and the command prompt keep it there, in PowerShell single
+/// quotes otherwise. A `"` reaches the program intact only from PowerShell 7.3
+/// on, and `%name%` of a set variable still expands in the command prompt.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn shell_word(word: &str) -> String {
     let plain = !word.is_empty()
         && word
             .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '\\'));
     if plain {
-        word.to_owned()
-    } else {
-        format!("\"{word}\"")
+        return word.to_owned();
     }
+    // PowerShell expands `$` and the backtick in double quotes and ends them at any double quote mark.
+    let double = |c: char| matches!(c, '$' | '`' | '"' | '\u{201c}' | '\u{201d}' | '\u{201e}');
+    if !word.chars().any(double) {
+        return format!("\"{word}\"");
+    }
+    let mut quoted = String::from('\'');
+    for c in word.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
 }
 
 /// The request `daifuku spawn` sends, from its arguments: the folder made
@@ -2573,6 +2587,32 @@ mod tests {
         assert_eq!(shell_word("my agents"), "\"my agents\"");
         assert_eq!(shell_word("a&b"), "\"a&b\"");
         assert_eq!(shell_word(""), "\"\"");
+        assert_eq!(shell_word("it's 50%"), "\"it's 50%\"");
+        assert_eq!(shell_word("a\\b\\"), "a\\b\\");
+    }
+
+    #[test]
+    fn a_word_powershell_would_change_in_double_quotes_goes_in_single_quotes() {
+        assert_eq!(shell_word("$build"), "'$build'");
+        assert_eq!(shell_word("a`b"), "'a`b'");
+        assert_eq!(shell_word("say \"hi\""), "'say \"hi\"'");
+        assert_eq!(shell_word("\u{201c}q\u{201d}"), "'\u{201c}q\u{201d}'");
+        assert_eq!(shell_word("\u{201e}q"), "'\u{201e}q'");
+        assert_eq!(shell_word("it's $5"), "'it''s $5'");
+        assert_eq!(
+            shell_word("\u{2018}$\u{2019}\u{201a}\u{201b}"),
+            "'\u{2018}\u{2018}$\u{2019}\u{2019}\u{201a}\u{201a}\u{201b}\u{201b}'"
+        );
+        assert_eq!(
+            command_line(
+                &Request::Label {
+                    window: 5,
+                    label: Some("$build".into())
+                },
+                false
+            ),
+            "daifuku label 5 '$build'"
+        );
     }
 
     #[test]
