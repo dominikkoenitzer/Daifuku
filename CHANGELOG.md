@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `daifuku wait --timeout` and `daifuku events --after` refuse a number
+  with a `+` in front, such as `+5`, as they refuse `abc`, instead of
+  reading it as 5.
 - `daifuku stop-agents` stops every agent at once: it closes every fleet's
   terminals and every spawned one, keeps the session of each for
   `daifuku restore`, which opens it again in its folder and in its cell,
