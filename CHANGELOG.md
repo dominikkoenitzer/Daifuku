@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- When `daifuku spawn` needs an administrator terminal, the command it says
+  to run there keeps the folder, label, fleet and every other argument
+  given. It used to say only `daifuku spawn`, which opened the agent in the
+  administrator terminal's own folder.
 - A config file that does not read as JSON says what is wrong in plain
   words, such as a missing closing brace, a comment, a single backslash or
   text where a number goes, instead of the parser's own terms.
