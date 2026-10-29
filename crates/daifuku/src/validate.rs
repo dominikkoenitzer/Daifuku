@@ -140,4 +140,29 @@ mod tests {
             p.message
         );
     }
+
+    #[test]
+    fn a_file_that_is_only_a_list_fails_like_any_other_wrong_type() {
+        let dir =
+            std::env::temp_dir().join(format!("daifuku-validate-list-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let check = |name: &str, text: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            file(&path)
+        };
+        let list = check("list.json", "[]");
+        let text = check("text.json", r#""x""#);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let (list, text) = (list.unwrap_err(), text.unwrap_err());
+        assert_eq!(
+            (list.code, text.code),
+            (ErrorCode::InvalidConfig, ErrorCode::InvalidConfig)
+        );
+        assert!(
+            list.message.contains("sequence, expected struct Config"),
+            "{}",
+            list.message
+        );
+    }
 }
