@@ -171,6 +171,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gaps_wider_than_the_room_narrow_so_the_last_span_ends_at_the_end() {
+        assert_eq!(spans(0, 11, 3, 20), [(0, 0), (5, 5), (10, 11)]);
+        assert_eq!(spans(0, 11, 1, 20), [(0, 11)]);
+    }
+
+    #[test]
     fn when_no_shape_fits_the_plan_falls_back_to_one_column() {
         // Gaps wider than the screen: every shape has cells of negative size,
         // and none may win on a cost computed from two negatives.

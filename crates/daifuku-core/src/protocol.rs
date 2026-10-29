@@ -683,6 +683,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_window_number_reads_as_decimal_or_hex() {
+        assert_eq!(window_number("1234"), Some(1234));
+        assert_eq!(window_number("0x1F"), Some(31));
+        assert_eq!(window_number("0X1f"), Some(31));
+        for text in ["+5", "0x+5", "", "0x", "12a", "-1"] {
+            assert_eq!(window_number(text), None, "{text}");
+        }
+    }
+
+    #[test]
     fn requests_are_readable_json() {
         assert_eq!(to_line(&Request::Snap).unwrap(), "{\"command\":\"snap\"}\n");
         assert_eq!(
