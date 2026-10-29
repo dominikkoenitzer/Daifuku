@@ -1089,6 +1089,109 @@ pub fn decode(bytes: &[u8]) -> std::io::Result<String> {
     }
 }
 
+/// What is wrong with a file that did not parse, in the words of someone
+/// editing it rather than the parser's, with where it is.
+fn plain_json_error(e: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let full = e.to_string();
+    let place = format!(" at line {} column {}", e.line(), e.column());
+    let message = full.strip_suffix(&place).unwrap_or(&full);
+    let words = match e.classify() {
+        Category::Eof => "the file ends before every {, [ and \" in it is closed".to_owned(),
+        Category::Syntax => plain_syntax(message).to_owned(),
+        Category::Data => plain_data(message),
+        Category::Io => message.to_owned(),
+    };
+    if e.line() == 0 {
+        words
+    } else {
+        format!("{words}{place}")
+    }
+}
+
+/// A JSON syntax error in plain words.
+fn plain_syntax(message: &str) -> &str {
+    match message {
+        "key must be a string" => "a key must be in double quotes, and comments are not allowed",
+        "trailing comma" => "there is a comma after the last item",
+        "expected `,` or `}`" => "a comma or a } is missing",
+        "expected `,` or `]`" => "a comma or a ] is missing",
+        "expected `:`" => "a colon is missing after a key",
+        "expected value" | "expected ident" => {
+            "a value is missing or misspelt; text goes in double quotes, and true, false and null in lower case"
+        }
+        "invalid escape" => r#"a backslash must be written twice, as in "C:\\work""#,
+        "control character (\\u0000-\\u001F) found while parsing a string" => {
+            r"a line break or tab inside double quotes must be written as \n or \t"
+        }
+        "trailing characters" => "there is more after the last }",
+        "invalid number" | "number out of range" => "a number does not read as one",
+        other => other,
+    }
+}
+
+/// A value of the wrong kind in plain words. Messages the config's own
+/// types give are plain already and stay as they are.
+fn plain_data(message: &str) -> String {
+    let wrong = message
+        .strip_prefix("invalid type: ")
+        .or_else(|| message.strip_prefix("invalid value: "))
+        .and_then(|rest| rest.rsplit_once(", expected "));
+    if let Some((got, want)) = wrong {
+        return format!("expected {}, not {}", plain_kind(want), plain_value(got));
+    }
+    if let Some(rest) = message.strip_prefix("unknown field ") {
+        return format!("unknown key {rest}");
+    }
+    if let Some(name) = message.strip_prefix("missing field ") {
+        return format!("{name} is missing");
+    }
+    if let Some(name) = message.strip_prefix("duplicate field ") {
+        return format!("{name} is there twice");
+    }
+    message.to_owned()
+}
+
+/// What a value should have been, for a person rather than a programmer.
+fn plain_kind(want: &str) -> &str {
+    match want {
+        "u8" | "u16" | "u32" | "u64" | "usize" => "a whole number from 0",
+        "i8" | "i16" | "i32" | "i64" | "isize" => "a whole number",
+        "f32" | "f64" => "a number",
+        "a boolean" => "true or false",
+        "a string" | "a borrowed string" | "a character" => "text in double quotes",
+        "a sequence" => "a list in [ ]",
+        "a map" => "an object in { }",
+        w if w.starts_with("struct ") => "an object in { }",
+        w => w,
+    }
+}
+
+/// The value that was there instead, as it is written in the file.
+fn plain_value(got: &str) -> String {
+    let quoted = |prefix: &str| {
+        got.strip_prefix(prefix)
+            .and_then(|v| v.strip_prefix('`'))
+            .and_then(|v| v.strip_suffix('`'))
+            .map(str::to_owned)
+    };
+    if let Some(text) = got.strip_prefix("string ") {
+        return text.to_owned();
+    }
+    quoted("integer ")
+        .or_else(|| quoted("floating point "))
+        .or_else(|| quoted("boolean "))
+        .unwrap_or_else(|| {
+            match got {
+                "map" => "an object",
+                "sequence" => "a list",
+                "unit value" => "null",
+                other => other,
+            }
+            .to_owned()
+        })
+}
+
 impl Config {
     /// Reads and validates a config file's text. An empty or whitespace-only
     /// file is the default config. A byte order mark, which Notepad and other
@@ -1102,7 +1205,7 @@ impl Config {
         let config = if text.trim().is_empty() {
             Self::default()
         } else {
-            serde_json::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?
+            serde_json::from_str(text).map_err(|e| ConfigError::Parse(plain_json_error(&e)))?
         };
         config.validate()?;
         Ok(config)
@@ -1495,6 +1598,43 @@ mod tests {
     fn a_typo_in_a_key_is_an_error_not_a_silent_default() {
         let e = Config::from_json(r#"{"fleets":[{"name":"x","cuont":3}]}"#).unwrap_err();
         assert!(matches!(e, ConfigError::Parse(_)), "{e}");
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_says_why_in_plain_words() {
+        let cases = [
+            (
+                r#"{"fleets":[{"name":"a","count":"four"}]}"#,
+                "a whole number",
+            ),
+            (r#"{"fleets":[{"name":"a","count":-1}]}"#, "a whole number"),
+            (r#"{"border":{"width":1.5}}"#, "a whole number"),
+            (r#"{"fleets":["a"]}"#, "an object"),
+            (r#"{"border":{"pulse":"yes"}}"#, "true or false"),
+            ("{\n  \"fleets\": [{ \"name\": \"a\" }\n", "ends before"),
+            ("{\n  // mine\n  \"fleets\": []\n}", "comments"),
+            (r#"{"fleets":[{"name":"C:\work"}]}"#, "backslash"),
+            (r#"{"fleets":[{"name":"a" "count":2}]}"#, "comma"),
+        ];
+        for (text, words) in cases {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(message.contains(words), "{text}: {message}");
+            assert!(message.contains(" at line "), "{text}: {message}");
+            for tell in [
+                "u32",
+                "i32",
+                "EOF",
+                "invalid type",
+                "invalid value",
+                "struct",
+                "must be a string",
+                "floating point",
+                "integer `",
+                "string \"",
+            ] {
+                assert!(!message.contains(tell), "{text}: {message}");
+            }
+        }
     }
 
     #[test]
