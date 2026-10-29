@@ -31,6 +31,9 @@
   could not be reached; try again, and run `daifuku doctor` if it fails
   again" in place of the Windows text and its error number. The `--json`
   error code stays `ipc`.
+- The command to run again from an administrator terminal keeps a fleet
+  name or label with `$` or a backtick as it is. It used to put them in
+  double quotes, where PowerShell reads a variable or an escape.
 - While the daemon runs with the user's own rights, install lets the user
   who installs write `C:\ProgramData\Daifuku\daifuku.json`, though not
   delete it or change who may, and no other user. `daifuku config` then
