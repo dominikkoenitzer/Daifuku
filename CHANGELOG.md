@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `hours` in a `stop_at` rule with a `+` in it, such as `+8-18`, no longer
+  loads as `8-18`. The config check refuses it, as it does other hours
+  that are not two numbers 0 to 24.
 - `daifuku stop-agents` stops every agent at once: it closes every fleet's
   terminals and every spawned one, keeps the session of each for
   `daifuku restore`, which opens it again in its folder and in its cell,
