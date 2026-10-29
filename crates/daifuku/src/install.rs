@@ -129,7 +129,8 @@ pub struct Facts {
     pub config: Option<Config>,
     /// This user's SID.
     pub sid: String,
-    /// Whether the task earlier installs shared runs for this user.
+    /// Whether the task earlier installs shared runs for this user, or may
+    /// as Task Scheduler could not be asked.
     pub legacy_task_ours: bool,
     /// Each agent's settings file and what install and uninstall would do
     /// to it.
@@ -196,7 +197,8 @@ pub enum Step {
         data: PathBuf,
         elevated: bool,
     },
-    /// Remove the task earlier installs shared, which runs for this user.
+    /// Remove the task earlier installs shared, which runs, or may run, for
+    /// this user.
     RemoveLegacyTask { sid: String },
     /// Start the logon task now.
     StartTask { name: String },
@@ -258,9 +260,11 @@ impl Facts {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => Some(false),
         };
-        let legacy_task_ours = setup::task_xml(LEGACY_TASK_NAME).is_some_and(|definition| {
-            runs_for(&task_users(&definition), &sid, this_account().as_deref())
-        });
+        let legacy_task_ours = legacy_task_for(
+            &setup::task_xml(LEGACY_TASK_NAME),
+            &sid,
+            this_account().as_deref(),
+        );
         let shell = !matches!(
             process::as_shell_user(|| ()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound
@@ -1249,9 +1253,12 @@ impl local::Probe for Here {
             return false;
         };
         setup::task_exists(&task_name(&sid)).is_ok_and(|found| found)
-            || setup::task_xml(LEGACY_TASK_NAME).is_some_and(|definition| {
-                runs_for(&task_users(&definition), &sid, this_account().as_deref())
-            })
+            || setup::task_xml(LEGACY_TASK_NAME)
+                .ok()
+                .flatten()
+                .is_some_and(|definition| {
+                    runs_for(&task_users(&definition), &sid, this_account().as_deref())
+                })
     }
 
     fn config_file(&self) -> Option<PathBuf> {
@@ -1633,10 +1640,16 @@ fn refused_hotkeys(hotkeys: &[String]) -> Vec<&str> {
 
 /// Removes the one task per machine that earlier installs registered, when
 /// it runs for this user, and says so. Another user's stays: it is their
-/// autostart until they install again.
+/// autostart until they install again. When Task Scheduler cannot be asked
+/// for it, it is reported as left, with the reason.
 fn remove_legacy_task(sid: &str) {
-    let Some(definition) = setup::task_xml(LEGACY_TASK_NAME) else {
-        return;
+    let definition = match setup::task_xml(LEGACY_TASK_NAME) {
+        Ok(Some(definition)) => definition,
+        Ok(None) => return,
+        Err(e) => {
+            println!("left         logon task {LEGACY_TASK_NAME}: {e}");
+            return;
+        }
     };
     if !runs_for(&task_users(&definition), sid, this_account().as_deref()) {
         return;
@@ -1644,6 +1657,21 @@ fn remove_legacy_task(sid: &str) {
     match setup::delete_task(LEGACY_TASK_NAME) {
         Ok(()) => println!("removed      logon task {LEGACY_TASK_NAME} of an earlier install"),
         Err(e) => println!("left         logon task {LEGACY_TASK_NAME}: {e}"),
+    }
+}
+
+/// Whether the task earlier installs shared, as [`setup::task_xml`] gave it
+/// back, may run for the user with SID `sid`, whose account is `account`.
+/// When Task Scheduler could not be asked that is unknown, so it may.
+fn legacy_task_for(
+    definition: &std::io::Result<Option<String>>,
+    sid: &str,
+    account: Option<&str>,
+) -> bool {
+    match definition {
+        Ok(Some(definition)) => runs_for(&task_users(definition), sid, account),
+        Ok(None) => false,
+        Err(_) => true,
     }
 }
 
@@ -2987,6 +3015,24 @@ mod tests {
         );
         assert!(!runs_for(&users, "S-1-5-21-1-2-3-1002", Some(r"PC\bob")));
         assert!(!runs_for(&users, sid, Some(r"WORK\ada")));
+    }
+
+    #[test]
+    fn an_earlier_installs_task_that_could_not_be_asked_for_is_not_passed_over() {
+        let legacy = include_str!("../../daifuku-win/tests/fixtures/legacy-task.xml");
+        let sid = "S-1-5-21-1-2-3-1001";
+        let account = Some(r"PC\ada");
+        assert!(legacy_task_for(&Ok(Some(legacy.to_owned())), sid, account));
+        assert!(!legacy_task_for(
+            &Ok(Some(legacy.to_owned())),
+            "S-1-5-21-1-2-3-1002",
+            Some(r"PC\bob")
+        ));
+        assert!(!legacy_task_for(&Ok(None), sid, account));
+        // Task Scheduler could not be asked, so whether the task is there and
+        // whose it is is unknown: the step runs and says what it found.
+        let stopped = std::io::Error::other("ERROR: The service has not been started.");
+        assert!(legacy_task_for(&Err(stopped), sid, account));
     }
 
     #[test]
