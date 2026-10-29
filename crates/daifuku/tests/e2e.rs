@@ -393,8 +393,15 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
         Duration::from_secs(15),
         || (!window::exists(second)).then_some(()),
     );
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let reopened = run(&["open", "e2e"]);
     assert!(reopened.contains("opened e2e (4 terminals"), "{reopened}");
+    assert!(
+        front_stays(front),
+        "daifuku open leaves the window in front where it was"
+    );
+    drop(bystander);
     let fleet = wait_for("the reopened fleet", Duration::from_secs(10), || {
         status()?
             .fleets
@@ -413,6 +420,50 @@ fn a_fleet_opens_in_its_grid_snaps_back_and_closes() {
             i + 1
         );
     }
+    steps += 1;
+
+    // Placing a maximised terminal restores it into its cell and leaves the
+    // window in front where it was, and so does a snap.
+    let (first, third) = (before[0], before[2]);
+    maximise(first);
+    wait_for(
+        "the first terminal to maximise",
+        Duration::from_secs(5),
+        || window::is_maximised(first).then_some(()),
+    );
+    assert!(
+        window::focus(third),
+        "the third terminal did not come to the front"
+    );
+    let front = window::foreground();
+    window::place(first, cells[0]);
+    assert_eq!(
+        window::frame(first),
+        Some(cells[0]),
+        "the maximised terminal is not back in its cell"
+    );
+    assert_eq!(
+        window::foreground(),
+        front,
+        "placing the maximised terminal took the foreground: {}",
+        describe(window::foreground())
+    );
+    maximise(first);
+    wait_for(
+        "the first terminal to maximise",
+        Duration::from_secs(5),
+        || window::is_maximised(first).then_some(()),
+    );
+    assert!(window::focus(third), "the third terminal did not come back");
+    let front = window::foreground();
+    let snapped = run(&["snap"]);
+    assert!(snapped.contains("snapped 4 terminals"), "{snapped}");
+    assert_eq!(
+        window::foreground(),
+        front,
+        "snap took the foreground: {}",
+        describe(window::foreground())
+    );
     steps += 1;
 
     // Closing the fleet takes every terminal down.
@@ -751,6 +802,17 @@ fn an_account_s_status_line_shows_its_use_and_warns_on_its_borders() {
     println!("e2e: {steps} steps passed");
 }
 
+/// Maximises a window, as its maximise button would.
+fn maximise(w: u64) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SW_MAXIMIZE, ShowWindow};
+
+    // SAFETY: plain call on a handle.
+    unsafe {
+        let _ = ShowWindow(HWND(w as usize as *mut core::ffi::c_void), SW_MAXIMIZE);
+    }
+}
+
 /// A window as a line: handle, class, title and, for the foreground, which
 /// of its children has the keyboard and whether it is in a menu.
 fn describe(w: u64) -> String {
@@ -1057,6 +1119,143 @@ fn stop(cleanup: &mut Cleanup) {
     });
 }
 
+/// A plain window of the test's own, on a thread of its own that answers its
+/// messages, closed when dropped.
+///
+/// The checks that the front stays where it was put it in front first.
+/// Windows Terminal 1.23 runs all its windows on one thread, and while one of
+/// them is in front each new one takes the front, whatever show command it
+/// was started with; the runner starts with a terminal in front. So the
+/// window in front has to be another program's for the check to be about
+/// Daifuku.
+struct Bystander {
+    window: u64,
+    thread: u32,
+    pump: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Bystander {
+    fn new() -> Self {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CW_USEDEFAULT, CreateWindowExW, DispatchMessageW, GetMessageW,
+            GetWindowThreadProcessId, MSG, TranslateMessage, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
+            WS_VISIBLE,
+        };
+        use windows::core::w;
+
+        let (sent, received) = std::sync::mpsc::channel();
+        let pump = std::thread::spawn(move || {
+            // SAFETY: a top-level window of a system class, and the message
+            // loop runs on the thread that owns it.
+            unsafe {
+                let h = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("Static"),
+                    w!("daifuku e2e bystander"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    CW_USEDEFAULT,
+                    CW_USEDEFAULT,
+                    480,
+                    320,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                sent.send(h.0 as usize as u64).unwrap();
+                let mut msg = MSG::default();
+                while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
+                    let _ = TranslateMessage(&raw const msg);
+                    DispatchMessageW(&raw const msg);
+                }
+            }
+        });
+        let window = received.recv().unwrap();
+        // SAFETY: plain call on a handle.
+        let thread = unsafe {
+            GetWindowThreadProcessId(HWND(window as usize as *mut core::ffi::c_void), None)
+        };
+        Self {
+            window,
+            thread,
+            pump: Some(pump),
+        }
+    }
+
+    /// Puts the window in front and returns it once it stayed there.
+    fn front(&self) -> u64 {
+        assert!(
+            window::focus(self.window),
+            "Windows did not give the test's own window the front"
+        );
+        let front = settled_front();
+        assert_eq!(
+            front,
+            self.window,
+            "the front went to {} before the check",
+            describe(front)
+        );
+        front
+    }
+}
+
+impl Drop for Bystander {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+
+        // SAFETY: a message with no pointers to a thread id.
+        unsafe {
+            let _ = PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
+        if let Some(pump) = self.pump.take() {
+            let _ = pump.join();
+        }
+    }
+}
+
+/// The window in front once it has stayed the same for half a second, so a
+/// switch still under way from an earlier step is not taken for the start.
+fn settled_front() -> u64 {
+    let mut front = window::foreground();
+    let mut since = Instant::now();
+    let start = Instant::now();
+    while since.elapsed() < Duration::from_millis(500) && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(50));
+        let now = window::foreground();
+        if now != front {
+            (front, since) = (now, Instant::now());
+        }
+    }
+    front
+}
+
+/// Whether `front` stays in front for two seconds, so a terminal that comes
+/// to the front a moment after its command returned counts too.
+fn front_stays(front: u64) -> bool {
+    let start = Instant::now();
+    loop {
+        let now = window::foreground();
+        if now != front {
+            let pid = window::pid(now);
+            let name = daifuku_win::process::snapshot()
+                .remove(&pid)
+                .map_or_else(|| "?".to_owned(), |p| p.name);
+            println!(
+                "e2e: the front went from {front:#x} to {now:#x}, a {:?} window of {name} (pid {pid})",
+                window::class(now)
+            );
+            return false;
+        }
+        if start.elapsed() >= Duration::from_secs(2) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// A check known to fail, run and reported without failing the test, so
 /// the suite shows the day it starts to pass.
 fn expect_failure(what: &str, passed: bool) {
@@ -1320,6 +1519,8 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         ],
     );
 
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let w = spawn(&[
         "--dir",
         &work.display().to_string(),
@@ -1330,6 +1531,11 @@ fn spawn_opens_one_terminal_in_its_folder_and_area_without_agent_variables() {
         "--area",
         "right",
     ]);
+    assert!(
+        front_stays(front),
+        "daifuku spawn leaves the window in front where it was"
+    );
+    drop(bystander);
     let first = ran_full(&dir, "");
     assert!(
         same_dir(&first.folder, &work),
@@ -1564,10 +1770,17 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
     assert!(listed["peers"][0]["window"].is_null(), "{listed}");
     steps += 1;
 
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let restored = json(&run(&["restore", "--json"]));
     let again = restored["peers"][0]["window"]
         .as_u64()
         .unwrap_or_else(|| panic!("restore opened nothing: {restored}"));
+    assert!(
+        front_stays(front),
+        "daifuku restore leaves the window in front where it was"
+    );
+    drop(bystander);
     let (folder, args, _, _) = ran(&dir, "--resume-e2e-restore-1");
     assert!(same_dir(&folder, &work), "{folder}");
     assert_eq!(args, "--resume e2e-restore-1");
@@ -1616,11 +1829,19 @@ fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
     let mut steps = 0;
     let (mut cleanup, _) = start_with(&config, None, &[]);
 
+    let bystander = Bystander::new();
+    let front = bystander.front();
     let opened = run(&["open", "lead"]);
     assert!(
         opened.contains("opened crew (3 terminals") && opened.contains("opened lead (1 terminal"),
         "{opened}"
     );
+    // Opened by a command, not by its key, so neither fleet takes the front.
+    assert!(
+        front_stays(front),
+        "daifuku open of a fleet with another leaves the window in front where it was"
+    );
+    drop(bystander);
     let s = wait_for("both fleets in the status", Duration::from_secs(10), || {
         status().filter(|s| s.fleets.len() == 2)
     });
@@ -1659,12 +1880,6 @@ fn a_lead_on_the_left_and_a_crew_of_three_on_the_right_open_on_one_key() {
             .all(|c| c.left == right[0].left && c.right == right[0].right)
     );
     steps += 1;
-
-    // The lead opened last, so it should be in front.
-    expect_failure(
-        "the lead has the focus after one key opened both fleets",
-        window::foreground() == lead[0],
-    );
 
     let closed = run(&["close", "--all"]);
     assert!(closed.contains("closed 4 terminals"), "{closed}");
@@ -1897,6 +2112,7 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
             rows: 2,
         }),
     );
+    let half = Grid::plan(1, Area::Right.within(primary.work), Gaps::default(), None)[0];
     let dir_arg = work.display().to_string();
     let at = |args: &[&str]| {
         let mut all = vec!["--dir", dir_arg.as_str(), "--fleet", "crew"];
@@ -1929,6 +2145,27 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
             .filter(|&w| window::class(w) == daifuku_win::terminal::WINDOW_CLASS)
             .count()
     };
+    // A spawn with no cell, monitor or area that goes on the crew's half,
+    // outside its grid; it reports no session, so it takes none of the crew's.
+    let on_the_half = |what: &str| {
+        let _ = std::fs::remove_file(dir.join("ran-1.txt"));
+        events(false);
+        let reply = run(&["spawn", "--dir", &dir_arg, "--fleet", "crew", "--json"]);
+        let spawned = crate::json(&reply);
+        assert_eq!(spawned["area"], "right", "{reply}");
+        assert_eq!(spawned["monitor"], primary.device.as_str(), "{reply}");
+        assert!(spawned.get("cell").is_none(), "{reply}");
+        let w = spawned["window"].as_u64().unwrap();
+        ran_full(&dir, "1");
+        assert_in_cell(w, half, what);
+        events(true);
+        w
+    };
+    let close_by_window = |w: u64| {
+        let closed = run(&["close", "--terminal", &format!("{w:#x}")]);
+        assert!(closed.contains("closed"), "{closed}");
+        assert!(!window::exists(w));
+    };
 
     // The first peer takes the first cell and is the crew's first terminal,
     // numbered as it.
@@ -1958,6 +2195,13 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
     assert_eq!(terminals(), before, "a third terminal opened");
     steps += 1;
 
+    // Without --cell, a third goes on the full crew's half instead, and
+    // stays out of the crew.
+    let d = on_the_half("the peer beside the full crew");
+    assert_eq!(fleet_windows("crew"), vec![a, b]);
+    close_by_window(d);
+    steps += 1;
+
     // Snap puts a peer that was moved back in its cell, as any of the crew.
     let _ = window::place(a, daifuku_core::Rect::new(10, 10, 600, 400));
     run(&["snap"]);
@@ -1979,6 +2223,21 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
         unknown.contains("no terminal is called `nobody`"),
         "{unknown}"
     );
+    steps += 1;
+
+    // Without --cell, a peer takes the free cell of the open crew and is
+    // one of it.
+    let _ = std::fs::remove_file(dir.join("ran-1.txt"));
+    let (d, fleet, cell) = at(&["--label", "site"]);
+    assert_eq!((fleet.as_deref(), cell), (Some("crew"), Some(1)));
+    ran_full(&dir, "1");
+    assert_in_cell(d, cells[0], "the peer that joined the crew");
+    assert_eq!(fleet_windows("crew"), vec![d, b]);
+    let closed = run(&["close", "--terminal", "site"]);
+    assert!(closed.contains("closed site"), "{closed}");
+    wait_for("the crew to keep one again", Duration::from_secs(5), || {
+        (fleet_windows("crew") == vec![b]).then_some(())
+    });
     steps += 1;
 
     // A peer that asks for the first cell gets it back.
@@ -2038,6 +2297,7 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
         let w = p.window.expect("a restored window");
         assert!(window::exists(w));
         assert!(!crew.contains(&w), "{p:?} took a cell of the crew");
+        assert_in_cell(w, half, &format!("{} beside the crew", p.session_id));
     }
     assert_eq!(fleet_windows("crew"), crew, "the crew kept its terminals");
     steps += 1;
@@ -2053,6 +2313,13 @@ fn peers_take_the_cells_of_a_crew_close_one_at_a_time_and_come_back_to_them() {
     wait_for("nothing to be left", Duration::from_secs(15), || {
         status().filter(|s| s.peers.is_empty() && s.fleets.is_empty())
     });
+    steps += 1;
+
+    // With the crew closed, a peer without a cell still goes on its half,
+    // and the crew stays closed.
+    let d = on_the_half("the peer of the closed crew");
+    assert!(status().unwrap().fleets.is_empty(), "the crew opened");
+    close_by_window(d);
     steps += 1;
 
     stop(&mut cleanup);

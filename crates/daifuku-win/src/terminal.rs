@@ -10,9 +10,7 @@
 
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_SERVICE_DISABLED, ERROR_SUCCESS, HANDLE, WIN32_ERROR,
@@ -32,13 +30,16 @@ use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
 };
 use windows::Win32::System::Threading::{
-    CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW, LOGON_WITH_PROFILE, OpenProcess,
-    OpenProcessToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, CreateProcessWithTokenW,
+    LOGON_WITH_PROFILE, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
 };
 use windows::Win32::UI::Shell::{
     FOLDERID_ProgramFiles, FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetShellWindow, GetWindowThreadProcessId, SW_SHOWNOACTIVATE,
+};
 use windows::core::{PCWSTR, PWSTR};
 
 use daifuku_core::config::Priority;
@@ -389,6 +390,23 @@ fn escape(s: &str) -> String {
     s.replace(';', r"\;")
 }
 
+/// What both starts hand `wt.exe` about the window it opens: show it in its
+/// normal place and size without activating it.
+///
+/// Without `STARTF_USESHOWWINDOW` the program gets `SW_SHOWDEFAULT`, and the
+/// new terminal takes the front. With it the front stays where it was,
+/// unless a Windows Terminal window is in front: Windows Terminal runs all
+/// its windows on one thread, and that thread gives each new one the front
+/// whatever show command it was started with.
+fn startup_info() -> STARTUPINFOW {
+    STARTUPINFOW {
+        cb: u32::try_from(size_of::<STARTUPINFOW>()).unwrap_or(0),
+        dwFlags: STARTF_USESHOWWINDOW,
+        wShowWindow: SW_SHOWNOACTIVATE.0 as u16,
+        ..Default::default()
+    }
+}
+
 /// Opens one window, elevated if this process is, in the environment
 /// [`crate::user_env::for_terminal`] builds.
 ///
@@ -396,17 +414,36 @@ fn escape(s: &str) -> String {
 ///
 /// When `wt.exe` cannot be started.
 pub fn open(wt: &Path, launch: &Launch) -> std::io::Result<()> {
-    // CREATE_NO_WINDOW: wt.exe itself is a console program that only hands
-    // the request to the Windows Terminal process; without the flag it
-    // flashes a console of its own.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    Command::new(wt)
-        .args(launch.args(shell().as_deref(), windows_powershell_refuses_scripts()))
-        .env_clear()
-        .envs(crate::user_env::for_terminal())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map(drop)
+    let args = launch.args(shell().as_deref(), windows_powershell_refuses_scripts());
+    let mut line_w = to_wide(&command_line(wt, &args));
+    let app = to_wide(&wt.to_string_lossy());
+    let environment = crate::user_env::block(&crate::user_env::for_terminal());
+    let si = startup_info();
+    let mut pi = PROCESS_INFORMATION::default();
+    // SAFETY: the strings and the environment are NUL terminated and outlive
+    // the call; `false` passes none of this process's handles on, and both
+    // handles returned are closed.
+    unsafe {
+        // CREATE_NO_WINDOW: wt.exe itself is a console program that only
+        // hands the request to the Windows Terminal process; without the
+        // flag it flashes a console of its own.
+        CreateProcessW(
+            PCWSTR(app.as_ptr()),
+            Some(PWSTR(line_w.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+            Some(environment.as_ptr().cast()),
+            PCWSTR::null(),
+            &raw const si,
+            &raw mut pi,
+        )
+        .map_err(std::io::Error::other)?;
+        let _ = CloseHandle(pi.hThread);
+        let _ = CloseHandle(pi.hProcess);
+    }
+    Ok(())
 }
 
 /// Opens one window **without** administrator rights, from an elevated
@@ -456,10 +493,7 @@ pub fn open_unelevated(wt: &Path, launch: &Launch) -> std::io::Result<()> {
         );
         let _ = CloseHandle(token);
         duplicated.map_err(std::io::Error::other)?;
-        let si = STARTUPINFOW {
-            cb: u32::try_from(size_of::<STARTUPINFOW>()).unwrap_or(0),
-            ..Default::default()
-        };
+        let si = startup_info();
         let mut pi = PROCESS_INFORMATION::default();
         // The user's environment without the agents' variables. Without a
         // block Windows builds the same from the profile, agents' included.
@@ -513,12 +547,7 @@ const MAX_TOKEN_COMMAND_LINE: usize = 1024;
 /// what `CreateProcessWithTokenW` takes. Such a line is refused here, with
 /// the reason, instead of failing in Windows or reaching PowerShell cut short.
 fn token_command_line(wt: &Path, args: &[OsString]) -> std::io::Result<Vec<u16>> {
-    let mut line = quote(wt.as_os_str());
-    for arg in args {
-        line.push(' ');
-        line.push_str(&quote(arg));
-    }
-    let line = to_wide(&line);
+    let line = to_wide(&command_line(wt, args));
     if line.len() > MAX_TOKEN_COMMAND_LINE {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -528,6 +557,16 @@ fn token_command_line(wt: &Path, args: &[OsString]) -> std::io::Result<Vec<u16>>
         ));
     }
     Ok(line)
+}
+
+/// The program's path and then each argument, quoted by [`quote`].
+fn command_line(program: &Path, args: &[OsString]) -> String {
+    let mut line = quote(program.as_os_str());
+    for arg in args {
+        line.push(' ');
+        line.push_str(&quote(arg));
+    }
+    line
 }
 
 /// Quotes one argument the way the Microsoft C runtime splits a command line:
@@ -842,6 +881,18 @@ mod tests {
         assert_eq!(q(r#"say "hi""#), r#""say \"hi\"""#);
         assert_eq!(q(r"ends in \"), r#""ends in \\""#);
         assert_eq!(q(r#"a\"b c"#), r#""a\\\"b c""#);
+    }
+
+    #[test]
+    fn a_started_terminal_shows_without_taking_the_front() {
+        let si = startup_info();
+        assert_eq!(si.cb as usize, size_of::<STARTUPINFOW>());
+        assert!(
+            si.dwFlags.contains(STARTF_USESHOWWINDOW),
+            "{:?}",
+            si.dwFlags
+        );
+        assert_eq!(i32::from(si.wShowWindow), SW_SHOWNOACTIVATE.0);
     }
 
     #[test]
