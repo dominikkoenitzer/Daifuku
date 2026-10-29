@@ -663,6 +663,21 @@ pub fn from_line<'a, T: Deserialize<'a>>(line: &'a str) -> serde_json::Result<T>
     serde_json::from_str(line.trim_end())
 }
 
+/// A window handle as typed: decimal, as `status --json` writes it, or hex
+/// with `0x`, as `status` prints it.
+#[must_use]
+pub fn window_number(text: &str) -> Option<u64> {
+    let (digits, radix) = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        Some(hex) => (hex, 16),
+        None => (text, 10),
+    };
+    // from_str_radix alone also takes a leading +.
+    if !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    u64::from_str_radix(digits, radix).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
