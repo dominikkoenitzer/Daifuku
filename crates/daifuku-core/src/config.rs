@@ -717,7 +717,8 @@ impl FromStr for Colour {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let hex = s.strip_prefix('#').unwrap_or(s);
         let bad = || ConfigError::Colour(s.to_owned());
-        if hex.len() != 6 || !hex.is_ascii() {
+        // Hex digits only: the channel parse below would also take a sign.
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(bad());
         }
         let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| bad());
@@ -1209,6 +1210,15 @@ mod tests {
         assert_eq!("ffbbdf".parse::<Colour>().unwrap().to_hex(), "#ffbbdf");
         for bad in ["#fff", "#gggggg", "#ffbbdf00", "#ffbbd\u{e9}"] {
             assert!(bad.parse::<Colour>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_colour_takes_hex_digits_only_as_the_schema_does() {
+        for bad in ["#+f+0+0", "+fffff", "ff+fff", "#-f-0-0", "# fffff"] {
+            assert!(bad.parse::<Colour>().is_err(), "{bad}");
+            let json = format!(r#"{{"border":{{"colours":{{"waiting":"{bad}"}}}}}}"#);
+            assert!(Config::from_json(&json).is_err(), "{bad}");
         }
     }
 
