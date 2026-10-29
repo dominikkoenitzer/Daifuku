@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A config file that is only a list, such as `[]`, no longer loads as the
+  default config. The config check refuses it, as it does a file that is
+  only text or a number.
 - `daifuku stop-agents` stops every agent at once: it closes every fleet's
   terminals and every spawned one, keeps the session of each for
   `daifuku restore`, which opens it again in its folder and in its cell,
