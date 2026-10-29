@@ -23,6 +23,11 @@
 - A config file that does not read as JSON says what is wrong in plain
   words, such as a missing closing brace, a comment, a single backslash or
   text where a number goes, instead of the parser's own terms.
+- `hours` in a `stop_at` rule with a `+` in it, such as `+8-18`, no longer
+  loads as `8-18`. The config check refuses it, as it does other hours
+  that are not two numbers 0 to 24.
+- A cell or a window handle with a `+` in it, such as `--cell +3` or
+  `0x+10064e`, no longer reads as the number without it.
 - `daifuku stop-agents` stops every agent at once: it closes every fleet's
   terminals and every spawned one, keeps the session of each for
   `daifuku restore`, which opens it again in its folder and in its cell,
