@@ -63,6 +63,7 @@ struct Format {
 #[derive(Parser)]
 #[command(
     name = "daifuku",
+    bin_name = "daifuku",
     version,
     about = "Fleets of agent terminals, in a grid, coloured by what each agent is doing.",
     after_help = "The daemon runs with your own rights unless the config sets \"elevated\": true. Then the commands that talk to it, open to stop, need an administrator terminal, and from any other, status says only what it can tell without the daemon."
@@ -2618,6 +2619,21 @@ mod tests {
             command_line(&Request::Spawn(in_cell), false),
             r#"daifuku spawn --dir "C:\work" --cell 2"#
         );
+    }
+
+    #[test]
+    fn help_and_usage_name_the_command_as_it_is_typed() {
+        for args in [&["--help"][..], &["spawn", "--help"], &["spawn", "--bogus"]] {
+            let argv = std::iter::once(r"C:\Program Files\Daifuku\daifuku.exe")
+                .chain(args.iter().copied());
+            let text = Cli::try_parse_from(argv)
+                .err()
+                .unwrap()
+                .render()
+                .to_string();
+            assert!(text.contains("Usage: daifuku "), "{args:?}: {text}");
+            assert!(!text.contains("daifuku.exe"), "{args:?}: {text}");
+        }
     }
 
     #[test]
