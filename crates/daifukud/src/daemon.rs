@@ -15,7 +15,7 @@ use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
 use daifuku_win::terminal::WINDOW_CLASS;
-use daifuku_win::{access, clock, dpi, paths, process, window};
+use daifuku_win::{access, clock, dpi, paths, process, saver, window};
 use windows::Win32::UI::Shell::{QUNS_NOT_PRESENT, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
@@ -110,6 +110,9 @@ struct Daemon {
     away: bool,
     /// The pulse timer, running only while an agent waits.
     pulse_timer: Option<usize>,
+    /// The last input when this daemon last opened a window, which starts
+    /// the screen saver's countdown over: see [`saver`].
+    saver_since: Option<u32>,
     /// The window event hooks. The ones borders follow their windows by are
     /// in only while an agent has a window and borders are drawn.
     hooks: events::Hooks,
@@ -299,6 +302,7 @@ impl Daemon {
             animations: access::animations(),
             away: away(),
             pulse_timer: None,
+            saver_since: None,
             hooks,
             framed: Vec::new(),
             started: std::time::Instant::now(),
@@ -962,6 +966,7 @@ impl Daemon {
             Some(i) => self.fleets.remove(i),
             None => OpenFleet::new(&fleet.name),
         };
+        self.opening_windows();
         let result = fleet::open(fleet, &self.config, &mut record, self.elevated);
         if record.windows().next().is_some() {
             self.fleets.push(record);
@@ -1637,7 +1642,34 @@ impl Daemon {
             self.refresh_borders();
         }
         self.watch_idle();
+        self.watch_saver();
         self.save(false);
+    }
+
+    /// Notes the last input before a new window starts the screen saver's
+    /// countdown over.
+    fn opening_windows(&mut self) {
+        let now = saver::Now::read();
+        if now.timeout.is_some() && !now.running {
+            self.saver_since = Some(now.last_input);
+        }
+    }
+
+    /// Starts the screen saver a window of ours put off, once nobody has
+    /// touched the machine for its timeout.
+    fn watch_saver(&mut self) {
+        let Some(since) = self.saver_since else {
+            return;
+        };
+        match saver::step(since, &saver::Now::read(), self.away) {
+            saver::Step::Wait => {}
+            saver::Step::Forget => self.saver_since = None,
+            saver::Step::Start => {
+                tracing::info!("starting the screen saver a new window put off");
+                saver::start();
+                self.saver_since = None;
+            }
+        }
     }
 
     /// Lets go of the agents' windows and the tasks' terminals that fail
@@ -2431,6 +2463,7 @@ impl Daemon {
             }
         }
         let cell = joined.as_ref().map(|(_, slot)| *slot);
+        self.opening_windows();
         let opened = fleet::spawn(&base, &self.config, spawn, self.elevated, &taken, cell);
         // Kept with the fleet it took, so `restore` opens it in the same one.
         let mut kept = Spawn {
