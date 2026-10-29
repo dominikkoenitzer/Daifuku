@@ -423,7 +423,13 @@ fn predict_edit(
     let text = match read_settings(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_owned(),
-        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+        Err(e) => {
+            return Err(format!(
+                "could not read {}: {}",
+                path.display(),
+                config::io_reason(&e)
+            ));
+        }
     };
     let mut settings: serde_json::Value = serde_json::from_str(&text)
         .map_err(|_| format!("{} is not valid JSON, left untouched", path.display()))?;
@@ -1525,7 +1531,11 @@ fn hooks_fix(agent: &Agent, file: &Path, exe: &str, profile: Option<&Path>) -> O
             )),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
-        Err(e) => Err(format!("could not read {}: {e}", file.display())),
+        Err(e) => Err(format!(
+            "could not read {}: {}",
+            file.display(),
+            config::io_reason(&e)
+        )),
     };
     match missing {
         Ok(0) => None,
@@ -2030,18 +2040,28 @@ fn edit_json(
     let text = match read_settings(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_owned(),
-        Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
+        Err(e) => bail!(
+            "could not read {}: {}",
+            path.display(),
+            config::io_reason(&e)
+        ),
     };
     let mut settings: serde_json::Value = serde_json::from_str(&text)
         .with_context(|| format!("{} is not valid JSON, left untouched", path.display()))?;
     let changed = edit(&mut settings)?;
     if changed > 0 {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).map_err(|e| anyhow!(config::io_reason(&e)))?;
         }
         let mut out = serde_json::to_string_pretty(&settings)?;
         out.push('\n');
-        write_whole(path, &out).with_context(|| format!("could not write {}", path.display()))?;
+        write_whole(path, &out).map_err(|e| {
+            anyhow!(
+                "could not write {}: {}",
+                path.display(),
+                config::io_reason(&e)
+            )
+        })?;
     }
     Ok(changed)
 }
@@ -3342,6 +3362,47 @@ mod tests {
         assert_eq!(current, None);
         assert!(linked_missing.is_some_and(|f| f.contains("leads outside your profile")));
         assert_eq!(linked_current, None, "hooks added by hand count");
+    }
+
+    #[test]
+    fn a_settings_file_that_cannot_be_read_says_why_without_an_error_number() {
+        let base = std::env::temp_dir().join(format!("daifuku-unread-{}", std::process::id()));
+        let profile = base.join("profile");
+        let folder = profile.join("settings.json");
+        std::fs::create_dir_all(&folder).unwrap();
+        let exe = r"C:\Program Files\Daifuku\daifuku.exe";
+        let predicted = predict_edit(&folder, true, Some(&profile), |_| Ok(1));
+        let fix = hooks_fix(&CLAUDE, &folder, exe, Some(&profile));
+        let edited = edit_json(&folder, |_| Ok(1)).map_err(|e| format!("{e:#}"));
+        std::fs::remove_dir_all(&base).unwrap();
+        for said in [predicted.unwrap_err(), fix.unwrap(), edited.unwrap_err()] {
+            assert!(said.starts_with("could not read "), "{said}");
+            assert!(!said.contains("os error"), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_settings_file_that_cannot_be_written_says_why_without_an_error_number() {
+        let base = std::env::temp_dir().join(format!("daifuku-unwritten-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let locked = base.join("settings.json");
+        std::fs::write(&locked, "{}").unwrap();
+        let mut permissions = std::fs::metadata(&locked).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&locked, permissions.clone()).unwrap();
+        let under_a_file = base.join("file").join("settings.json");
+        std::fs::write(base.join("file"), "").unwrap();
+        let write = edit_json(&locked, |_| Ok(1)).map_err(|e| format!("{e:#}"));
+        let folder = edit_json(&under_a_file, |_| Ok(1)).map_err(|e| format!("{e:#}"));
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&locked, permissions).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+        let write = write.unwrap_err();
+        assert!(write.starts_with("could not write "), "{write}");
+        for said in [write, folder.unwrap_err()] {
+            assert!(!said.contains("os error"), "{said}");
+        }
     }
 
     #[test]
