@@ -129,6 +129,9 @@ pub struct Facts {
     pub config: Option<Config>,
     /// This user's SID.
     pub sid: String,
+    /// Whether this user's logon task is registered, or may be as Task
+    /// Scheduler could not be asked.
+    pub task: bool,
     /// Whether the task earlier installs shared runs for this user, or may
     /// as Task Scheduler could not be asked.
     pub legacy_task_ours: bool,
@@ -260,6 +263,7 @@ impl Facts {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => Some(false),
         };
+        let task = setup::task_exists(&task_name(&sid)).unwrap_or(true);
         let legacy_task_ours = legacy_task_for(
             &setup::task_xml(LEGACY_TASK_NAME),
             &sid,
@@ -348,6 +352,7 @@ impl Facts {
             on_path,
             data_locked,
             sid,
+            task,
             legacy_task_ours,
             hooks,
             size,
@@ -476,8 +481,10 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
     } else {
         // The default daemon runs with the user's own rights and the CLI
         // starts it on demand, so no logon task is written. Remove one an
-        // earlier install left (`delete_task` ignores a task that is gone).
-        steps.push(Step::RemoveTask { name });
+        // earlier install left.
+        if facts.task {
+            steps.push(Step::RemoveTask { name });
+        }
         // The command line starts no daemon for a config that asks for an
         // elevated one, and neither does install.
         if !options.no_start && !asked {
@@ -514,12 +521,12 @@ pub fn install_plan(facts: &Facts, options: &Options) -> Vec<Step> {
 /// The steps of an uninstall, in order. Pure: the real uninstall runs
 /// exactly these, and `uninstall --dry-run` prints them.
 pub fn uninstall_plan(facts: &Facts, purge: bool) -> Vec<Step> {
-    let mut steps = vec![
-        Step::StopDaemon,
-        Step::RemoveTask {
+    let mut steps = vec![Step::StopDaemon];
+    if facts.task {
+        steps.push(Step::RemoveTask {
             name: task_name(&facts.sid),
-        },
-    ];
+        });
+    }
     if facts.legacy_task_ours {
         steps.push(Step::RemoveLegacyTask {
             sid: facts.sid.clone(),
@@ -2092,6 +2099,7 @@ mod tests {
             config_open: false,
             config: Some(Config::default()),
             sid: SID.into(),
+            task: false,
             legacy_task_ours: false,
             hooks: vec![
                 HookFacts {
@@ -2160,7 +2168,6 @@ mod tests {
 
     #[test]
     fn a_fresh_install_does_every_step_in_order() {
-        let task = task_name(SID);
         assert_eq!(
             actions(&install_plan(&fresh(), &ALL)),
             [
@@ -2174,7 +2181,6 @@ mod tests {
                     "write_config",
                     r"C:\ProgramData\Daifuku\daifuku.json".to_owned()
                 ),
-                ("remove_task", task),
                 (
                     "start_daemon",
                     r"C:\Program Files\Daifuku\daifukud.exe".to_owned()
@@ -2202,7 +2208,9 @@ mod tests {
         // The ordinary daemon runs with the user's own rights and the CLI
         // starts it on demand, so nothing is written to auto-start at logon.
         assert_eq!(task_of(&fresh()), None);
-        let steps = names(&install_plan(&fresh(), &ALL));
+        let mut earlier = fresh();
+        earlier.task = true;
+        let steps = names(&install_plan(&earlier, &ALL));
         assert!(steps.contains(&"remove_task"), "{steps:?}");
         assert!(steps.contains(&"start_daemon"), "{steps:?}");
         assert!(!steps.contains(&"register_task"), "{steps:?}");
@@ -2213,6 +2221,21 @@ mod tests {
         assert_eq!(task_of(&kept), None);
         kept.config = None;
         assert_eq!(task_of(&kept), None);
+    }
+
+    #[test]
+    fn a_logon_task_is_removed_only_when_there_is_one() {
+        let removes = |steps: &[Step]| names(steps).contains(&"remove_task");
+        let mut f = installed();
+        assert!(!removes(&install_plan(&fresh(), &ALL)));
+        assert!(!removes(&install_plan(&f, &ALL)));
+        assert!(!removes(&uninstall_plan(&f, false)));
+        assert!(!removes(&uninstall_plan(&f, true)));
+        // One an earlier install or an elevated daemon left.
+        f.task = true;
+        let task = ("remove_task", task_name(SID));
+        assert!(actions(&install_plan(&f, &ALL)).contains(&task));
+        assert!(actions(&uninstall_plan(&f, false)).contains(&task));
     }
 
     #[test]
@@ -2277,6 +2300,7 @@ mod tests {
         let mut f = installed();
         f.config = Some(Config::from_json(r#"{"elevated": true}"#).unwrap());
         f.config_open = true;
+        f.task = true;
         // Locked now, and trusted with no task and no daemon until then.
         assert_eq!(config_writer(&f), None);
         assert_eq!(task_of(&f), None);
@@ -2331,7 +2355,6 @@ mod tests {
                 "keep_path",
                 "keep_folder",
                 "keep_config",
-                "remove_task",
                 "start_daemon",
                 "keep_hooks",
                 "keep_hooks",
@@ -2341,8 +2364,10 @@ mod tests {
 
     #[test]
     fn no_hooks_and_no_start_leave_out_their_steps() {
+        let mut f = fresh();
+        f.task = true;
         let plan = install_plan(
-            &fresh(),
+            &f,
             &Options {
                 no_hooks: true,
                 no_start: true,
@@ -2501,12 +2526,10 @@ mod tests {
 
     #[test]
     fn an_uninstall_removes_everything_but_the_data_unless_purged() {
-        let task = task_name(SID);
         assert_eq!(
             actions(&uninstall_plan(&installed(), false)),
             [
                 ("stop_daemon", "daifukud".to_owned()),
-                ("remove_task", task),
                 (
                     "remove_hooks",
                     r"C:\Users\u\.claude\settings.json".to_owned()
@@ -2605,7 +2628,7 @@ mod tests {
         f.app_entry = false;
         assert_eq!(
             names(&uninstall_plan(&f, false)),
-            ["stop_daemon", "remove_task", "keep_folder"]
+            ["stop_daemon", "keep_folder"]
         );
     }
 
@@ -2647,9 +2670,9 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             )
         );
-        assert_eq!(json["steps"][8]["action"], "start_daemon");
+        assert_eq!(json["steps"][7]["action"], "start_daemon");
         assert_eq!(
-            json["steps"][8]["detail"],
+            json["steps"][7]["detail"],
             "with your own rights, no logon task"
         );
         assert_eq!(json["notes"].as_array().map(Vec::len), Some(1));
