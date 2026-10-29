@@ -63,6 +63,7 @@ struct Format {
 #[derive(Parser)]
 #[command(
     name = "daifuku",
+    bin_name = "daifuku",
     version,
     about = "Fleets of agent terminals, in a grid, coloured by what each agent is doing.",
     after_help = "The daemon runs with your own rights unless the config sets \"elevated\": true. Then the commands that talk to it, open to stop, need an administrator terminal, and from any other, status says only what it can tell without the daemon."
@@ -518,11 +519,7 @@ fn main() -> ExitCode {
                 }),
                 format.json,
             ),
-            Err(message) if format.json => fail_json(ErrorCode::Usage, &message),
-            Err(message) => {
-                eprintln!("daifuku: {message}");
-                ExitCode::from(2)
-            }
+            Err(message) => spawn_usage(&message, format.json),
         },
         Command::DemoAgent { number } => {
             demo_agent(number);
@@ -579,6 +576,17 @@ fn usage_error(e: &clap::Error, json: bool) -> ExitCode {
     }
     output::print_json(&ErrorDoc::new(ErrorCode::Usage, &usage_message(e)));
     // What clap exits with on a usage error.
+    ExitCode::from(2)
+}
+
+/// `spawn` arguments clap took that still make no request, such as a
+/// misspelt monitor: a usage error as clap's own, with or without `--json`.
+fn spawn_usage(message: &str, json: bool) -> ExitCode {
+    if json {
+        output::print_json(&ErrorDoc::new(ErrorCode::Usage, message));
+    } else {
+        eprintln!("daifuku: {message}");
+    }
     ExitCode::from(2)
 }
 
@@ -1490,7 +1498,7 @@ fn command_line(request: &Request, json: bool) -> String {
         Request::Snap => "snap".to_owned(),
         Request::Next => "next".to_owned(),
         Request::Demo => "demo".to_owned(),
-        Request::Spawn(_) => "spawn".to_owned(),
+        Request::Spawn(spawn) => spawn_line(spawn),
         Request::Label { window, label } => match label {
             Some(l) => format!("label {window} {}", shell_word(l)),
             None => format!("label {window}"),
@@ -1514,6 +1522,65 @@ fn command_line(request: &Request, json: bool) -> String {
     } else {
         format!("daifuku {command}")
     }
+}
+
+/// The `wait` that was asked, as a person would type it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn wait_line(target: &str, until: wait::Until, timeout: u64, json: bool) -> String {
+    use clap::ValueEnum;
+    let until = until
+        .to_possible_value()
+        .map(|v| v.get_name().to_owned())
+        .unwrap_or_default();
+    let line = format!(
+        "daifuku wait {} --until {until} --timeout {timeout}",
+        shell_word(target)
+    );
+    if json { format!("{line} --json") } else { line }
+}
+
+/// The `events --follow` that was asked, as a person would type it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn events_line(after: Option<u64>, json: bool) -> String {
+    let mut line = "daifuku events --follow".to_owned();
+    if let Some(after) = after {
+        line.push_str(&format!(" --after {after}"));
+    }
+    if json {
+        line.push_str(" --json");
+    }
+    line
+}
+
+/// The arguments of `spawn` that ask for `spawn`, with its folder written
+/// out, as another terminal starts in another one.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn spawn_line(spawn: &daifuku_core::peer::Spawn) -> String {
+    let mut line = format!(
+        "spawn --dir {}",
+        shell_word(&spawn.directory.to_string_lossy())
+    );
+    let words = [
+        ("--label", spawn.label.clone()),
+        ("--resume", spawn.resume.clone()),
+        ("--fleet", spawn.fleet.clone()),
+        ("--monitor", spawn.monitor.as_ref().map(ToString::to_string)),
+        (
+            "--area",
+            spawn
+                .area
+                .and_then(daifuku_core::config::Area::name)
+                .map(str::to_owned),
+        ),
+        ("--priority", spawn.priority.map(|p| p.name().to_owned())),
+        ("--cell", spawn.cell.map(|c| c.to_string())),
+    ];
+    for (flag, value) in words {
+        if let Some(value) = value {
+            line.push_str(&format!(" {flag} {}", shell_word(&value)));
+        }
+    }
+    line
 }
 
 /// `word` as one argument: as it is when it is plain, in double quotes when
@@ -1752,11 +1819,12 @@ fn parse_window(text: &str) -> Result<u64, String> {
 }
 
 /// Sends `request` to the daemon and reads its answer, or says why it could
-/// not, as [`control`] does.
+/// not, as [`control`] does. `asked` is the command to run again from an
+/// administrator terminal.
 #[cfg(windows)]
 fn ask(
     request: &Request,
-    json: bool,
+    asked: &str,
 ) -> Result<daifuku_core::protocol::Response, (ErrorCode, String)> {
     use daifuku_core::protocol::to_line;
     use daifuku_win::pipe::{Pipe, send};
@@ -1774,7 +1842,7 @@ fn ask(
             let elevated = daifuku_win::process::current_is_elevated();
             return Err((
                 control_code(&e, elevated),
-                control_error(&e, elevated, &command_line(request, json)),
+                control_error(&e, elevated, asked),
             ));
         }
     };
@@ -1796,10 +1864,11 @@ fn wait_cmd(target: &str, until: wait::Until, timeout: u64, json: bool) -> ExitC
             ExitCode::FAILURE
         }
     };
+    let asked = wait_line(target, until, timeout, json);
     let start = std::time::Instant::now();
     let mut seen = wait::Seen::default();
     loop {
-        let status = match ask(&Request::Status, json) {
+        let status = match ask(&Request::Status, &asked) {
             Ok(Response::Status(s)) => s,
             Ok(Response::Error { message }) => return fail(ErrorCode::Daemon, &message),
             Ok(_) => return fail(ErrorCode::Ipc, "the daemon did not answer with its status"),
@@ -1879,13 +1948,14 @@ fn events_cmd(after: Option<u64>, follow: bool, json: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     };
+    let asked = events_line(after, json);
     let mut after = after;
     let mut daemon = None;
     loop {
         let request = Request::Events {
             after: after.unwrap_or(0),
         };
-        let (events, last, started_at) = match ask(&request, json) {
+        let (events, last, started_at) = match ask(&request, &asked) {
             Ok(Response::Events {
                 events,
                 last,
@@ -2613,6 +2683,78 @@ mod tests {
             ),
             "daifuku label 5 '$build'"
         );
+    }
+
+    #[test]
+    fn the_spawn_to_run_again_keeps_its_arguments() {
+        use daifuku_core::config::{Area, MonitorPick, Priority};
+        use daifuku_core::peer::{Cell, Spawn};
+        let placed = Spawn {
+            directory: r"C:\work\my app".into(),
+            label: Some("crew 1".into()),
+            resume: Some("0e9b6c1a".into()),
+            fleet: Some("agents".into()),
+            monitor: Some(MonitorPick::Portrait),
+            area: Some(Area::Left),
+            priority: Some(Priority::BelowNormal),
+            ..Spawn::default()
+        };
+        assert_eq!(
+            command_line(&Request::Spawn(placed), true),
+            r#"daifuku spawn --dir "C:\work\my app" --label "crew 1" --resume 0e9b6c1a --fleet agents --monitor portrait --area left --priority below-normal --json"#
+        );
+        let in_cell = Spawn {
+            directory: r"C:\work".into(),
+            cell: Some(Cell::At(2)),
+            from: Some(7),
+            ..Spawn::default()
+        };
+        assert_eq!(
+            command_line(&Request::Spawn(in_cell), false),
+            r#"daifuku spawn --dir "C:\work" --cell 2"#
+        );
+    }
+
+    #[test]
+    fn help_and_usage_name_the_command_as_it_is_typed() {
+        for args in [&["--help"][..], &["spawn", "--help"], &["spawn", "--bogus"]] {
+            let argv = std::iter::once(r"C:\Program Files\Daifuku\daifuku.exe")
+                .chain(args.iter().copied());
+            let text = Cli::try_parse_from(argv)
+                .err()
+                .unwrap()
+                .render()
+                .to_string();
+            assert!(text.contains("Usage: daifuku "), "{args:?}: {text}");
+            assert!(!text.contains("daifuku.exe"), "{args:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn spawn_arguments_that_do_not_fit_exit_2_with_or_without_json() {
+        assert_eq!(spawn_usage("x", true), ExitCode::from(2));
+        assert_eq!(spawn_usage("x", false), ExitCode::from(2));
+    }
+
+    #[test]
+    fn a_wait_or_a_follow_to_run_again_is_the_one_asked() {
+        assert_eq!(
+            wait_line("crew 1", wait::Until::Done, 60, true),
+            "daifuku wait \"crew 1\" --until done --timeout 60 --json"
+        );
+        assert_eq!(
+            events_line(Some(7), false),
+            "daifuku events --follow --after 7"
+        );
+        assert_eq!(events_line(None, true), "daifuku events --follow --json");
+        for line in [
+            wait_line("0x10064e", wait::Until::Turn, 3600, true),
+            events_line(Some(7), true),
+        ] {
+            let cli =
+                Cli::try_parse_from(line.split(' ')).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(json_flag(&cli.command), Some(true), "{line}");
+        }
     }
 
     #[test]

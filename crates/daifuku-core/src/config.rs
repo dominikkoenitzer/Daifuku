@@ -779,7 +779,8 @@ impl Area {
     }
 
     /// The name it is written with, for the four halves and the whole.
-    const fn name(self) -> Option<&'static str> {
+    #[must_use]
+    pub const fn name(self) -> Option<&'static str> {
         match self {
             Self::Full => Some("full"),
             Self::Left => Some("left"),
@@ -1081,13 +1082,165 @@ pub fn decode(bytes: &[u8]) -> std::io::Result<String> {
     let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
         let (pairs, _) = rest.as_chunks::<2>();
         let units: Vec<u16> = pairs.iter().map(|&pair| unit(pair)).collect();
-        String::from_utf16(&units).map_err(|e| invalid(e.to_string()))
+        String::from_utf16(&units)
+            .map_err(|_| invalid("the file is not whole UTF-16 text: save it as UTF-8".to_owned()))
     };
     match bytes {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
-        _ => String::from_utf8(bytes.to_vec()).map_err(|e| invalid(e.to_string())),
+        _ => String::from_utf8(bytes.to_vec()).map_err(|e| {
+            let good = &bytes[..e.utf8_error().valid_up_to()];
+            let line = good.iter().filter(|&&b| b == b'\n').count() + 1;
+            invalid(format!(
+                "line {line} is not UTF-8 text: save the file as UTF-8"
+            ))
+        }),
     }
+}
+
+/// Why a file could not be read, in the words Windows has for it, without the
+/// error number Rust adds after them.
+#[must_use]
+pub fn io_reason(e: &std::io::Error) -> String {
+    let said = e.to_string();
+    match e.raw_os_error() {
+        Some(code) => said
+            .strip_suffix(&format!(" (os error {code})"))
+            .unwrap_or(&said)
+            .to_owned(),
+        None => said,
+    }
+}
+
+/// What is wrong with a file that did not parse, in the words of someone
+/// editing it rather than the parser's, with where it is.
+fn plain_json_error(e: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let full = e.to_string();
+    let place = format!(" at line {} column {}", e.line(), e.column());
+    let message = full.strip_suffix(&place).unwrap_or(&full);
+    let words = match e.classify() {
+        Category::Eof => "the file ends before every {, [ and \" in it is closed".to_owned(),
+        Category::Syntax => plain_syntax(message).to_owned(),
+        Category::Data => plain_data(message),
+        Category::Io => message.to_owned(),
+    };
+    if e.line() == 0 {
+        words
+    } else if message == CONTROL_IN_STRING && e.column() == 0 && e.line() > 1 {
+        // The line break that ended the line before is counted on the next one.
+        format!("{words} at the end of line {}", e.line() - 1)
+    } else {
+        format!("{words}{place}")
+    }
+}
+
+/// The parser's words for a line break or tab inside double quotes.
+const CONTROL_IN_STRING: &str = "control character (\\u0000-\\u001F) found while parsing a string";
+
+/// A JSON syntax error in plain words.
+fn plain_syntax(message: &str) -> &str {
+    match message {
+        "key must be a string" => "a key must be in double quotes, and comments are not allowed",
+        "trailing comma" => "there is a comma after the last item",
+        "expected `,` or `}`" => "a comma or a } is missing",
+        "expected `,` or `]`" => "a comma or a ] is missing",
+        "expected `:`" => "a colon is missing after a key",
+        "expected value" | "expected ident" => {
+            "a value is missing or misspelt; text goes in double quotes, and true, false and null in lower case"
+        }
+        "invalid escape" => r#"a backslash must be written twice, as in "C:\\work""#,
+        CONTROL_IN_STRING => {
+            r#"a closing " is missing, or a line break or tab inside double quotes is not written as \n or \t"#
+        }
+        "trailing characters" => "there is more after the last }",
+        "invalid number" | "number out of range" => "a number does not read as one",
+        other => other,
+    }
+}
+
+/// A value of the wrong kind in plain words. Messages the config's own
+/// types give are plain already and stay as they are.
+fn plain_data(message: &str) -> String {
+    let (out_of_range, rest) = match message.strip_prefix("invalid value: ") {
+        Some(rest) => (true, Some(rest)),
+        None => (false, message.strip_prefix("invalid type: ")),
+    };
+    if let Some((got, want)) = rest.and_then(|rest| rest.rsplit_once(", expected ")) {
+        let kind = match whole_range(want) {
+            Some((low, high)) if out_of_range => format!("a whole number from {low} to {high}"),
+            _ => plain_kind(want).to_owned(),
+        };
+        return format!("expected {kind}, not {}", plain_value(got));
+    }
+    if let Some(rest) = message.strip_prefix("unknown field ") {
+        return format!("unknown key {rest}");
+    }
+    if let Some(rest) = message.strip_prefix("unknown variant ") {
+        return format!("unknown value {rest}");
+    }
+    if let Some(name) = message.strip_prefix("missing field ") {
+        return format!("{name} is missing");
+    }
+    if let Some(name) = message.strip_prefix("duplicate field ") {
+        return format!("{name} is there twice");
+    }
+    message.to_owned()
+}
+
+/// The lowest and highest value a whole number type holds.
+fn whole_range(want: &str) -> Option<(i128, i128)> {
+    Some(match want {
+        "u8" => (0, u8::MAX.into()),
+        "u16" => (0, u16::MAX.into()),
+        "u32" => (0, u32::MAX.into()),
+        "u64" | "usize" => (0, u64::MAX.into()),
+        "i8" => (i8::MIN.into(), i8::MAX.into()),
+        "i16" => (i16::MIN.into(), i16::MAX.into()),
+        "i32" => (i32::MIN.into(), i32::MAX.into()),
+        "i64" | "isize" => (i64::MIN.into(), i64::MAX.into()),
+        _ => return None,
+    })
+}
+
+/// What a value should have been, for a person rather than a programmer.
+fn plain_kind(want: &str) -> &str {
+    match want {
+        "u8" | "u16" | "u32" | "u64" | "usize" => "a whole number from 0",
+        "i8" | "i16" | "i32" | "i64" | "isize" => "a whole number",
+        "f32" | "f64" => "a number",
+        "a boolean" => "true or false",
+        "a string" | "a borrowed string" | "a character" => "text in double quotes",
+        "a sequence" => "a list in [ ]",
+        "a map" => "an object in { }",
+        w if w.starts_with("struct ") => "an object in { }",
+        w => w,
+    }
+}
+
+/// The value that was there instead, as it is written in the file.
+fn plain_value(got: &str) -> String {
+    let quoted = |prefix: &str| {
+        got.strip_prefix(prefix)
+            .and_then(|v| v.strip_prefix('`'))
+            .and_then(|v| v.strip_suffix('`'))
+            .map(str::to_owned)
+    };
+    if let Some(text) = got.strip_prefix("string ") {
+        return text.to_owned();
+    }
+    quoted("integer ")
+        .or_else(|| quoted("floating point "))
+        .or_else(|| quoted("boolean "))
+        .unwrap_or_else(|| {
+            match got {
+                "map" => "an object",
+                "sequence" => "a list",
+                "unit value" => "null",
+                other => other,
+            }
+            .to_owned()
+        })
 }
 
 impl Config {
@@ -1103,7 +1256,7 @@ impl Config {
         let config = if text.trim().is_empty() {
             Self::default()
         } else {
-            serde_json::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?
+            serde_json::from_str(text).map_err(|e| ConfigError::Parse(plain_json_error(&e)))?
         };
         config.validate()?;
         Ok(config)
@@ -1461,6 +1614,17 @@ mod tests {
     }
 
     #[test]
+    fn a_file_in_another_encoding_says_which_line_in_plain_words() {
+        let ansi = b"{\"fleets\": [\n  {\"name\": \"Gr\xfcezi\"}\n]}";
+        let said = decode(ansi).unwrap_err().to_string();
+        assert_eq!(said, "line 2 is not UTF-8 text: save the file as UTF-8");
+        let mut lone = vec![0xFF, 0xFE];
+        lone.extend(0xD800u16.to_le_bytes());
+        let said = decode(&lone).unwrap_err().to_string();
+        assert_eq!(said, "the file is not whole UTF-16 text: save it as UTF-8");
+    }
+
+    #[test]
     fn a_byte_order_mark_is_skipped() {
         let c = Config::from_json("\u{feff}{\"fleets\":[{\"name\":\"a\"}]}").unwrap();
         assert_eq!(c.fleets[0].name, "a");
@@ -1496,6 +1660,104 @@ mod tests {
     fn a_typo_in_a_key_is_an_error_not_a_silent_default() {
         let e = Config::from_json(r#"{"fleets":[{"name":"x","cuont":3}]}"#).unwrap_err();
         assert!(matches!(e, ConfigError::Parse(_)), "{e}");
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_says_why_in_plain_words() {
+        let cases = [
+            (
+                r#"{"fleets":[{"name":"a","count":"four"}]}"#,
+                "a whole number",
+            ),
+            (r#"{"fleets":[{"name":"a","count":-1}]}"#, "a whole number"),
+            (r#"{"border":{"width":1.5}}"#, "a whole number"),
+            (r#"{"fleets":["a"]}"#, "an object"),
+            (r#"{"border":{"pulse":"yes"}}"#, "true or false"),
+            ("{\n  \"fleets\": [{ \"name\": \"a\" }\n", "ends before"),
+            ("{\n  // mine\n  \"fleets\": []\n}", "comments"),
+            (r#"{"fleets":[{"name":"C:\work"}]}"#, "backslash"),
+            (r#"{"fleets":[{"name":"a" "count":2}]}"#, "comma"),
+        ];
+        for (text, words) in cases {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(message.contains(words), "{text}: {message}");
+            assert!(message.contains(" at line "), "{text}: {message}");
+            for tell in [
+                "u32",
+                "i32",
+                "EOF",
+                "invalid type",
+                "invalid value",
+                "struct",
+                "must be a string",
+                "floating point",
+                "integer `",
+                "string \"",
+            ] {
+                assert!(!message.contains(tell), "{text}: {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_number_out_of_range_names_the_range() {
+        let cases = [
+            (
+                r#"{"fleets":[{"name":"a","count":5000000000}]}"#,
+                "expected a whole number from 0 to 4294967295, not 5000000000",
+            ),
+            (
+                r#"{"accounts":{"me":{"warn":300}}}"#,
+                "expected a whole number from 0 to 255, not 300",
+            ),
+            (
+                r#"{"border":{"width":3000000000}}"#,
+                "expected a whole number from -2147483648 to 2147483647, not 3000000000",
+            ),
+            (
+                r#"{"fleets":[{"name":"a","count":"four"}]}"#,
+                "expected a whole number from 0, not \"four\"",
+            ),
+        ];
+        for (text, words) in cases {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(message.contains(words), "{text}: {message}");
+        }
+    }
+
+    #[test]
+    fn a_misspelt_choice_says_so_in_plain_words() {
+        let cases = [
+            (
+                r#"{"border":{"palette":"catpuccin"}}"#,
+                "unknown value `catpuccin`, expected `catppuccin` or `colorblind`",
+            ),
+            (
+                r#"{"accounts":{"me":{"stop_at":[{"share":90,"window":"five_hours"}]}}}"#,
+                "unknown value `five_hours`, expected `five_hour` or `seven_day`",
+            ),
+        ];
+        for (text, words) in cases {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(message.contains(words), "{text}: {message}");
+            assert!(!message.contains("variant"), "{text}: {message}");
+        }
+    }
+
+    #[test]
+    fn an_unclosed_quote_names_its_own_line() {
+        for text in [
+            "{\n  \"fleets\": [{ \"name\": \"a\" }],\n  \"sound\": \"yes\n}",
+            "{\r\n  \"fleets\": [{ \"name\": \"a\" }],\r\n  \"sound\": \"yes\r\n}",
+        ] {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(
+                message.contains(r#"a closing " is missing"#),
+                "{text:?}: {message}"
+            );
+            assert!(message.contains(" line 3"), "{text:?}: {message}");
+            assert!(!message.contains("line 4"), "{text:?}: {message}");
+        }
     }
 
     #[test]

@@ -879,7 +879,7 @@ fn elevation_held_back(facts: &Facts) -> Option<&'static str> {
 fn read_config(file: &Path) -> Result<Config, String> {
     std::fs::read(file)
         .and_then(|b| config::decode(&b))
-        .map_err(|e| e.to_string())
+        .map_err(|e| config::io_reason(&e))
         .and_then(|t| Config::from_json(&t).map_err(|e| e.to_string()))
 }
 
@@ -1331,7 +1331,7 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
             |p| match std::fs::read(&p).and_then(|b| config::decode(&b)) {
                 Ok(text) => Config::from_json(&text).map_err(|e| e.to_string()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-                Err(e) => Err(format!("{}: {e}", p.display())),
+                Err(e) => Err(format!("{}: {}", p.display(), config::io_reason(&e))),
             },
         );
     // Whether the config asks for an elevated daemon. Only an elevated daemon
@@ -1850,7 +1850,7 @@ pub(crate) fn config_on_disk() -> Result<Config, String> {
             Config::from_json(&text).map_err(|e| e.to_string())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(config::io_reason(&e)),
     }
 }
 
