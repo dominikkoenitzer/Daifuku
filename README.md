@@ -197,7 +197,7 @@ daifuku install --dry-run --json
 codes.
 
 An agent that hands out work opens the others one at a time, each in its
-own folder, and waits for each turn to end. From an administrator terminal:
+own folder, and waits for each turn to end:
 
 ```powershell
 daifuku spawn --dir C:\src\site --label site --area right --json
@@ -269,8 +269,10 @@ into the file there yourself, and remove them there when you uninstall;
 install names that file, and doctor names it when the hooks there are
 missing.
 
-The config, the saved state and the logs live in `C:\ProgramData\Daifuku`;
-the daemon logs to its `logs` folder, a file a day.
+The config lives in `C:\ProgramData\Daifuku`. The daemon keeps its saved
+state and its logs, a file a day in a `logs` folder, in
+`%LocalAppData%\Daifuku`, or beside the config when the config sets
+`"elevated": true`.
 
 To update, download the new `daifuku.exe` and double-click it again; your
 config and hooks are kept. A `ProgramData\Daifuku` folder that is

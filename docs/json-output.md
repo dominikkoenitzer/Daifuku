@@ -174,7 +174,8 @@ been seen working, so a terminal that just opened and shows done before its
 first task does not count. `stopped` is anything but working now; `done`,
 `waiting` and `failed` wait for that state alone. `state` is the state
 reached, `"exited"` when the agent ended and its terminal stayed open, or
-`"closed"` when the terminal closed. Past `--timeout`, an hour by default, it fails with
+`"closed"` when the terminal closed. `label` and `session_id` are left out
+when the terminal has none, and always with `exited` and `closed`. Past `--timeout`, an hour by default, it fails with
 `timeout`; a name no terminal has fails at once with `daemon`.
 
 ### `restore`
@@ -449,7 +450,7 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 | `dry_run` | boolean | Always `true`. |
 | `command` | string | `"install"` or `"uninstall"`. |
 | `elevated` | boolean | Whether this terminal is elevated, as the real command needs. |
-| `steps` | array of objects | Every change, in the order the real command makes it. A step that would change nothing, such as taking a folder off `PATH` that is not on it, is left out. |
+| `steps` | array of objects | Every change, in the order the real command makes it. An uninstall leaves out a removal that would change nothing, such as taking a folder off `PATH` that is not on it; an install lists such a step as a `keep_` action. |
 | `steps[].action` | string | What happens, from the list below. |
 | `steps[].target` | string | The file, folder, task or registry key it happens to. |
 | `steps[].detail` | string or null | More about it, such as where a file is copied from or why hooks stay as they are. |

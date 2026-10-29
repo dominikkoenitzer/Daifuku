@@ -333,7 +333,11 @@ impl Daemon {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => {
-                self.config_error = Some(format!("{}: {e}", self.config_path.display()));
+                self.config_error = Some(format!(
+                    "{}: {}",
+                    self.config_path.display(),
+                    daifuku_core::config::io_reason(&e)
+                ));
                 tracing::error!(path = %self.config_path.display(), error = %e, "config unreadable, keeping the last good one");
                 retry_once(&mut self.config_failed, &mut self.config_stamp);
                 return;

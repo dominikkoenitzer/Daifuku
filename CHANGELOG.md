@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- A config or backlog that cannot be read says why in the words Windows has
+  for it, without the error number after them, in `daifuku status`,
+  `doctor`, `task` and `config validate`.
+- A config or backlog saved in another encoding than UTF-8 or UTF-16 names
+  the line that is not UTF-8 and says to save the file as UTF-8, instead of
+  a byte index.
+- Help and usage errors name the command `daifuku`, as it is typed, not
+  `daifuku.exe`.
+- `daifuku spawn --json` with a monitor or area it does not know exits
+  with 2, as the JSON output page says and as it does without `--json`.
+  It used to exit with 1.
+- `daifuku wait` and `daifuku events --follow` name themselves in the
+  command to run from an administrator terminal. `wait` used to name
+  `daifuku status`, and `events --follow` left out `--follow`.
+- When `daifuku spawn` needs an administrator terminal, the command it says
+  to run there keeps the folder, label, fleet and every other argument
+  given. It used to say only `daifuku spawn`, which opened the agent in the
+  administrator terminal's own folder.
+- A config file that does not read as JSON says what is wrong in plain
+  words, such as a missing closing brace, a comment, a single backslash or
+  text where a number goes, instead of the parser's own terms.
 - `daifuku stop-agents` stops every agent at once: it closes every fleet's
   terminals and every spawned one, keeps the session of each for
   `daifuku restore`, which opens it again in its folder and in its cell,
