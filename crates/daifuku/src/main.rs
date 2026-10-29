@@ -689,7 +689,10 @@ fn from_explorer() -> Option<ExitCode> {
             if elevate::declined(&e) {
                 println!("Nothing was installed: Windows was not given permission.");
             } else {
-                println!("Windows could not start the install: {e}");
+                println!(
+                    "Windows could not start the install: {}",
+                    daifuku_core::config::io_reason(&e)
+                );
             }
             wait_for_enter();
             Some(ExitCode::FAILURE)
@@ -776,7 +779,10 @@ fn uninstall_from_settings(purge: bool) -> ExitCode {
             if elevate::declined(&e) {
                 println!("Nothing was removed: Windows was not given permission.");
             } else {
-                println!("Windows could not start the removal: {e}");
+                println!(
+                    "Windows could not start the removal: {}",
+                    daifuku_core::config::io_reason(&e)
+                );
             }
             wait_a_while();
             ExitCode::FAILURE
@@ -826,7 +832,12 @@ fn edit_config() -> anyhow::Result<std::path::PathBuf> {
     }
     Err(last.map_or_else(
         || anyhow::anyhow!("found no editor"),
-        |e| anyhow::anyhow!("could not open an editor: {e}"),
+        |e| {
+            anyhow::anyhow!(
+                "could not open an editor: {}",
+                daifuku_core::config::io_reason(&e)
+            )
+        },
     ))
 }
 
@@ -1586,12 +1597,15 @@ fn spawn_request(
     monitor: Option<&str>,
     area: Option<&str>,
 ) -> Result<daifuku_core::peer::Spawn, String> {
-    use daifuku_core::config::{Area, MonitorPick};
+    use daifuku_core::config::{Area, MonitorPick, io_reason};
     let dir = match dir {
         Some(d) => d,
-        None => std::env::current_dir().map_err(|e| format!("no current folder: {e}"))?,
+        None => {
+            std::env::current_dir().map_err(|e| format!("no current folder: {}", io_reason(&e)))?
+        }
     };
-    let directory = std::path::absolute(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let directory =
+        std::path::absolute(&dir).map_err(|e| format!("{}: {}", dir.display(), io_reason(&e)))?;
     let monitor = match monitor {
         Some(text) => match text.parse::<MonitorPick>() {
             Ok(MonitorPick::Device(d)) if !d.starts_with(r"\\.\") => {
@@ -1721,6 +1735,7 @@ fn group_cmd(
     queue: bool,
     command: &[std::ffi::OsString],
 ) -> ExitCode {
+    use daifuku_core::config::io_reason;
     use daifuku_win::job;
 
     let Some((program, args)) = command.split_first() else {
@@ -1728,7 +1743,8 @@ fn group_cmd(
         return ExitCode::from(2);
     };
     let group = job::Job::new(priority).and_then(|j| j.add_this_process().map(|()| j));
-    let Ok(_group) = group.inspect_err(|e| eprintln!("daifuku: could not make the group: {e}"))
+    let Ok(_group) =
+        group.inspect_err(|e| eprintln!("daifuku: could not make the group: {}", io_reason(e)))
     else {
         return ExitCode::FAILURE;
     };
@@ -1739,7 +1755,10 @@ fn group_cmd(
         match job::wait_turn(|| eprintln!("daifuku: waiting for the heavy job before this one")) {
             Ok(turn) => Some(turn),
             Err(e) => {
-                eprintln!("daifuku: could not take a turn at the heavy jobs: {e}");
+                eprintln!(
+                    "daifuku: could not take a turn at the heavy jobs: {}",
+                    io_reason(&e)
+                );
                 std::process::exit(1);
             }
         }
@@ -1758,8 +1777,9 @@ fn group_cmd(
         }
         Err(e) => {
             eprintln!(
-                "daifuku: could not start {}: {e}",
-                program.to_string_lossy()
+                "daifuku: could not start {}: {}",
+                program.to_string_lossy(),
+                io_reason(&e)
             );
             std::process::exit(1);
         }

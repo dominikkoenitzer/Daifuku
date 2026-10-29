@@ -89,6 +89,15 @@ fn the_exit_code_comes_back() {
         .unwrap();
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("could not start"));
+    let folder = daifuku()
+        .args(["group", "--", env!("CARGO_MANIFEST_DIR")])
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(!folder.status.success());
+    let said = String::from_utf8_lossy(&folder.stderr);
+    assert!(said.contains("could not start"), "{said}");
+    assert!(!said.contains("os error"), "{said}");
 }
 
 #[test]
