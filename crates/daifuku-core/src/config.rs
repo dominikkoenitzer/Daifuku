@@ -1097,6 +1097,20 @@ pub fn decode(bytes: &[u8]) -> std::io::Result<String> {
     }
 }
 
+/// Why a file could not be read, in the words Windows has for it, without the
+/// error number Rust adds after them.
+#[must_use]
+pub fn io_reason(e: &std::io::Error) -> String {
+    let said = e.to_string();
+    match e.raw_os_error() {
+        Some(code) => said
+            .strip_suffix(&format!(" (os error {code})"))
+            .unwrap_or(&said)
+            .to_owned(),
+        None => said,
+    }
+}
+
 /// What is wrong with a file that did not parse, in the words of someone
 /// editing it rather than the parser's, with where it is.
 fn plain_json_error(e: &serde_json::Error) -> String {

@@ -9,7 +9,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use daifuku_core::backlog::{self, Task};
-use daifuku_core::config::folder_key;
+use daifuku_core::config::{folder_key, io_reason};
 use serde::{Deserialize, Serialize};
 
 /// The most tasks handed out at once, across every backlog.
@@ -53,22 +53,22 @@ pub struct Backlog {
 pub fn read(path: &Path, elevated: bool) -> Result<Backlog, String> {
     if elevated {
         daifuku_win::process::as_shell_user(|| read_as_user(path))
-            .map_err(|e| format!("could not read it with your rights: {e}"))?
+            .map_err(|e| format!("could not read it with your rights: {}", io_reason(&e)))?
     } else {
         read_as_user(path)
     }
 }
 
 fn read_as_user(path: &Path) -> Result<Backlog, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let file = std::fs::File::open(path).map_err(|e| io_reason(&e))?;
     let mut bytes = Vec::new();
     file.take(MAX_BACKLOG + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| io_reason(&e))?;
     if bytes.len() as u64 > MAX_BACKLOG {
         return Err("it is larger than 4 MiB".to_owned());
     }
-    let text = daifuku_core::config::decode(&bytes).map_err(|e| e.to_string())?;
+    let text = daifuku_core::config::decode(&bytes).map_err(|e| io_reason(&e))?;
     let tasks = backlog::parse(&text);
     let claims = path.parent().map(|d| d.join("claims"));
     let taken = tasks
@@ -192,6 +192,15 @@ mod tests {
     use super::*;
 
     const FILE: &str = r"C:\work\BACKLOG.md";
+
+    #[test]
+    fn a_backlog_that_cannot_be_read_says_why_without_an_error_number() {
+        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for path in [here.to_path_buf(), here.join("no-such-backlog.md")] {
+            let said = read(&path, false).unwrap_err();
+            assert!(!said.is_empty() && !said.contains("os error"), "{said}");
+        }
+    }
 
     fn backlog(text: &str) -> Backlog {
         Backlog {
