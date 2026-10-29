@@ -156,6 +156,9 @@
   writing it anew, no longer takes back the tasks handed out from it. The
   terminal holding one could get a second task at its next stop, and a
   task its agent had not marked yet could go out again.
+- A fleet whose gaps leave its terminals no room keeps every terminal
+  inside its area, with narrower gaps. Its last terminals were placed past
+  the edge of the area, on another monitor or off the screen.
 
 ## 0.4.1, 2026-10-22
 

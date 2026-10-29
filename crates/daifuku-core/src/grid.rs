@@ -145,11 +145,18 @@ fn spans(start: i32, end: i32, parts: u32, gap: i32) -> Vec<(i32, i32)> {
         return Vec::new();
     }
     let parts_i = i64::from(parts);
-    let usable = (i64::from(end) - i64::from(start) - (parts_i - 1) * i64::from(gap)).max(0);
+    let room = (i64::from(end) - i64::from(start)).max(0);
+    // Gaps wider than the room narrow until the last span still ends at `end`.
+    let gap = if parts_i > 1 {
+        i64::from(gap).min(room / (parts_i - 1))
+    } else {
+        i64::from(gap)
+    };
+    let usable = room - (parts_i - 1) * gap;
     (0..parts_i)
         .map(|i| {
-            let from = i64::from(start) + i * i64::from(gap) + i * usable / parts_i;
-            let to = i64::from(start) + i * i64::from(gap) + (i + 1) * usable / parts_i;
+            let from = i64::from(start) + i * gap + i * usable / parts_i;
+            let to = i64::from(start) + i * gap + (i + 1) * usable / parts_i;
             // Both fit: they lie between start and end, which are i32.
             (
                 i32::try_from(from).unwrap_or(i32::MAX),
@@ -485,6 +492,51 @@ mod tests {
     fn a_shape_with_zero_columns_falls_back_to_automatic() {
         let cells = Grid::plan(6, PORTRAIT, Gaps::default(), Some(shape(0, 9)));
         assert_eq!(cells, Grid::plan(6, PORTRAIT, Gaps::default(), None));
+    }
+
+    #[test]
+    fn cells_stay_inside_the_area_when_the_gaps_leave_no_room() {
+        let full_hd = Rect::new(0, 0, 1920, 1080);
+        for (count, area, gaps, shape) in [
+            (
+                16,
+                full_hd,
+                Gaps {
+                    outer: 24,
+                    inner: 500,
+                },
+                None,
+            ),
+            (
+                16,
+                full_hd,
+                Gaps {
+                    outer: 0,
+                    inner: 1000,
+                },
+                Some(shape(4, 4)),
+            ),
+            (
+                4,
+                full_hd.part(0.0, 0.0, 0.1, 1.0),
+                Gaps::default(),
+                Some(shape(4, 1)),
+            ),
+            (64, Rect::new(0, 0, 50, 50), Gaps::default(), None),
+        ] {
+            let body = area.shrink(gaps.outer);
+            let cells = Grid::plan(count, area, gaps, shape);
+            assert_eq!(cells.len(), count as usize);
+            for c in &cells {
+                assert!(
+                    c.left >= body.left
+                        && c.top >= body.top
+                        && c.right <= body.right
+                        && c.bottom <= body.bottom,
+                    "{c:?} outside {body:?} for {count} with {gaps:?}"
+                );
+            }
+        }
     }
 
     #[test]
