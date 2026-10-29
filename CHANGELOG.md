@@ -37,6 +37,9 @@
   that are not two numbers 0 to 24.
 - A cell or a window handle with a `+` in it, such as `--cell +3` or
   `0x+10064e`, no longer reads as the number without it.
+- `daifuku wait --timeout` and `daifuku events --after` refuse a number
+  with a `+` in front, such as `+5`, as they refuse `abc`, instead of
+  reading it as 5.
 - `daifuku stop-agents` stops every agent at once: it closes every fleet's
   terminals and every spawned one, keeps the session of each for
   `daifuku restore`, which opens it again in its folder and in its cell,
