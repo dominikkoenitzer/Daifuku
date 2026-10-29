@@ -184,7 +184,7 @@ fn serve_control(
                 response
             }
         }
-        Err(error) => Response::error(format!("not a request: {error}")),
+        Err(error) => not_a_request(&error, connection.client),
     };
     if let Ok(line) = to_line(&response) {
         let _ = connection.write_line(&line, CONTROL_IO);
@@ -192,6 +192,16 @@ fn serve_control(
     if stop {
         let _ = stop_replied.try_send(());
     }
+}
+
+/// The answer to a line that is no request this daemon knows, most often a
+/// command from a newer `daifuku`. What the parser said goes to the log.
+fn not_a_request(error: &serde_json::Error, client: u32) -> Response {
+    tracing::warn!(%error, client, "unreadable control request");
+    Response::error(format!(
+        "the daemon runs {} and does not know this command: run `daifuku install` from the newer daifuku, which also restarts the daemon",
+        env!("CARGO_PKG_VERSION")
+    ))
 }
 
 /// Waits for the main thread's answer to a command, and says whether the
@@ -264,5 +274,18 @@ mod tests {
         main.join().unwrap();
         assert!(ran);
         assert_eq!(response, Response::said("opened agents"));
+    }
+
+    #[test]
+    fn a_command_this_daemon_does_not_know_gets_a_plain_answer() {
+        // What a newer daifuku sends for a command added after this daemon.
+        let error = from_line::<Request>(r#"{"command":"focus","window":1}"#).unwrap_err();
+        assert_eq!(
+            not_a_request(&error, 0),
+            Response::error(format!(
+                "the daemon runs {} and does not know this command: run `daifuku install` from the newer daifuku, which also restarts the daemon",
+                env!("CARGO_PKG_VERSION")
+            ))
+        );
     }
 }
