@@ -37,7 +37,9 @@
 - Install and uninstall no longer take a logon task for gone when Task
   Scheduler could not be asked, as with its service stopped. They stop
   with "could not remove the logon task" and the reason, as for a task
-  that could not be deleted.
+  that could not be deleted. When Task Scheduler cannot be asked about the
+  task earlier installs shared, `\Daifuku\Daemon`, they report it as left,
+  with the reason, rather than pass over it.
 - `daifuku events` lists what the daemon noticed since it started: an
   account that reached its `stop_at`, a window that started over or whose
   stop rose so it may take more, and an agent in a fleet terminal that

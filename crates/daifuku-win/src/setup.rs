@@ -568,11 +568,27 @@ fn query_found(result: std::io::Result<Vec<u8>>, not_there: &[String]) -> std::i
 
 /// The task's definition as Task Scheduler gives it back, `None` when there
 /// is no such task.
-#[must_use]
-pub fn task_xml(name: &str) -> Option<String> {
-    schtasks_output(&["/Query", "/TN", name, "/XML"])
-        .ok()
-        .map(|out| xml_text(&out))
+///
+/// # Errors
+///
+/// When Task Scheduler could not be asked, as for [`task_exists`].
+pub fn task_xml(name: &str) -> std::io::Result<Option<String>> {
+    query_xml(
+        schtasks_output(&["/Query", "/TN", name, "/XML"]),
+        &not_there(),
+    )
+}
+
+/// What a `schtasks /Query /XML` result says: the definition, `None` when
+/// [`query_found`] reads the failure as no task, else the failure.
+fn query_xml(
+    result: std::io::Result<Vec<u8>>,
+    not_there: &[String],
+) -> std::io::Result<Option<String>> {
+    match result {
+        Ok(out) => Ok(Some(xml_text(&out))),
+        Err(e) => query_found(Err(e), not_there).map(|_| None),
+    }
 }
 
 /// What `schtasks /Query /XML` wrote, as text: UTF-16 when it says so with a
@@ -704,6 +720,23 @@ mod tests {
         }
         // Without the system's message nothing reads as not found.
         assert!(query_found(failed("ERROR: "), &[String::new()]).is_err());
+    }
+
+    #[test]
+    fn a_task_definition_that_could_not_be_asked_for_is_no_missing_task() {
+        let not_there = not_there();
+        let failed = |text: String| Err(std::io::Error::other(text));
+        assert_eq!(
+            query_xml(Ok(b"<Task/>".to_vec()), &not_there).unwrap(),
+            Some("<Task/>".to_owned())
+        );
+        for e in [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND] {
+            let missing = format!("ERROR: {}", e.to_hresult().message());
+            assert_eq!(query_xml(failed(missing), &not_there).unwrap(), None);
+        }
+        let denied = format!("ERROR: {}", ERROR_ACCESS_DENIED.to_hresult().message());
+        let e = query_xml(failed(denied.clone()), &not_there).unwrap_err();
+        assert_eq!(e.to_string(), denied);
     }
 
     /// What `schtasks /Query /XML` wrote for the task an earlier install
