@@ -1126,10 +1126,16 @@ fn plain_json_error(e: &serde_json::Error) -> String {
     };
     if e.line() == 0 {
         words
+    } else if message == CONTROL_IN_STRING && e.column() == 0 && e.line() > 1 {
+        // The line break that ended the line before is counted on the next one.
+        format!("{words} at the end of line {}", e.line() - 1)
     } else {
         format!("{words}{place}")
     }
 }
+
+/// The parser's words for a line break or tab inside double quotes.
+const CONTROL_IN_STRING: &str = "control character (\\u0000-\\u001F) found while parsing a string";
 
 /// A JSON syntax error in plain words.
 fn plain_syntax(message: &str) -> &str {
@@ -1143,8 +1149,8 @@ fn plain_syntax(message: &str) -> &str {
             "a value is missing or misspelt; text goes in double quotes, and true, false and null in lower case"
         }
         "invalid escape" => r#"a backslash must be written twice, as in "C:\\work""#,
-        "control character (\\u0000-\\u001F) found while parsing a string" => {
-            r"a line break or tab inside double quotes must be written as \n or \t"
+        CONTROL_IN_STRING => {
+            r#"a closing " is missing, or a line break or tab inside double quotes is not written as \n or \t"#
         }
         "trailing characters" => "there is more after the last }",
         "invalid number" | "number out of range" => "a number does not read as one",
@@ -1734,6 +1740,22 @@ mod tests {
             let message = Config::from_json(text).unwrap_err().to_string();
             assert!(message.contains(words), "{text}: {message}");
             assert!(!message.contains("variant"), "{text}: {message}");
+        }
+    }
+
+    #[test]
+    fn an_unclosed_quote_names_its_own_line() {
+        for text in [
+            "{\n  \"fleets\": [{ \"name\": \"a\" }],\n  \"sound\": \"yes\n}",
+            "{\r\n  \"fleets\": [{ \"name\": \"a\" }],\r\n  \"sound\": \"yes\r\n}",
+        ] {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(
+                message.contains(r#"a closing " is missing"#),
+                "{text:?}: {message}"
+            );
+            assert!(message.contains(" line 3"), "{text:?}: {message}");
+            assert!(!message.contains("line 4"), "{text:?}: {message}");
         }
     }
 
