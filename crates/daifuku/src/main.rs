@@ -193,7 +193,7 @@ enum Command {
         #[arg(long, value_enum, default_value = "turn")]
         until: wait::Until,
         /// Give up after this many seconds.
-        #[arg(long, default_value_t = 3600)]
+        #[arg(long, default_value_t = 3600, value_parser = parse_digits::<u64>)]
         timeout: u64,
         #[command(flatten)]
         format: Format,
@@ -225,6 +225,7 @@ enum Command {
     #[command(hide = true)]
     ConsoleWindow {
         /// The process.
+        #[arg(value_parser = parse_digits::<u32>)]
         pid: u32,
     },
     /// One scripted demo agent. `daifuku demo` starts these.
@@ -278,7 +279,7 @@ enum Command {
         #[arg(long)]
         follow: bool,
         /// Only the events numbered above this one.
-        #[arg(long)]
+        #[arg(long, value_parser = parse_digits::<u64>)]
         after: Option<u64>,
         #[command(flatten)]
         format: Format,
@@ -1838,6 +1839,18 @@ fn parse_window(text: &str) -> Result<u64, String> {
     wait::window_number(text).ok_or_else(|| format!("`{text}` is not a window handle"))
 }
 
+/// A number in digits only, `5` or `05`, as `wait --timeout`, `events
+/// --after` and `console-window` take it.
+fn parse_digits<T: std::str::FromStr<Err = std::num::ParseIntError>>(
+    text: &str,
+) -> Result<T, std::num::ParseIntError> {
+    // parse alone also takes a leading +, and refuses a sign on its own as an invalid digit.
+    if text.starts_with('+') {
+        return "+".parse();
+    }
+    text.parse()
+}
+
 /// Sends `request` to the daemon and reads its answer, or says why it could
 /// not, as [`control`] does. `asked` is the command to run again from an
 /// administrator terminal.
@@ -3126,6 +3139,48 @@ mod tests {
             cli.unwrap().command,
             Command::Spawn { area: Some(a), dir: Some(_), .. } if a == "left"
         ));
+    }
+
+    #[test]
+    fn a_timeout_an_event_and_a_process_take_digits_only() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("daifuku").chain(args.iter().copied()))
+                .map(|c| c.command)
+        };
+        let timeout = |args: &[&str]| match parse(args) {
+            Ok(Command::Wait { timeout, .. }) => Some(timeout),
+            _ => None,
+        };
+        let after = |args: &[&str]| match parse(args) {
+            Ok(Command::Events { after, .. }) => after,
+            _ => None,
+        };
+        let pid = |args: &[&str]| match parse(args) {
+            Ok(Command::ConsoleWindow { pid }) => Some(pid),
+            _ => None,
+        };
+        assert_eq!(timeout(&["wait", "a"]), Some(3600));
+        assert_eq!(timeout(&["wait", "a", "--timeout", "5"]), Some(5));
+        assert_eq!(timeout(&["wait", "a", "--timeout", "05"]), Some(5));
+        assert_eq!(after(&["events", "--after", "3"]), Some(3));
+        assert_eq!(after(&["events", "--after", "05"]), Some(5));
+        assert_eq!(pid(&["console-window", "1234"]), Some(1234));
+        assert_eq!(pid(&["console-window", "05"]), Some(5));
+        for (args, number) in [
+            (&["wait", "a", "--timeout"][..], "+5"),
+            (&["events", "--after"], "+3"),
+            (&["console-window"], "+1234"),
+        ] {
+            let refusal = |value: &str| match parse(&[args, &[value]].concat()) {
+                Ok(_) => panic!("{args:?} {value} was taken"),
+                Err(e) => (e.kind(), e.render().to_string()),
+            };
+            let (kind, text) = refusal(number);
+            let (abc_kind, abc_text) = refusal("abc");
+            assert_eq!(kind, clap::error::ErrorKind::ValueValidation, "{text}");
+            assert_eq!(kind, abc_kind);
+            assert_eq!(text, abc_text.replace("'abc'", &format!("'{number}'")));
+        }
     }
 
     #[test]
