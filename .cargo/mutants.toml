@@ -1,18 +1,25 @@
 exclude_re = [
+    # A timeout of exactly the minimum is raised to itself.
+    'agents\.rs:\d+:28: replace < with <= in fit_claude_stop$',
+    # hour_span never returns two hours that are the same.
+    'config\.rs:\d+:29: replace < with <= in StopAt::holds$',
+    # A span of days that wraps past Sunday then never ends, so the suite only times out.
+    'config\.rs:\d+:24: replace \+ with \* in day_mask$',
+    'config\.rs:\d+:29: replace % with / in day_mask$',
+    # A control character inside a string never stands at column 0 of line 1: the string's quote comes first.
+    'config\.rs:\d+:75: replace > with >= in plain_json_error$',
     # At a width of 0, both branches return 0.
-    'geometry\.rs:36:14: replace < with <= in Rect::width$',
+    'geometry\.rs:\d+:14: replace < with <= in Rect::width$',
     # At a height of 0, both branches return 0.
-    'geometry\.rs:43:14: replace < with <= in Rect::height$',
-    # When the margin is exactly half the width, half the width is the margin.
-    'geometry\.rs:63:30: replace > with >= in Rect::shrink$',
-    # When the margin is exactly half the height, half the height is the margin.
-    'geometry\.rs:68:30: replace > with >= in Rect::shrink$',
+    'geometry\.rs:\d+:14: replace < with <= in Rect::height$',
+    # When the margin is exactly half the width or the height, that half is the margin.
+    'geometry\.rs:\d+:30: replace > with >= in Rect::shrink$',
     # A cell of no size on one side only costs NaN or infinity, which never wins.
-    'grid\.rs:96:30: replace \|\| with && in Grid::shape_for$',
+    'grid\.rs:\d+:30: replace \|\| with && in Grid::shape_for$',
     # Adds one offset to every shape's cost: equal in exact arithmetic, and a wide search found no float input that differs.
-    'grid\.rs:99:50: replace - with \+ in Grid::shape_for$',
+    'grid\.rs:\d+:50: replace - with \+ in Grid::shape_for$',
     # Without the shortcut, the number goes through the same parse and comes out the same.
-    "peer\\.rs:88:35: replace match guard n >= 1 with false in <impl Deserialize<'de> for Cell>::deserialize$",
+    "peer\\.rs:\\d+:35: replace match guard n >= 1 with false in <impl Deserialize<'de> for Cell>::deserialize$",
     # A message of exactly the limit is cut at its own end, which changes nothing.
-    'state\.rs:148:24: replace > with >= in HookEvent::trim$',
+    'state\.rs:\d+:24: replace > with >= in HookEvent::trim$',
 ]
