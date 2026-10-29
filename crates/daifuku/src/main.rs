@@ -1290,10 +1290,10 @@ fn control_failed(json: bool, code: ErrorCode, message: &str) -> ExitCode {
 /// Prints the daemon's `reply` to `request`.
 #[cfg(windows)]
 fn answer(reply: &str, request: &Request, json: bool) -> ExitCode {
-    use daifuku_core::protocol::{Response, from_line, to_line};
+    use daifuku_core::protocol::{Response, to_line};
 
     let fail = |code: ErrorCode, message: &str| control_failed(json, code, message);
-    match from_line::<Response>(reply) {
+    match read_reply(reply) {
         Ok(Response::Ok { .. }) if json => {
             output::print_json(&output::Done { ok: true });
             ExitCode::SUCCESS
@@ -1389,8 +1389,19 @@ fn answer(reply: &str, request: &Request, json: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Response::Error { message }) => fail(ErrorCode::Daemon, &message),
-        Err(e) => fail(ErrorCode::Ipc, &format!("unreadable reply: {e}")),
+        Err(message) => fail(ErrorCode::Ipc, &message),
     }
+}
+
+/// Reads the daemon's reply. One this daifuku cannot read most often comes
+/// from a newer daemon, and is said so rather than in the parser's words.
+fn read_reply(reply: &str) -> Result<daifuku_core::protocol::Response, String> {
+    daifuku_core::protocol::from_line(reply).map_err(|_| {
+        format!(
+            "this daifuku is {} and cannot read the daemon's answer: run `daifuku install` from the newer daifuku, which also restarts the daemon",
+            env!("CARGO_PKG_VERSION")
+        )
+    })
 }
 
 /// `daifuku status`. A daemon with the user's own rights answers any of the
@@ -1721,7 +1732,7 @@ fn ask(
     request: &Request,
     json: bool,
 ) -> Result<daifuku_core::protocol::Response, (ErrorCode, String)> {
-    use daifuku_core::protocol::{Response, from_line, to_line};
+    use daifuku_core::protocol::to_line;
     use daifuku_win::pipe::{Pipe, send};
 
     let line = to_line(request).map_err(|_| {
@@ -1741,7 +1752,7 @@ fn ask(
             ));
         }
     };
-    from_line::<Response>(&reply).map_err(|e| (ErrorCode::Ipc, format!("unreadable reply: {e}")))
+    read_reply(&reply).map_err(|message| (ErrorCode::Ipc, message))
 }
 
 /// `daifuku wait`: asks for the status once a second until `target` reaches
@@ -2510,6 +2521,23 @@ mod tests {
         assert_eq!(
             spawned_line(0x1234, None, None, None),
             "opened a terminal (0x00001234)"
+        );
+    }
+
+    #[test]
+    fn a_reply_this_daifuku_cannot_read_is_said_plainly() {
+        // What a newer daemon might answer with a result added after this
+        // daifuku.
+        assert_eq!(
+            read_reply(r#"{"result":"focused","window":1}"#),
+            Err(format!(
+                "this daifuku is {} and cannot read the daemon's answer: run `daifuku install` from the newer daifuku, which also restarts the daemon",
+                env!("CARGO_PKG_VERSION")
+            ))
+        );
+        assert_eq!(
+            read_reply(r#"{"result":"ok"}"#),
+            Ok(daifuku_core::protocol::Response::Ok { message: None })
         );
     }
 
