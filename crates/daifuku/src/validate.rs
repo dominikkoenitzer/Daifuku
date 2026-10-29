@@ -49,8 +49,7 @@ pub fn bytes_of(bytes: &[u8]) -> Result<(), Problem> {
         code: ErrorCode::InvalidConfig,
         message,
     };
-    let text = config::decode(bytes)
-        .map_err(|e| invalid(format!("the file is neither UTF-8 nor UTF-16 text: {e}")))?;
+    let text = config::decode(bytes).map_err(|e| invalid(e.to_string()))?;
     Config::from_json(&text).map_err(|e| invalid(e.to_string()))?;
     Ok(())
 }
@@ -127,6 +126,10 @@ mod tests {
     fn bytes_that_are_not_text_fail() {
         let p = bytes_of(&[0xC3, 0x28]).unwrap_err();
         assert_eq!(p.code, ErrorCode::InvalidConfig);
+        assert_eq!(
+            p.message,
+            "line 1 is not UTF-8 text: save the file as UTF-8"
+        );
     }
 
     #[test]
