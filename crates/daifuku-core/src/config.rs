@@ -231,7 +231,12 @@ fn day_mask(text: &str) -> Result<u8, String> {
 fn hour_span(text: &str) -> Result<(u16, u16), String> {
     let bad = || format!("hours: `{text}` is not two hours 0 to 24, such as 8-18");
     let (from, to) = text.split_once('-').ok_or_else(bad)?;
-    let hour = |h: &str| h.trim().parse::<u16>().ok().filter(|h| *h <= 24);
+    let hour = |h: &str| {
+        let h = h.trim();
+        // parse alone also takes a leading +.
+        let digits = h.bytes().all(|b| b.is_ascii_digit());
+        h.parse::<u16>().ok().filter(|h| digits && *h <= 24)
+    };
     let (from, to) = (hour(from).ok_or_else(bad)?, hour(to).ok_or_else(bad)?);
     if from % 24 == to % 24 {
         return Err(format!(
@@ -2158,6 +2163,19 @@ mod tests {
             assert!(e.contains(says), "{json}: {e}");
         }
         assert!(rules(r#"[{"share":50,"day":"mon"}]"#).is_err());
+    }
+
+    #[test]
+    fn hours_take_digits_only() {
+        for text in ["+8-18", "8-+18", "+8-+18", " +8 - 18"] {
+            let e = hour_span(text).unwrap_err();
+            assert_eq!(
+                e,
+                format!("hours: `{text}` is not two hours 0 to 24, such as 8-18")
+            );
+        }
+        assert_eq!(hour_span("8 - 18"), Ok((8, 18)));
+        assert_eq!(hour_span(" 22-6 "), Ok((22, 6)));
     }
 
     fn at(weekday: u8, hour: u16) -> LocalTime {
