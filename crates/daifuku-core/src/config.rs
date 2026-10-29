@@ -1155,12 +1155,16 @@ fn plain_syntax(message: &str) -> &str {
 /// A value of the wrong kind in plain words. Messages the config's own
 /// types give are plain already and stay as they are.
 fn plain_data(message: &str) -> String {
-    let wrong = message
-        .strip_prefix("invalid type: ")
-        .or_else(|| message.strip_prefix("invalid value: "))
-        .and_then(|rest| rest.rsplit_once(", expected "));
-    if let Some((got, want)) = wrong {
-        return format!("expected {}, not {}", plain_kind(want), plain_value(got));
+    let (out_of_range, rest) = match message.strip_prefix("invalid value: ") {
+        Some(rest) => (true, Some(rest)),
+        None => (false, message.strip_prefix("invalid type: ")),
+    };
+    if let Some((got, want)) = rest.and_then(|rest| rest.rsplit_once(", expected ")) {
+        let kind = match whole_range(want) {
+            Some((low, high)) if out_of_range => format!("a whole number from {low} to {high}"),
+            _ => plain_kind(want).to_owned(),
+        };
+        return format!("expected {kind}, not {}", plain_value(got));
     }
     if let Some(rest) = message.strip_prefix("unknown field ") {
         return format!("unknown key {rest}");
@@ -1172,6 +1176,21 @@ fn plain_data(message: &str) -> String {
         return format!("{name} is there twice");
     }
     message.to_owned()
+}
+
+/// The lowest and highest value a whole number type holds.
+fn whole_range(want: &str) -> Option<(i128, i128)> {
+    Some(match want {
+        "u8" => (0, u8::MAX.into()),
+        "u16" => (0, u16::MAX.into()),
+        "u32" => (0, u32::MAX.into()),
+        "u64" | "usize" => (0, u64::MAX.into()),
+        "i8" => (i8::MIN.into(), i8::MAX.into()),
+        "i16" => (i16::MIN.into(), i16::MAX.into()),
+        "i32" => (i32::MIN.into(), i32::MAX.into()),
+        "i64" | "isize" => (i64::MIN.into(), i64::MAX.into()),
+        _ => return None,
+    })
 }
 
 /// What a value should have been, for a person rather than a programmer.
@@ -1667,6 +1686,32 @@ mod tests {
             ] {
                 assert!(!message.contains(tell), "{text}: {message}");
             }
+        }
+    }
+
+    #[test]
+    fn a_number_out_of_range_names_the_range() {
+        let cases = [
+            (
+                r#"{"fleets":[{"name":"a","count":5000000000}]}"#,
+                "expected a whole number from 0 to 4294967295, not 5000000000",
+            ),
+            (
+                r#"{"accounts":{"me":{"warn":300}}}"#,
+                "expected a whole number from 0 to 255, not 300",
+            ),
+            (
+                r#"{"border":{"width":3000000000}}"#,
+                "expected a whole number from -2147483648 to 2147483647, not 3000000000",
+            ),
+            (
+                r#"{"fleets":[{"name":"a","count":"four"}]}"#,
+                "expected a whole number from 0, not \"four\"",
+            ),
+        ];
+        for (text, words) in cases {
+            let message = Config::from_json(text).unwrap_err().to_string();
+            assert!(message.contains(words), "{text}: {message}");
         }
     }
 
