@@ -2493,3 +2493,90 @@ fn a_fleet_that_resumes_opens_each_terminal_back_in_its_cell_and_session() {
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
 }
+
+/// Shift pressed and released: input that wakes the saver and types nothing.
+fn press_shift() -> u32 {
+    keys(&[(0x10, 0x2A, true), (0x10, 0x2A, false)])
+}
+
+#[test]
+fn a_fleet_opened_while_nobody_is_at_the_desk_does_not_put_the_saver_off() {
+    use daifuku_win::saver;
+
+    if !enabled() {
+        eprintln!("skipped: set DAIFUKU_E2E=1 to run against a real desktop");
+        return;
+    }
+    if daifuku_win::terminal::find().is_none() {
+        eprintln!("skipped: Windows Terminal is not installed here");
+        return;
+    }
+    // A short saver would come up in the middle of the other tests, so CI
+    // sets one for this test alone, in a step of its own.
+    if std::env::var_os("DAIFUKU_E2E_SAVER").is_none() {
+        eprintln!("skipped: set DAIFUKU_E2E_SAVER=1 once a one-minute screen saver is set");
+        return;
+    }
+    let timeout = saver::Now::read()
+        .timeout
+        .expect("a screen saver is set and active");
+    let dir = scratch().join("saver");
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("daifuku.json");
+    let json = serde_json::json!({
+        "fleets": [{
+            "name": "e2e", "count": 1, "command": "Start-Sleep -Seconds 300",
+            "admin": true, "no_profile": true, "hotkey": null
+        }],
+        "hotkeys": { "next_waiting": null, "snap": null, "close": null }
+    });
+    std::fs::write(&config, json.to_string()).unwrap();
+    let mut steps = 0;
+    let (mut cleanup, _) = start(&config);
+
+    // The last input, then nothing but the new window a while later: a peer
+    // the fleet opens at night. Windows starts the saver's countdown over
+    // when that window comes up, and the daemon has to make up for it.
+    assert_eq!(press_shift(), 2);
+    let quiet = Instant::now();
+    std::thread::sleep(timeout * 2 / 5);
+    assert!(
+        saver::Now::read().idle >= timeout / 3,
+        "something else made input while the test waited"
+    );
+    let opened = run(&["open", "e2e"]);
+    assert!(opened.contains("opened e2e (1 terminal"), "{opened}");
+    let fleet = wait_for("the terminal", Duration::from_secs(10), || {
+        status()?
+            .fleets
+            .into_iter()
+            .find(|f| f.name == "e2e" && f.windows.len() == 1)
+    });
+    steps += 1;
+
+    // Windows alone starts it a full timeout after the window came up.
+    wait_for("the saver", timeout * 2, || {
+        saver::Now::read().running.then_some(())
+    });
+    let late = quiet.elapsed().saturating_sub(timeout);
+    assert!(
+        late < Duration::from_secs(10),
+        "the saver started {late:?} after it was due"
+    );
+    steps += 1;
+
+    assert_eq!(press_shift(), 2);
+    wait_for("the saver to end", Duration::from_secs(10), || {
+        (!saver::Now::read().running).then_some(())
+    });
+    let closed = run(&["close", "e2e"]);
+    assert!(closed.contains("closed 1 terminal"), "{closed}");
+    wait_for("the terminal to close", Duration::from_secs(15), || {
+        (!window::exists(fleet.windows[0])).then_some(())
+    });
+    steps += 1;
+
+    stop(&mut cleanup);
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("e2e: {steps} steps passed");
+}
