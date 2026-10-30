@@ -456,7 +456,7 @@ real command's other options: `--no-hooks` and `--no-start` for install,
 | `dry_run` | boolean | Always `true`. |
 | `command` | string | `"install"` or `"uninstall"`. |
 | `elevated` | boolean | Whether this terminal is elevated, as the real command needs. |
-| `steps` | array of objects | Every change, in the order the real command makes it. An uninstall leaves out a removal that would change nothing, such as taking a folder off `PATH` that is not on it; an install lists such a step as a `keep_` action. |
+| `steps` | array of objects | Every change, in the order the real command makes it. Both commands leave out a removal that would change nothing, such as taking a folder off `PATH` that is not on it or a logon task that is not there; when Task Scheduler could not be asked, the task removal is listed. An install also leaves out the copy when it runs from the install folder, and lists a step that is done already as a `keep_` action: the folder on `PATH`, a locked data folder, the config there is, or an agent's hooks. |
 | `steps[].action` | string | What happens, from the list below. |
 | `steps[].target` | string | The file, folder, task or registry key it happens to. |
 | `steps[].detail` | string or null | More about it, such as where a file is copied from or why hooks stay as they are. |
