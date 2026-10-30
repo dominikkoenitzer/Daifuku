@@ -24,6 +24,9 @@
   `heavy` when they cannot start the program or take their turn.
 - So do the lines install and uninstall print for a step Windows refused,
   and what `daifuku stop-agents` says of a program it could not end.
+- An agent's settings file that is not valid JSON, an empty one included,
+  makes install and uninstall say only that, as their dry runs do, without
+  the parser's message and position after it.
 - A config or backlog saved in another encoding than UTF-8 or UTF-16 names
   the line that is not UTF-8 and says to save the file as UTF-8, instead of
   a byte index.
