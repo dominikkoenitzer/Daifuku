@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `daifuku uninstall --purge` no longer ends with "could not remove" and
+  exit code 1 when there is no `C:\ProgramData\Daifuku` folder. Uninstall
+  and its dry run leave that folder out when it is not there, as they do
+  the user's own data folder.
 - A terminal that a fleet or `daifuku spawn` opens while nobody is at the
   desk no longer keeps the screen saver off. Windows starts the saver's
   countdown over when a new window comes up, so peers opened a few minutes
@@ -60,7 +64,8 @@
   another program holds for a moment after signing in is read again for up
   to half a second.
 - `install --dry-run` and `uninstall --dry-run` list `remove_task` only
-  when this user has a logon task to remove.
+  when there is a logon task to remove, this user's own or the one earlier
+  installs shared. When Task Scheduler cannot be asked, both are listed.
 - Install and uninstall no longer remove the task earlier installs shared
   when it runs for a local user who only shares a name with a domain
   account signed in.
