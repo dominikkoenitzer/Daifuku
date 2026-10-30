@@ -564,8 +564,10 @@ pub fn uninstall_plan(facts: &Facts, purge: bool) -> Vec<Step> {
             owner: facts.sid.clone(),
         });
     }
-    let folders =
-        std::iter::once((&facts.data, DATA)).chain(facts.user_data.iter().map(|d| (d, USER_DATA)));
+    let data = facts.data_locked.is_some().then_some((&facts.data, DATA));
+    let folders = data
+        .into_iter()
+        .chain(facts.user_data.iter().map(|d| (d, USER_DATA)));
     for (dir, what) in folders {
         let dir = dir.clone();
         steps.push(if purge {
