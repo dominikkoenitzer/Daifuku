@@ -64,7 +64,8 @@
   another program holds for a moment after signing in is read again for up
   to half a second.
 - `install --dry-run` and `uninstall --dry-run` list `remove_task` only
-  when this user has a logon task to remove.
+  when there is a logon task to remove, this user's own or the one earlier
+  installs shared. When Task Scheduler cannot be asked, both are listed.
 - Install and uninstall no longer remove the task earlier installs shared
   when it runs for a local user who only shares a name with a domain
   account signed in.
