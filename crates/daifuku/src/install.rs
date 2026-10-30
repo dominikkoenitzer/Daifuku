@@ -2069,7 +2069,7 @@ fn edit_json(
         ),
     };
     let mut settings: serde_json::Value = serde_json::from_str(&text)
-        .with_context(|| format!("{} is not valid JSON, left untouched", path.display()))?;
+        .map_err(|_| anyhow!("{} is not valid JSON, left untouched", path.display()))?;
     let changed = edit(&mut settings)?;
     if changed > 0 {
         if let Some(dir) = path.parent() {
@@ -3434,6 +3434,23 @@ mod tests {
         for said in [predicted.unwrap_err(), fix.unwrap(), edited.unwrap_err()] {
             assert!(said.starts_with("could not read "), "{said}");
             assert!(!said.contains("os error"), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_json_says_so_without_the_parser_message() {
+        let base = std::env::temp_dir().join(format!("daifuku-notjson-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("settings.json");
+        let mut said = Vec::new();
+        for text in ["", "{\"a\":1,}"] {
+            std::fs::write(&file, text).unwrap();
+            said.push(edit_json(&file, |_| Ok(1)).map_err(|e| format!("{e:#}")));
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+        let plain = format!("{} is not valid JSON, left untouched", file.display());
+        for edited in said {
+            assert_eq!(edited.unwrap_err(), plain);
         }
     }
 
