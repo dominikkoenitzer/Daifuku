@@ -2693,6 +2693,27 @@ mod tests {
     }
 
     #[test]
+    fn an_uninstall_leaves_out_a_data_folder_that_is_not_there() {
+        let mut f = installed();
+        f.data_locked = None;
+        f.config_exists = false;
+        let data = |f: &Facts, purge| {
+            actions(&uninstall_plan(f, purge))
+                .into_iter()
+                .filter(|(_, target)| target == r"C:\ProgramData\Daifuku")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(data(&f, true), []);
+        assert_eq!(data(&f, false), []);
+        // The folder a daemon with the user's rights kept still goes.
+        f.user_data = Some(PathBuf::from(r"C:\Users\u\Daifuku"));
+        assert_eq!(
+            names(&uninstall_plan(&f, true)).last(),
+            Some(&"remove_folder")
+        );
+    }
+
+    #[test]
     fn a_dry_run_reads_as_lines_and_as_json() {
         let mut plan = Plan::new("install", false);
         for step in install_plan(&fresh(), &ALL) {
