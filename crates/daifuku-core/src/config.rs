@@ -1756,6 +1756,41 @@ mod tests {
     }
 
     #[test]
+    fn every_whole_number_type_has_its_own_range() {
+        let cases: [(&str, i128, i128); 10] = [
+            ("u8", 0, 255),
+            ("u16", 0, 65_535),
+            ("u32", 0, 4_294_967_295),
+            ("u64", 0, 18_446_744_073_709_551_615),
+            ("usize", 0, 18_446_744_073_709_551_615),
+            ("i8", -128, 127),
+            ("i16", -32_768, 32_767),
+            ("i32", -2_147_483_648, 2_147_483_647),
+            ("i64", -9_223_372_036_854_775_808, 9_223_372_036_854_775_807),
+            (
+                "isize",
+                -9_223_372_036_854_775_808,
+                9_223_372_036_854_775_807,
+            ),
+        ];
+        for (want, low, high) in cases {
+            assert_eq!(whole_range(want), Some((low, high)), "{want}");
+        }
+        assert_eq!(whole_range("f64"), None);
+    }
+
+    #[test]
+    fn a_read_error_keeps_the_words_without_the_error_number() {
+        let e = std::io::Error::from_raw_os_error(2);
+        let reason = io_reason(&e);
+        assert!(!reason.is_empty(), "{e}");
+        assert!(e.to_string().starts_with(&reason), "{e}: {reason}");
+        assert!(!reason.contains("os error"), "{reason}");
+        let other = std::io::Error::other("the share is offline");
+        assert_eq!(io_reason(&other), "the share is offline");
+    }
+
+    #[test]
     fn a_number_out_of_range_names_the_range() {
         let cases = [
             (
@@ -2499,6 +2534,19 @@ mod tests {
         }
         assert_eq!(hour_span("8 - 18"), Ok((8, 18)));
         assert_eq!(hour_span(" 22-6 "), Ok((22, 6)));
+    }
+
+    #[test]
+    fn hours_that_start_where_they_end_are_no_time() {
+        for text in ["8-8", "0-24", "24-0"] {
+            assert_eq!(
+                hour_span(text),
+                Err(format!(
+                    "hours: `{text}` is no time at all; leave hours out for all day"
+                ))
+            );
+        }
+        assert_eq!(hour_span("24-8"), Ok((0, 8)));
     }
 
     fn at(weekday: u8, hour: u16) -> LocalTime {

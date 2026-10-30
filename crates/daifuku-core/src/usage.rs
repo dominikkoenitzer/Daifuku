@@ -341,6 +341,30 @@ mod tests {
     }
 
     #[test]
+    fn one_window_reported_is_not_empty() {
+        let five = limits(r#"{"rate_limits":{"five_hour":{"used_percentage":4,"resets_at":9}}}"#);
+        let week = limits(r#"{"rate_limits":{"seven_day":{"used_percentage":4,"resets_at":9}}}"#);
+        assert!(!five.is_empty() && five.seven_day.is_none());
+        assert!(!week.is_empty() && week.five_hour.is_none());
+    }
+
+    #[test]
+    fn a_share_that_is_no_number_leaves_the_window_out() {
+        for used in [f64::NAN, f64::INFINITY] {
+            let raw = RawWindow {
+                used_percentage: Some(used),
+                resets_at: Some(9.0),
+            };
+            assert_eq!(raw.window(), None);
+        }
+        let raw = RawWindow {
+            used_percentage: Some(4.0),
+            resets_at: Some(f64::INFINITY),
+        };
+        assert_eq!(raw.window(), None);
+    }
+
+    #[test]
     fn a_share_is_rounded_so_a_warning_comes_early_not_late() {
         let l = limits(r#"{"rate_limits":{"five_hour":{"used_percentage":76.5,"resets_at":9}}}"#);
         assert_eq!(l.five_hour.unwrap().used, 77);
@@ -604,6 +628,27 @@ mod tests {
             ],
         );
         assert!(changes.iter().all(Option::is_none), "{changes:?}");
+    }
+
+    #[test]
+    fn a_weekly_reset_that_moves_two_days_is_the_same_week() {
+        let end = 2_000_000;
+        let time = |now| LocalTime {
+            now,
+            weekday: 0,
+            minute: 600,
+        };
+        let first = Window {
+            used: 30,
+            resets_at: end,
+        };
+        let (seen, _) = first.watch(LimitWindow::SevenDay, &[], time(end - 7200), None);
+        let moved = Window {
+            used: 31,
+            resets_at: end + 2 * 24 * 60 * 60,
+        };
+        let (_, change) = moved.watch(LimitWindow::SevenDay, &[], time(end - 7100), Some(seen));
+        assert_eq!(change, None);
     }
 
     #[test]

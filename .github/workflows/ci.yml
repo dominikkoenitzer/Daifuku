@@ -457,12 +457,18 @@ jobs:
   # Only on the timer: cargo-mutants flips one comparison or drops one call at
   # a time and reports every change no test noticed. daifuku-core is the pure
   # logic, so a surviving mutant there is a real hole in the suite.
+  # In one job the whole set took about two hours and ran into the limit;
+  # four quarters take about half an hour each.
   mutants:
-    name: mutation testing
+    name: mutation testing (${{ matrix.shard }}/4)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 120
     runs-on: windows-latest
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -476,11 +482,11 @@ jobs:
       - run: cargo install cargo-mutants --locked --version 27.1.0
       # A surviving mutant or a baseline that fails marks this job failed;
       # the job's continue-on-error keeps the run itself green.
-      - run: cargo mutants --package daifuku-core --no-shuffle --timeout 120
+      - run: cargo mutants --package daifuku-core --no-shuffle --timeout 120 --shard ${{ matrix.shard }}/4
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: mutants
+          name: mutants-${{ matrix.shard }}
           path: mutants.out/
           retention-days: 14
 
