@@ -110,6 +110,10 @@ pub trait Desk {
 
     /// Brings window `w` to the front, as [`window::focus`] does.
     fn focus(&mut self, w: u64) -> bool;
+
+    /// Sets the marker that keeps window managers off terminal `w` when
+    /// `on`, as [`window::mark`] does, and takes it off otherwise.
+    fn mark(&mut self, w: u64, on: bool);
 }
 
 /// The real desktop.
@@ -151,6 +155,14 @@ impl Desk for Live {
 
     fn focus(&mut self, w: u64) -> bool {
         window::focus(w)
+    }
+
+    fn mark(&mut self, w: u64, on: bool) {
+        if on && !window::mark(w) {
+            tracing::warn!(window = w, "could not mark the terminal");
+        } else if !on {
+            window::unmark(w);
+        }
     }
 }
 
@@ -688,13 +700,28 @@ fn settle(fleet: &Fleet, record: &mut OpenFleet, m: &MonitorInfo, count: usize) 
 /// [`launched`] tells it, until it takes messages, so it is placed and
 /// measured like any other window rather than by a queued move.
 fn wait_for_new(before: &BTreeSet<u64>, record: &OpenFleet, elevated: bool) -> Option<u64> {
+    wait_among(terminals, before, record, elevated, window::is_shown, |w| {
+        daifuku_win::process::is_elevated(window::pid(w))
+    })
+}
+
+/// [`wait_for_new`] over the windows `list` gives. The window it finds is
+/// marked at once, before a window manager can take it.
+fn wait_among(
+    list: impl Fn() -> BTreeSet<u64>,
+    before: &BTreeSet<u64>,
+    record: &OpenFleet,
+    elevated: bool,
+    shown: impl Fn(u64) -> bool,
+    elevation: impl Fn(u64) -> Option<bool>,
+) -> Option<u64> {
     let start = Instant::now();
     while start.elapsed() < SHOW_TIMEOUT {
-        if let Some(w) = terminals().into_iter().find(|&w| {
-            launched(w, before, record, elevated, window::is_shown, |w| {
-                daifuku_win::process::is_elevated(window::pid(w))
-            })
-        }) {
+        if let Some(w) = list()
+            .into_iter()
+            .find(|&w| launched(w, before, record, elevated, &shown, &elevation))
+        {
+            Live.mark(w, true);
             while !window::answers(w) && start.elapsed() < SHOW_TIMEOUT {
                 std::thread::sleep(Duration::from_millis(25));
             }
@@ -847,6 +874,25 @@ mod tests {
             numbered(Path::new(r"C:\src\site"), 3),
             PathBuf::from(r"C:\src\site")
         );
+    }
+
+    #[test]
+    fn the_terminal_a_launch_opened_is_marked_and_no_other() {
+        use crate::test_support::OwnWindow;
+        let (old, new) = (OwnWindow::new(), OwnWindow::new());
+        let found = wait_among(
+            || BTreeSet::from([old.0, new.0]),
+            &BTreeSet::from([old.0]),
+            &OpenFleet::new("crew"),
+            false,
+            |_| true,
+            |_| Some(false),
+        );
+        assert_eq!(found, Some(new.0));
+        assert!(window::is_marked(new.0));
+        assert!(!window::is_marked(old.0), "never adopted");
+        Live.mark(new.0, false);
+        assert!(!window::is_marked(new.0), "released");
     }
 
     #[test]

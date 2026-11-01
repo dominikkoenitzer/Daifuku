@@ -6,7 +6,10 @@ use daifuku_win::process;
 use windows::Win32::Storage::FileSystem::{
     DDD_NO_BROADCAST_SYSTEM, DDD_REMOVE_DEFINITION, DefineDosDeviceW,
 };
-use windows::core::PCWSTR;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
+};
+use windows::core::{PCWSTR, w};
 
 /// A drive letter only the desktop user's own sign-in has, as `subst` in an
 /// ordinary terminal makes one: an elevated process, with a sign-in of its
@@ -80,5 +83,41 @@ impl Drop for UserDrive {
                 PCWSTR(self.target.as_ptr()),
             )
         });
+    }
+}
+
+/// A hidden top-level window of this test's own, destroyed when dropped. It
+/// never shows, so nothing on the desktop moves.
+pub struct OwnWindow(pub u64);
+
+impl OwnWindow {
+    pub fn new() -> Self {
+        // SAFETY: a system class and static strings; the window is owned by
+        // this thread and destroyed on drop.
+        let h = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("Static"),
+                w!("daifukud test window"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                10,
+                10,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a hidden test window");
+        Self(daifuku_win::raw(h))
+    }
+}
+
+impl Drop for OwnWindow {
+    fn drop(&mut self) {
+        // SAFETY: a window this thread made.
+        let _ = unsafe { DestroyWindow(daifuku_win::hwnd(self.0)) };
     }
 }
