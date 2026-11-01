@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fleet and peer terminals carry the window property `NoTiling` (value 1)
+  while the daemon holds them, so a tiling window manager can leave them in
+  their cells. The daemon sets it as soon as it finds a new terminal and
+  takes it off again when it lets the terminal go or stops. Your own
+  terminals never get it.
 - `daifuku uninstall --purge` no longer ends with "could not remove" and
   exit code 1 when there is no `C:\ProgramData\Daifuku` folder. Uninstall
   and its dry run leave that folder out when it is not there, as they do

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use daifuku_core::Rect;
 use windows::Win32::Foundation::{
-    ERROR_TIMEOUT, GetLastError, HWND, LPARAM, RECT, WIN32_ERROR, WPARAM,
+    ERROR_TIMEOUT, GetLastError, HANDLE, HWND, LPARAM, RECT, WIN32_ERROR, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
@@ -31,12 +31,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetPropW, GetWindowRect,
     GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible,
-    IsZoomed, PostMessageW, SHOW_WINDOW_CMD, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_RESTORE,
+    IsZoomed, PostMessageW, RemovePropW, SHOW_WINDOW_CMD, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_RESTORE,
     SW_SHOWNOACTIVATE, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageTimeoutW,
-    SetForegroundWindow, SetWindowPos, ShowWindow, ShowWindowAsync, WM_CLOSE, WM_NULL,
+    SetForegroundWindow, SetPropW, SetWindowPos, ShowWindow, ShowWindowAsync, WM_CLOSE, WM_NULL,
 };
+use windows::core::{PCWSTR, w};
 
 use crate::monitor::rect;
 use crate::wide::from_wide;
@@ -441,6 +442,28 @@ pub fn close(w: u64) -> bool {
     unsafe { PostMessageW(Some(hwnd(w)), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok()
 }
 
+/// The window property that tells a window manager to leave a window alone.
+const NO_TILING: PCWSTR = w!("NoTiling");
+
+/// Sets [`NO_TILING`] to 1 on the window. False when Windows refused.
+pub fn mark(w: u64) -> bool {
+    // SAFETY: the name is a static NUL-terminated string; the value is not a pointer.
+    unsafe { SetPropW(hwnd(w), NO_TILING, Some(HANDLE(1 as *mut c_void))) }.is_ok()
+}
+
+/// Removes [`NO_TILING`] from the window. False when it had none.
+pub fn unmark(w: u64) -> bool {
+    // SAFETY: the name is a static NUL-terminated string.
+    unsafe { RemovePropW(hwnd(w), NO_TILING) }.is_ok()
+}
+
+/// Whether the window has [`NO_TILING`] set to 1, as [`mark`] sets it.
+#[must_use]
+pub fn is_marked(w: u64) -> bool {
+    // SAFETY: the name is a static NUL-terminated string.
+    unsafe { GetPropW(hwnd(w), NO_TILING) }.0 as usize == 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +520,52 @@ mod tests {
         assert!(!exists(0));
         assert!(frame(0).is_none());
         assert!(place(0, Rect::new(0, 0, 10, 10)).is_none());
+        assert!(!mark(0));
+        assert!(!unmark(0));
+        assert!(!is_marked(0));
+    }
+
+    #[test]
+    fn the_marker_is_set_to_one_and_taken_off_again() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
+        };
+        let make = || {
+            // SAFETY: a hidden top-level window of a system class, owned by
+            // this thread and destroyed below.
+            let h = unsafe {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("Static"),
+                    w!("daifuku test window"),
+                    WS_OVERLAPPED,
+                    0,
+                    0,
+                    10,
+                    10,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            }
+            .unwrap();
+            raw(h)
+        };
+        let (marked, plain) = (make(), make());
+        assert!(!is_marked(marked));
+        assert!(mark(marked));
+        // SAFETY: plain query on a handle this test owns.
+        let value = unsafe { GetPropW(hwnd(marked), w!("NoTiling")) };
+        assert_eq!(value.0 as usize, 1);
+        assert!(is_marked(marked));
+        assert!(!is_marked(plain), "a window never marked");
+        assert!(unmark(marked));
+        assert!(!is_marked(marked));
+        assert!(!unmark(plain), "nothing to take off");
+        for w in [marked, plain] {
+            // SAFETY: windows this thread made.
+            unsafe { DestroyWindow(hwnd(w)) }.unwrap();
+        }
     }
 }
