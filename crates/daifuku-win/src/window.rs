@@ -445,7 +445,7 @@ pub fn close(w: u64) -> bool {
 /// The window property that tells a window manager to leave a window alone.
 const NO_TILING: PCWSTR = w!("NoTiling");
 
-/// Sets [`NO_TILING`] to 1 on the window. False when Windows refused.
+/// Sets the window property `NoTiling` to 1. False when Windows refused.
 pub fn mark(w: u64) -> bool {
     // SAFETY: the name is a static NUL-terminated string; the value is not a pointer.
     unsafe {
@@ -458,13 +458,13 @@ pub fn mark(w: u64) -> bool {
     .is_ok()
 }
 
-/// Removes [`NO_TILING`] from the window. False when it had none.
+/// Removes the window property `NoTiling`. False when it had none.
 pub fn unmark(w: u64) -> bool {
     // SAFETY: the name is a static NUL-terminated string.
     unsafe { RemovePropW(hwnd(w), NO_TILING) }.is_ok()
 }
 
-/// Whether the window has [`NO_TILING`] set to 1, as [`mark`] sets it.
+/// Whether the window property `NoTiling` is 1, as [`mark`] sets it.
 #[must_use]
 pub fn is_marked(w: u64) -> bool {
     // SAFETY: the name is a static NUL-terminated string.
