@@ -448,7 +448,14 @@ const NO_TILING: PCWSTR = w!("NoTiling");
 /// Sets [`NO_TILING`] to 1 on the window. False when Windows refused.
 pub fn mark(w: u64) -> bool {
     // SAFETY: the name is a static NUL-terminated string; the value is not a pointer.
-    unsafe { SetPropW(hwnd(w), NO_TILING, Some(HANDLE(1 as *mut c_void))) }.is_ok()
+    unsafe {
+        SetPropW(
+            hwnd(w),
+            NO_TILING,
+            Some(HANDLE(std::ptr::without_provenance_mut(1))),
+        )
+    }
+    .is_ok()
 }
 
 /// Removes [`NO_TILING`] from the window. False when it had none.
@@ -461,7 +468,7 @@ pub fn unmark(w: u64) -> bool {
 #[must_use]
 pub fn is_marked(w: u64) -> bool {
     // SAFETY: the name is a static NUL-terminated string.
-    unsafe { GetPropW(hwnd(w), NO_TILING) }.0 as usize == 1
+    unsafe { GetPropW(hwnd(w), NO_TILING) }.0.addr() == 1
 }
 
 #[cfg(test)]
@@ -557,7 +564,7 @@ mod tests {
         assert!(mark(marked));
         // SAFETY: plain query on a handle this test owns.
         let value = unsafe { GetPropW(hwnd(marked), w!("NoTiling")) };
-        assert_eq!(value.0 as usize, 1);
+        assert_eq!(value.0.addr(), 1);
         assert!(is_marked(marked));
         assert!(!is_marked(plain), "a window never marked");
         assert!(unmark(marked));
