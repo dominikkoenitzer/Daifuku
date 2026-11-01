@@ -167,6 +167,8 @@ struct Daemon {
     backlog_stamps: HashMap<PathBuf, Option<std::time::SystemTime>>,
     /// Where fleets and peers open and terminals come to the front.
     desk: Box<dyn fleet::Desk>,
+    /// The fleet and peer terminals marked to keep window managers off them.
+    marked: std::collections::BTreeSet<u64>,
 }
 
 /// Runs the daemon until it is told to stop.
@@ -224,6 +226,7 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
     d.hotkeys.register(&d.config);
     d.restore();
     d.load_peers();
+    d.update_marks();
     d.refresh_borders();
     // SAFETY: a thread timer, killed before returning.
     let timer = unsafe { SetTimer(None, 0, SWEEP_MS, None) };
@@ -261,6 +264,7 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
             }
         }
         d.window_events();
+        d.update_marks();
     }
 
     // SAFETY: the timer this thread set.
@@ -271,6 +275,7 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
     // An install stops the daemon to replace it: the next one takes up its
     // fleets and agents from here.
     d.save(true);
+    d.unmark_all();
     if let Some(borders) = d.borders.take() {
         borders.stop();
     }
@@ -326,6 +331,32 @@ impl Daemon {
             idle_stale: false,
             backlog_stamps: HashMap::new(),
             desk: Box::new(fleet::Live),
+            marked: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Marks every fleet and peer terminal so window managers leave it
+    /// alone, and takes the marker off every one let go since.
+    fn update_marks(&mut self) {
+        let held: std::collections::BTreeSet<u64> = self
+            .fleets
+            .iter()
+            .flat_map(OpenFleet::windows)
+            .chain(self.peers.iter().map(|p| p.window))
+            .collect();
+        for &w in held.difference(&self.marked) {
+            self.desk.mark(w, true);
+        }
+        for &w in self.marked.difference(&held) {
+            self.desk.mark(w, false);
+        }
+        self.marked = held;
+    }
+
+    /// Takes the marker off every terminal, as the daemon lets them go.
+    fn unmark_all(&mut self) {
+        for w in std::mem::take(&mut self.marked) {
+            self.desk.mark(w, false);
         }
     }
 
@@ -4668,6 +4699,9 @@ mod tests {
         next: u64,
         focused: std::rc::Rc<std::cell::RefCell<Vec<u64>>>,
         spots: Noted<fleet::Spot>,
+        /// Hidden windows of the test's own in place of made-up ones, which
+        /// then take the real marker.
+        own: Option<Vec<crate::test_support::OwnWindow>>,
     }
 
     /// What a stand-in notes, shared with the test.
@@ -4686,6 +4720,12 @@ mod tests {
 
     impl StandIn {
         fn window(&mut self) -> u64 {
+            if let Some(own) = &mut self.own {
+                let w = crate::test_support::OwnWindow::new();
+                let id = w.0;
+                own.push(w);
+                return id;
+            }
             self.next += 1;
             self.next
         }
@@ -4746,6 +4786,13 @@ mod tests {
             self.focused.borrow_mut().push(w);
             true
         }
+
+        fn mark(&mut self, w: u64, on: bool) {
+            // A made-up id could be a real window's, which must keep its own.
+            if self.own.is_some() {
+                fleet::Live.mark(w, on);
+            }
+        }
     }
 
     /// A daemon on `config` whose desktop is a stand-in, and the windows it
@@ -4765,8 +4812,70 @@ mod tests {
             next: 0x100,
             focused: std::rc::Rc::clone(&focused),
             spots: std::rc::Rc::clone(&spots),
+            own: None,
         });
         (d, focused, spots)
+    }
+
+    /// A daemon on `config` whose fleets and peers open in hidden windows
+    /// of the test's own.
+    fn on_own_windows(config: &str) -> Daemon {
+        let mut d = daemon();
+        d.config = Config::from_json(config).unwrap();
+        d.desk = Box::new(StandIn {
+            next: 0,
+            focused: std::rc::Rc::default(),
+            spots: std::rc::Rc::default(),
+            own: Some(Vec::new()),
+        });
+        d
+    }
+
+    #[test]
+    fn fleet_and_peer_terminals_carry_the_marker_while_held() {
+        let mut d = on_own_windows(r#"{"fleets":[{"name":"crew","count":2,"hotkey":null}]}"#);
+        let open = Request::Open {
+            fleet: Some("crew".into()),
+        };
+        let said = d.control(&open);
+        assert!(matches!(said, Response::Ok { .. }), "{said:?}");
+        d.update_marks();
+        let crew: Vec<u64> = d.fleets[0].windows().collect();
+        assert_eq!(crew.len(), 2);
+        assert!(crew.iter().all(|&w| window::is_marked(w)), "adopted");
+
+        let mine = crate::test_support::OwnWindow::new();
+        d.labels.insert(mine.0, "mine".into());
+        d.update_marks();
+        assert!(!window::is_marked(mine.0), "never adopted");
+
+        d.config = Config::from_json(
+            r#"{"fleets":[{"name":"crew","count":1,"hotkey":null},{"name":"solo","hotkey":null}]}"#,
+        )
+        .unwrap();
+        let said = d.control(&open);
+        assert!(matches!(said, Response::Ok { .. }), "{said:?}");
+        d.update_marks();
+        assert!(window::is_marked(crew[0]), "kept");
+        assert!(!window::is_marked(crew[1]), "let go past the lowered count");
+
+        let said = d.control(&Request::Spawn(Spawn {
+            directory: std::env::current_dir().unwrap(),
+            fleet: Some("solo".into()),
+            ..Spawn::default()
+        }));
+        let Response::Spawned { window: peer, .. } = said else {
+            panic!("{said:?}");
+        };
+        d.update_marks();
+        assert!(window::is_marked(peer), "a peer");
+        // Not a terminal's class, so the daemon lets the peer go.
+        d.drop_closed_fleets();
+        d.update_marks();
+        assert!(!window::is_marked(peer), "a peer let go");
+
+        d.unmark_all();
+        assert!(!window::is_marked(crew[0]), "the daemon stopping");
     }
 
     const LEAD_AND_CREW: &str = r#"{"fleets":[
