@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `daifuku install` no longer fails with "could not write daifuku.exe"
+  while a terminal Daifuku opened is still open. Each such terminal runs
+  a job from the installed `daifuku.exe`, and Windows does not let a
+  running program be overwritten, so install now renames the old file
+  aside in the same folder and writes the new one. The old file goes at
+  the next install or uninstall, once nothing runs from it, or at the
+  next restart of Windows.
+- A failed `install` or `uninstall` writes its cause as one line to
+  `install.log` in the Daifuku logs folder, so a run with no console
+  still leaves the reason behind.
 - A fleet's or a peer's terminal now closes by itself when its agent ends.
   Before, the shell it ran in stayed at its prompt and the tab stayed open
   with no agent in it. The daemon waits six seconds, and keeps the tab
