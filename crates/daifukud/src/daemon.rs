@@ -225,38 +225,6 @@ struct Daemon {
     marked: std::collections::BTreeSet<u64>,
 }
 
-/// Deletes the binaries an install renamed aside because they still ran,
-/// once nothing runs from them any more. Only the daemon that runs from the
-/// install folder does, and only in that folder; install let this user
-/// delete those files and nothing else there.
-fn clear_old_binaries() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let installed = daifuku_win::paths::install_dir();
-    let Some(dir) = installed_folder(&exe, installed.as_deref()) else {
-        return;
-    };
-    let (removed, left) = daifuku_win::setup::remove_old_binaries(dir);
-    if removed + left > 0 {
-        tracing::info!(removed, left, "old binaries cleared");
-    }
-}
-
-/// The folder `exe` runs from when that is `installed`, in any case.
-fn installed_folder<'a>(
-    exe: &'a std::path::Path,
-    installed: Option<&std::path::Path>,
-) -> Option<&'a std::path::Path> {
-    let dir = exe.parent()?;
-    let same = installed.is_some_and(|i| {
-        i.to_string_lossy()
-            .trim_end_matches('\\')
-            .eq_ignore_ascii_case(dir.to_string_lossy().trim_end_matches('\\'))
-    });
-    same.then_some(dir)
-}
-
 /// Runs the daemon until it is told to stop.
 ///
 /// Logging is set up by the caller, so an error this returns still reaches
@@ -283,9 +251,6 @@ pub fn run(config_override: Option<PathBuf>, state_dir: Option<PathBuf>) -> anyh
     // next to the config; with the user's own rights, which cannot write
     // there, under the user's local app data.
     let keeps_state = config_override.is_none();
-    if keeps_state {
-        clear_old_binaries();
-    }
     let config_path = config_override
         .or_else(paths::config_file)
         .context("no ProgramData folder")?;
@@ -3726,24 +3691,6 @@ fn next_target<T: PartialEq + Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Only the daemon in the install folder clears old binaries, and only
-    /// there; one built or copied elsewhere, as the tests run, leaves its
-    /// own folder alone.
-    #[test]
-    fn only_the_installed_daemon_clears_old_binaries() {
-        use std::path::Path;
-        let installed = Path::new(r"C:\Program Files\Daifuku");
-        let exe = Path::new(r"c:\program files\daifuku\daifukud.exe");
-        let elsewhere = Path::new(r"C:\src\daifuku\target\debug\daifukud.exe");
-
-        assert_eq!(
-            installed_folder(exe, Some(installed)),
-            Some(Path::new(r"c:\program files\daifuku"))
-        );
-        assert_eq!(installed_folder(elsewhere, Some(installed)), None);
-        assert_eq!(installed_folder(exe, None), None);
-    }
 
     /// A daemon on the defaults, whose config file does not exist, with
     /// nothing hooked, registered or drawn.
