@@ -1237,7 +1237,7 @@ fn delete_after_exit(file: &Path) -> Option<String> {
 /// The name a binary that cannot be deleted while it runs is moved aside
 /// under.
 fn aside_name(name: &str) -> String {
-    format!("daifuku-old-{}-{name}", std::process::id())
+    format!("{}{}-{name}", setup::OLD_PREFIX, std::process::id())
 }
 
 /// Whether both programs are in Program Files.
@@ -1817,7 +1817,19 @@ fn stop_daemon() {
 /// case or as a short name.
 fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<()>) {
     let mut left = Vec::new();
-    for name in BINARIES {
+    // Old binaries an install renamed aside go first; one a program still
+    // runs from is moved as the binaries are.
+    let _ = setup::remove_old_binaries(dir);
+    let old = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.starts_with(setup::OLD_PREFIX).then_some(name)
+        });
+    let names: Vec<String> = BINARIES.iter().map(|&b| b.to_owned()).chain(old).collect();
+    for name in &names {
         let file = dir.join(name);
         if let Err(e) = std::fs::remove_file(&file)
             && e.kind() != std::io::ErrorKind::NotFound
@@ -1842,17 +1854,123 @@ fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<(
 
 /// Copies `exe` into `to` as `daifuku.exe`, whatever the download was
 /// called, and puts the daemon next to it as `daifukud.exe`: writes out the
-/// one `exe` carries, or copies the file next to it.
+/// one `exe` carries, or copies the file next to it. Old binaries an earlier
+/// install renamed aside are deleted first, where nothing runs from them any
+/// more.
 fn put_binaries(exe: &Path, daemon: &Daemon, to: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(to)?;
+    let _ = setup::remove_old_binaries(to);
     let [program, daemon_file] = BINARIES.map(|name| to.join(name));
-    retrying(&program, || std::fs::copy(exe, &program).map(drop))?;
+    replacing(&program, || std::fs::copy(exe, &program).map(drop))?;
     match daemon {
-        Daemon::Carried(bytes) => retrying(&daemon_file, || std::fs::write(&daemon_file, bytes)),
+        Daemon::Carried(bytes) => replacing(&daemon_file, || std::fs::write(&daemon_file, bytes)),
         Daemon::Beside(file) => {
-            retrying(&daemon_file, || std::fs::copy(file, &daemon_file).map(drop))
+            replacing(&daemon_file, || std::fs::copy(file, &daemon_file).map(drop))
         }
     }
+}
+
+/// Runs `write`, which makes `to`, as [`retrying`] does, and when `to` cannot
+/// be written because a program runs from it, renames it aside in its own
+/// folder and writes `to` again. A program that runs can be renamed on its
+/// drive though not written or deleted, and it goes on running from the new
+/// name: every peer terminal's group job runs from `daifuku.exe` for as long
+/// as the terminal is open. When the second write fails too, the old file
+/// gets its name back, so the folder never lacks a binary.
+///
+/// The old file is left for the daemon, which runs with the user's rights
+/// and clears it at its next start once nothing runs from it, as the next
+/// install and uninstall do; and Windows deletes it at the next restart if
+/// none of them has.
+fn replacing(to: &Path, mut write: impl FnMut() -> std::io::Result<()>) -> anyhow::Result<()> {
+    let Some(name) = to.file_name().and_then(|n| n.to_str()) else {
+        return retrying(to, write);
+    };
+    let aside = to.with_file_name(aside_name(name));
+    retrying(to, || match write() {
+        Err(_) if to.is_file() && std::fs::rename(to, &aside).is_ok() => match write() {
+            Ok(()) => {
+                if let Some(sid) = setup::user_sid() {
+                    let _ = setup::let_user_delete(&aside, &sid);
+                }
+                let _ = setup::delete_at_restart(&aside);
+                Ok(())
+            }
+            Err(again) => {
+                let _ = std::fs::rename(&aside, to);
+                Err(again)
+            }
+        },
+        r => r,
+    })
+}
+
+/// The file a failed install or uninstall leaves its cause in.
+const FAILURE_LOG: &str = "install.log";
+
+/// Puts why `what`, install or uninstall, failed as one line into
+/// `install.log` in Daifuku's log folder, so a run nobody watches, as an
+/// elevated one in a hidden window is, still leaves its cause on record.
+/// Writing is best effort: a log that cannot be written changes nothing.
+pub(crate) fn log_failure(what: &str, error: &anyhow::Error) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Some(dir) = failure_log_dir() {
+        let _ = append_failure(&dir, what, error, now);
+    }
+}
+
+/// Where [`log_failure`] writes. Elevated, the log folder under
+/// `C:\ProgramData\Daifuku`, and only when that folder is the locked one
+/// install makes, so no link a user planted there takes an administrator's
+/// write elsewhere. With the user's own rights, the user's own log folder.
+fn failure_log_dir() -> Option<PathBuf> {
+    if !process::current_is_elevated() {
+        return paths::log_dir(false);
+    }
+    let data = paths::data_dir()?;
+    if setup::is_locked(&data).ok()? {
+        paths::log_dir(true)
+    } else {
+        None
+    }
+}
+
+/// Appends `<UTC time> <what> failed: <error>` to [`FAILURE_LOG`] in `dir`,
+/// the error and its causes on one line, at `now`, seconds since 1970.
+fn append_failure(dir: &Path, what: &str, error: &anyhow::Error, now: u64) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let cause = format!("{error:#}").replace(['\r', '\n'], " ");
+    let line = format!("{} {what} failed: {cause}\n", utc_stamp(now));
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(FAILURE_LOG))?
+        .write_all(line.as_bytes())
+}
+
+/// `secs` since 1970 as `YYYY-MM-DDTHH:MM:SSZ`, the form the daemon's log
+/// lines start with.
+fn utc_stamp(secs: u64) -> String {
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    // Days to a civil date, counted in 400-year eras from 1 March 0000.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 /// Runs `write`, which makes `to`, again for a few seconds while it fails,
@@ -3032,6 +3150,131 @@ mod tests {
 
         put.unwrap();
         assert_eq!(std::fs::read(to.join("daifukud.exe")).unwrap(), b"MZ new");
+    }
+
+    /// Every open peer terminal runs a group job from `daifuku.exe`, which
+    /// Windows lets no one write or delete while it runs, only rename. The
+    /// install renames it aside, writes the new one, and the next install
+    /// deletes the old one once nothing runs from it.
+    #[test]
+    fn a_program_that_still_runs_is_renamed_aside_and_replaced() {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_SHARE_READ | FILE_SHARE_DELETE`, as a running image allows.
+        const RUNNING: u32 = 1 | 4;
+        let dir = Scratch::new("running");
+        let exe = dir.0.join("download.exe");
+        std::fs::write(&exe, "MZ new program").unwrap();
+        let to = dir.0.join("Daifuku");
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("daifuku.exe"), "MZ old program").unwrap();
+        let running = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(RUNNING)
+            .open(to.join("daifuku.exe"))
+            .unwrap();
+        let names = || {
+            let mut n: Vec<_> = std::fs::read_dir(&to)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            n.sort();
+            n
+        };
+
+        let put = put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to);
+        let after = names();
+        let old = to.join(aside_name("daifuku.exe"));
+        let old_text = std::fs::read(&old);
+        let again_while_running = put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to);
+        let still_there = old.is_file();
+        drop(running);
+        let again = put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to);
+
+        put.unwrap();
+        assert_eq!(
+            std::fs::read(to.join("daifuku.exe")).unwrap(),
+            b"MZ new program"
+        );
+        assert_eq!(
+            after,
+            [
+                aside_name("daifuku.exe"),
+                "daifuku.exe".to_owned(),
+                "daifukud.exe".to_owned()
+            ]
+        );
+        assert_eq!(old_text.unwrap(), b"MZ old program");
+        again_while_running.unwrap();
+        assert!(still_there, "still runs, so it stays");
+        again.unwrap();
+        assert_eq!(names(), ["daifuku.exe", "daifukud.exe"]);
+    }
+
+    /// When the new file cannot be written under the name either, the old
+    /// one gets its name back: the folder never lacks a binary.
+    #[test]
+    fn a_failed_replace_puts_the_old_file_back() {
+        let dir = Scratch::new("back");
+        let to = dir.0.join("daifuku.exe");
+        std::fs::write(&to, "MZ old").unwrap();
+
+        let r = replacing(&to, || Err(std::io::ErrorKind::PermissionDenied.into()));
+        let names: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+
+        let e = r.unwrap_err();
+        assert!(format!("{e:#}").starts_with("could not write "), "{e:#}");
+        assert_eq!(std::fs::read(&to).unwrap(), b"MZ old");
+        assert_eq!(names, ["daifuku.exe"]);
+    }
+
+    /// Uninstall deletes old binaries with the rest, so the folder goes.
+    #[test]
+    fn an_old_binary_left_from_an_install_goes_with_the_folder() {
+        let dir = Scratch::new("leftover");
+        let to = dir.0.join("Daifuku");
+        std::fs::create_dir_all(&to).unwrap();
+        for name in BINARIES {
+            std::fs::write(to.join(name), "MZ").unwrap();
+        }
+        std::fs::write(to.join(format!("{}1-daifuku.exe", setup::OLD_PREFIX)), "MZ").unwrap();
+
+        let (left, removed) = remove_binaries(&to, &dir.0);
+
+        assert!(left.is_empty(), "{left:?}");
+        removed.unwrap();
+        assert!(!to.exists());
+    }
+
+    /// A failed install leaves one plain line with its cause, each failure
+    /// on its own line, also when a cause runs over several.
+    #[test]
+    fn a_failed_install_leaves_its_cause_as_one_line_in_the_log() {
+        let dir = Scratch::new("faillog");
+        let logs = dir.0.join("logs");
+        let first = anyhow!("access denied")
+            .context(r"could not write C:\Program Files\Daifuku\daifuku.exe");
+        let second = anyhow!("the daemon did not stop\nin time");
+
+        append_failure(&logs, "install", &first, 1_794_174_612).unwrap();
+        append_failure(&logs, "uninstall", &second, 1_794_174_673).unwrap();
+        let text = std::fs::read_to_string(logs.join(FAILURE_LOG)).unwrap();
+
+        assert_eq!(
+            text,
+            "2026-11-08T21:50:12Z install failed: could not write \
+             C:\\Program Files\\Daifuku\\daifuku.exe: access denied\n\
+             2026-11-08T21:51:13Z uninstall failed: the daemon did not stop in time\n"
+        );
+    }
+
+    #[test]
+    fn times_are_written_as_utc_dates() {
+        assert_eq!(utc_stamp(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_stamp(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc_stamp(4_102_444_799), "2099-12-31T23:59:59Z");
     }
 
     #[test]

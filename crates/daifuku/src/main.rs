@@ -877,11 +877,12 @@ fn setup_result(r: anyhow::Result<()>) -> ExitCode {
 #[cfg(windows)]
 fn install_cmd(no_hooks: bool, no_start: bool) -> anyhow::Result<()> {
     install::install(&install::Options { no_hooks, no_start })
+        .inspect_err(|e| install::log_failure("install", e))
 }
 
 #[cfg(windows)]
 fn uninstall_cmd(purge: bool) -> anyhow::Result<()> {
-    install::uninstall(purge)
+    install::uninstall(purge).inspect_err(|e| install::log_failure("uninstall", e))
 }
 
 #[cfg(windows)]
