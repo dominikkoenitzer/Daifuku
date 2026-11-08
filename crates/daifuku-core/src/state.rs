@@ -879,6 +879,22 @@ mod tests {
     }
 
     #[test]
+    fn the_latest_session_in_a_state_stands_for_its_window() {
+        let mut a = Agents::new();
+        a.apply(1, &ev("a", "Stop"));
+        a.apply(1, &ev("z", "UserPromptSubmit"));
+        assert_eq!(a.latest_in(1, AgentState::Working), Some("z"));
+        a.apply(1, &ev("z", "Stop"));
+        a.apply(2, &ev("m", "Stop"));
+        assert_eq!(a.latest_in(1, AgentState::Done), Some("z"));
+        a.apply(1, &ev("a", "UserPromptSubmit"));
+        a.apply(1, &ev("a", "Stop"));
+        assert_eq!(a.latest_in(1, AgentState::Done), Some("a"));
+        assert_eq!(a.latest_in(1, AgentState::Waiting), None);
+        assert_eq!(a.latest_in(3, AgentState::Done), None);
+    }
+
+    #[test]
     fn a_rate_limit_that_resumes_by_itself_is_working_again() {
         assert_eq!(
             note("s", "quota_auto_resume_fired").transition(),
