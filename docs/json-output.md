@@ -143,7 +143,7 @@ runs.
 | `terminals[].window` | integer | Its window handle. |
 | `terminals[].label` | string | What `status` calls it, as `close --terminal` takes it; left out when it has no name. |
 | `terminals[].agent` | boolean | Whether an agent runs in it. |
-| `terminals[].problem` | string | Why no agent runs in it although its fleet's command starts one: its agent ended and something it started still runs, Windows Terminal kept it open when asked to close, or no agent reported from it in its first minute. Left out while all is well, for a plain shell, and in the seconds after its agent ended while it closes. |
+| `terminals[].problem` | string | Why no agent runs in it although its fleet's command starts one: its agent ended and something it started still runs, Windows Terminal kept it open when asked to close, or a minute passed since it opened with no agent reporting from it. Left out while all is well, for a plain shell, and in the seconds after its agent ended while it closes. |
 | `usage` | array of objects | Each account a status line reported for, most recent first (after 0.3.0). |
 | `usage[].account` | string | Its name under `accounts`; left out for a folder no account names. |
 | `usage[].folder` | string | Its Claude Code folder. |

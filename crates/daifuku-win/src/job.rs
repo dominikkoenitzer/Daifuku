@@ -5,19 +5,25 @@
 //! The job holds them all at its priority class, which none of them can
 //! raise, and Windows ends all of them when the job's last handle closes:
 //! when `daifuku group` exits, or its terminal closes. A shell or a watcher an
-//! agent left behind goes with it.
+//! agent left behind goes with it. The job is named after the group's
+//! process, so the daemon can ask it what still runs in the terminal.
 
 use std::io;
 
 use daifuku_core::config::Priority;
 use std::sync::atomic::{AtomicU32, Ordering};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_MORE_DATA, GetLastError, HANDLE, SetLastError,
+    WAIT_TIMEOUT, WIN32_ERROR,
+};
 
 use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectExtendedLimitInformation, SetInformationJobObject,
+    JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, OpenJobObjectW, QueryInformationJobObject,
+    SetInformationJobObject,
 };
 use windows::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, IDLE_PRIORITY_CLASS, INFINITE,
@@ -45,6 +51,17 @@ const CLOSE_GRACE_MS: u32 = 4000;
 /// The program the group runs, once it started.
 static CHILD: AtomicU32 = AtomicU32::new(0);
 
+/// The right to list a job's processes.
+const JOB_OBJECT_QUERY: u32 = 0x0004;
+
+/// The most processes [`members`] lists of one job.
+const MAX_MEMBERS: usize = 4096;
+
+/// The name of the job the process `pid` made, as `daifuku group` does.
+fn name_for(pid: u32) -> String {
+    format!(r"Local\Daifuku.Group.{pid}")
+}
+
 /// A job object, closed when dropped, which ends every process in it.
 pub struct Job(HANDLE);
 
@@ -55,9 +72,21 @@ impl Job {
     ///
     /// When Windows cannot make the job or set its limits.
     pub fn new(priority: Priority) -> io::Result<Self> {
-        // SAFETY: no name and no security attributes; the handle is owned
-        // by the returned value.
-        let job = Self(unsafe { CreateJobObjectW(None, None) }.map_err(io::Error::other)?);
+        let name = to_wide(&name_for(std::process::id()));
+        // SAFETY: the name is NUL terminated and there are no security
+        // attributes; the handle is owned by the returned value. A job of
+        // that name already there is another's, so this one goes unnamed.
+        let job = unsafe {
+            SetLastError(WIN32_ERROR(0));
+            let named = CreateJobObjectW(None, PCWSTR(name.as_ptr())).map_err(io::Error::other)?;
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                let _ = CloseHandle(named);
+                CreateJobObjectW(None, None).map_err(io::Error::other)?
+            } else {
+                named
+            }
+        };
+        let job = Self(job);
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags =
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PRIORITY_CLASS;
@@ -91,6 +120,55 @@ impl Job {
         // SAFETY: both handles are valid; the process one is a pseudo
         // handle that needs no closing.
         unsafe { AssignProcessToJobObject(self.0, GetCurrentProcess()) }.map_err(io::Error::other)
+    }
+}
+
+/// The processes that run in the job `daifuku group` with process id `pid`
+/// made: everything its terminal runs, down to a process whose parent ended,
+/// short of one that left the job. `None` when there is no such job, as for
+/// a terminal with no group or one an older version opened, or it cannot be
+/// read.
+#[must_use]
+pub fn members(pid: u32) -> Option<Vec<u32>> {
+    let name = to_wide(&name_for(pid));
+    // SAFETY: the name is NUL terminated; the handle is owned by `job`.
+    let job = Job(unsafe { OpenJobObjectW(JOB_OBJECT_QUERY, false, PCWSTR(name.as_ptr())) }.ok()?);
+    let start = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
+        .div_ceil(size_of::<usize>());
+    let mut room = 64;
+    loop {
+        let mut list = vec![0usize; start + room];
+        // SAFETY: the buffer is as long as the size given, and aligned for
+        // the list's fields.
+        let asked = unsafe {
+            QueryInformationJobObject(
+                Some(job.0),
+                JobObjectBasicProcessIdList,
+                list.as_mut_ptr().cast(),
+                u32::try_from(list.len() * size_of::<usize>()).ok()?,
+                None,
+            )
+        };
+        match asked {
+            Ok(()) => {
+                // SAFETY: the buffer starts with the list's header.
+                let listed = unsafe {
+                    (*list.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>())
+                        .NumberOfProcessIdsInList
+                };
+                let listed = usize::try_from(listed).ok()?.min(room);
+                return Some(
+                    list[start..start + listed]
+                        .iter()
+                        .filter_map(|&p| u32::try_from(p).ok())
+                        .collect(),
+                );
+            }
+            Err(e) if e.code() == ERROR_MORE_DATA.to_hresult() && room < MAX_MEMBERS => {
+                room *= 8;
+            }
+            Err(_) => return None,
+        }
     }
 }
 
@@ -189,6 +267,36 @@ impl Drop for Turn {
 mod tests {
     use super::*;
 
+    /// Held by each test that makes a group's job, since this process has
+    /// one name for it.
+    static NAMED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_group_s_job_lists_what_runs_in_it_and_a_second_one_goes_unnamed() {
+        use std::os::windows::io::AsRawHandle;
+        let _named = NAMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let job = Job::new(Priority::Normal).unwrap();
+        let again = Job::new(Priority::Normal).unwrap();
+        assert_eq!(members(std::process::id()), Some(Vec::new()));
+        let mut ping = std::process::Command::new("ping.exe")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // SAFETY: both handles are valid while `job` and `ping` live.
+        unsafe { AssignProcessToJobObject(job.0, HANDLE(ping.as_raw_handle())) }.unwrap();
+        assert_eq!(members(std::process::id()), Some(vec![ping.id()]));
+        drop(again);
+        assert_eq!(members(std::process::id()), Some(vec![ping.id()]));
+        // The job ends what runs in it as it closes.
+        drop(job);
+        let _ = ping.wait();
+        assert_eq!(members(std::process::id()), None);
+        assert_eq!(members(u32::MAX), None);
+    }
+
     #[test]
     fn an_ordinary_terminal_waits_at_a_queue_an_elevated_one_made() {
         let name = format!(r"Local\Daifuku.Heavy.ordinary-{}", std::process::id());
@@ -245,7 +353,9 @@ mod tests {
 
     #[test]
     fn a_job_takes_every_priority() {
-        use windows::Win32::System::JobObjects::QueryInformationJobObject;
+        let _named = NAMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (p, class) in [
             (Priority::Idle, IDLE_PRIORITY_CLASS),
             (Priority::BelowNormal, BELOW_NORMAL_PRIORITY_CLASS),
