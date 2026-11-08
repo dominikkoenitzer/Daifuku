@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2, 2026-11-09
 
 - `daifuku install` no longer fails with "could not write daifuku.exe"
   while a terminal Daifuku opened is still open. Each such terminal runs
