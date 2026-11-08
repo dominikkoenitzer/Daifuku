@@ -88,6 +88,15 @@ runs.
       "transcript_path": "C:\\src\\transcripts\\0e9b6c1a-3f42-4a8e-9a77-2b1c5d6e7f80.jsonl"
     }
   ],
+  "terminals": [
+    { "window": 1050190, "label": "agents 1", "agent": true },
+    {
+      "window": 984356,
+      "label": "agents 2",
+      "agent": false,
+      "problem": "its agent ended, and what it started still runs in it: node.exe (8120)"
+    }
+  ],
   "usage": [{
     "account": "work",
     "folder": "C:\\Users\\you\\.claude-work",
@@ -130,6 +139,11 @@ runs.
 | `peers[].label` | string | The label of the session in `session_id`, or the one it was opened with until a session reports; left out when it has none. |
 | `peers[].directory` | string | The folder it was opened in. |
 | `peers[].session_id` | string | The last session its agent reported, which `restore` resumes; left out until it reports. |
+| `terminals` | array of objects | Every terminal Daifuku opened that is still open, a fleet's or a peer, in window order (after 0.4.1). |
+| `terminals[].window` | integer | Its window handle. |
+| `terminals[].label` | string | What `status` calls it, as `close --terminal` takes it; left out when it has no name. |
+| `terminals[].agent` | boolean | Whether an agent runs in it. |
+| `terminals[].problem` | string | Why no agent runs in it although its fleet's command starts one: its agent ended and something it started still runs, Windows Terminal kept it open when asked to close, or no agent reported from it in its first minute. Left out while all is well, for a plain shell, and in the seconds after its agent ended while it closes. |
 | `usage` | array of objects | Each account a status line reported for, most recent first (after 0.3.0). |
 | `usage[].account` | string | Its name under `accounts`; left out for a folder no account names. |
 | `usage[].folder` | string | Its Claude Code folder. |
@@ -143,8 +157,8 @@ runs.
 | `usage[].warning` | boolean | Whether a window has reached `warn`. |
 
 Every field is there even when the daemon is an older version that leaves
-one out: `elevated` is then `false`, and `hotkeys`, `peers` and `usage` are
-empty.
+one out: `elevated` is then `false`, and `hotkeys`, `peers`, `terminals`
+and `usage` are empty.
 
 ### `spawn`
 
@@ -165,7 +179,8 @@ cell taken, it fails and opens nothing.
 
 `daifuku close --terminal` fails with code `daemon` when no terminal goes by
 that label or window, when a label names two, and when the terminal is
-still open after the wait.
+still open after the wait. Once it closed, what its agent started and left
+running is ended, as `stop-agents` ends it.
 
 ### `wait`
 

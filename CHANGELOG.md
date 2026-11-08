@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- A fleet's or a peer's terminal now closes by itself when its agent ends.
+  Before, the shell it ran in stayed at its prompt and the tab stayed open
+  with no agent in it. The daemon waits six seconds, and keeps the tab
+  while anything the agent started still runs in it, such as a dev server;
+  a fleet without a command, which opens a shell, is left alone, as is
+  every terminal Daifuku did not open. Nothing closes while Windows signs
+  out or shuts down, so `restore` still opens them again.
+- `daifuku close --terminal` also ends what the terminal's agent started
+  and left running, as `stop-agents` does: by process, after the terminal
+  closed, and never a process that shows a window of its own.
+- `daifuku status` lists the terminals Daifuku opened under `terminals`,
+  says how many run an agent, and names each one that should and does
+  not, with why. `daifuku doctor` warns about each, with the command that
+  closes it.
 - A label now stays with the session it was given to. Before, it stayed
   with the terminal window, so after a resume one label could show on two
   terminals, or name a job the terminal no longer ran. A terminal that

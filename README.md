@@ -145,7 +145,7 @@ once Claude Code reports its prompt idle, about a minute later.
 | `daifuku next` | focus the agent that has waited longest, then failed ones |
 | `daifuku close [fleet]` | close a fleet |
 | `daifuku close --all` | close every open fleet |
-| `daifuku close --terminal <window or label>` | close one terminal |
+| `daifuku close --terminal <window or label>` | close one terminal and end what its agent left running |
 | `daifuku stop-agents [--dry-run]` | close every agent terminal, keep its session for `restore`, end what the agents left running |
 | `daifuku status` | fleets, agents, hotkeys and each account's use of its limits |
 | `daifuku status-line [--quiet]` | report an account's limits from Claude Code's status line |
@@ -215,7 +215,9 @@ A lead with a crew: with a fleet `crew` of three stacked on the right half,
 restarts, and `restore` puts it back in the same cell. While the crew is
 open, a spawn from it with none of `--cell`, `--monitor` and `--area` takes
 a free cell too; with every cell taken, or the crew closed, it fills the
-right half. `close --terminal` closes one when its work is done.
+right half. A terminal whose agent ended closes by itself once nothing
+the agent started still runs in it; `close --terminal` closes one at any
+time, and ends what its agent left running.
 A fleet with `"resume": true` keeps every one of its terminals that way, so
 its key opens each back in its cell, resuming, after Windows restarts or
 the fleet was closed. With `daifuku status-line` as Claude Code's status
