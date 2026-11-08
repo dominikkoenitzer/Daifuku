@@ -3155,22 +3155,27 @@ mod tests {
     /// Every open peer terminal runs a group job from `daifuku.exe`, which
     /// Windows lets no one write or delete while it runs, only rename. The
     /// install renames it aside, writes the new one, and the next install
-    /// deletes the old one once nothing runs from it.
+    /// deletes the old one once nothing runs from it. A real program runs
+    /// from the file here, since a handle that allows a delete is no image:
+    /// Windows deletes such a file under it.
     #[test]
     fn a_program_that_still_runs_is_renamed_aside_and_replaced() {
-        use std::os::windows::fs::OpenOptionsExt;
-        /// `FILE_SHARE_READ | FILE_SHARE_DELETE`, as a running image allows.
-        const RUNNING: u32 = 1 | 4;
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NO_WINDOW`.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let dir = Scratch::new("running");
         let exe = dir.0.join("download.exe");
         std::fs::write(&exe, "MZ new program").unwrap();
         let to = dir.0.join("Daifuku");
         std::fs::create_dir_all(&to).unwrap();
-        std::fs::write(to.join("daifuku.exe"), "MZ old program").unwrap();
-        let running = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(RUNNING)
-            .open(to.join("daifuku.exe"))
+        let system = paths::system_dir().unwrap();
+        std::fs::copy(system.join("PING.EXE"), to.join("daifuku.exe")).unwrap();
+        let image = std::fs::read(to.join("daifuku.exe")).unwrap();
+        let mut running = std::process::Command::new(to.join("daifuku.exe"))
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
             .unwrap();
         let names = || {
             let mut n: Vec<_> = std::fs::read_dir(&to)
@@ -3184,10 +3189,11 @@ mod tests {
         let put = put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to);
         let after = names();
         let old = to.join(aside_name("daifuku.exe"));
-        let old_text = std::fs::read(&old);
+        let old_image = std::fs::read(&old);
         let again_while_running = put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to);
         let still_there = old.is_file();
-        drop(running);
+        let _ = running.kill();
+        let _ = running.wait();
         let again = put_binaries(&exe, &Daemon::Carried(b"MZ new"), &to);
 
         put.unwrap();
@@ -3203,7 +3209,7 @@ mod tests {
                 "daifukud.exe".to_owned()
             ]
         );
-        assert_eq!(old_text.unwrap(), b"MZ old program");
+        assert!(old_image.unwrap() == image, "the old program, whole");
         again_while_running.unwrap();
         assert!(still_there, "still runs, so it stays");
         again.unwrap();
