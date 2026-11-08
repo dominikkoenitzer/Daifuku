@@ -68,7 +68,7 @@ runs.
 ```json
 {
   "result": "status",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "config": "C:\\ProgramData\\Daifuku\\daifuku.json",
   "elevated": true,
   "hotkeys": ["ctrl + alt + return: open agents"],
@@ -139,7 +139,7 @@ runs.
 | `peers[].label` | string | The label of the session in `session_id`, or the one it was opened with until a session reports; left out when it has none. |
 | `peers[].directory` | string | The folder it was opened in. |
 | `peers[].session_id` | string | The last session its agent reported, which `restore` resumes; left out until it reports. |
-| `terminals` | array of objects | Every terminal Daifuku opened that is still open, a fleet's or a peer, in window order (after 0.4.1). |
+| `terminals` | array of objects | Every terminal Daifuku opened that is still open, a fleet's or a peer, in window order (since 0.4.2). |
 | `terminals[].window` | integer | Its window handle. |
 | `terminals[].label` | string | What `status` calls it, as `close --terminal` takes it; left out when it has no name. |
 | `terminals[].agent` | boolean | Whether an agent runs in it. |
@@ -357,9 +357,9 @@ As when the daemon runs elevated, or does not run.
 ```json
 {
   "result": "local_status",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "installed": true,
-  "installed_version": "0.4.1",
+  "installed_version": "0.4.2",
   "daemon_running": true,
   "logon_task": true,
   "config": "C:\\ProgramData\\Daifuku\\daifuku.json",
@@ -392,7 +392,7 @@ Fleets, agents and hotkeys come only from the daemon, so they are not in it;
 | `message` | string | The same for a person, ending in the command to run. |
 
 The exit code is 0 whatever the fields say. Without `--json` it prints the
-same on one line, such as `daifuku 0.4.1 installed, daemon running, logon
+same on one line, such as `daifuku 0.4.2 installed, daemon running, logon
 task registered, config valid (C:\ProgramData\Daifuku\daifuku.json);
 fleets, agents and hotkeys need an administrator terminal: ...`.
 
@@ -415,7 +415,7 @@ error, the line and column. Without `--json` it prints `ok    <file>` or
 
 ```json
 {
-  "version": "0.4.1",
+  "version": "0.4.2",
   "ok": false,
   "checks": [
     { "name": "installed in Program Files", "status": "ok", "fix": null },
@@ -456,7 +456,7 @@ real command's other options: `--no-hooks` and `--no-start` for install,
     { "action": "stop_daemon", "target": "daifukud", "detail": "if it runs, so its files can be replaced" },
     { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifuku.exe", "detail": "from C:\\Users\\you\\Downloads\\daifuku.exe" },
     { "action": "copy", "target": "C:\\Program Files\\Daifuku\\daifukud.exe", "detail": "carried inside C:\\Users\\you\\Downloads\\daifuku.exe" },
-    { "action": "add_app_entry", "target": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Daifuku", "detail": "Settings > Apps > Installed apps lists Daifuku 0.4.1" },
+    { "action": "add_app_entry", "target": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Daifuku", "detail": "Settings > Apps > Installed apps lists Daifuku 0.4.2" },
     { "action": "add_to_path", "target": "C:\\Program Files\\Daifuku", "detail": "the machine PATH" },
     { "action": "create_folder", "target": "C:\\ProgramData\\Daifuku", "detail": "locked to administrators" },
     { "action": "write_config", "target": "C:\\ProgramData\\Daifuku\\daifuku.json", "detail": "the starter config, writable by you" },
