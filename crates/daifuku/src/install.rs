@@ -1882,10 +1882,8 @@ fn put_binaries(exe: &Path, daemon: &Daemon, to: &Path) -> anyhow::Result<()> {
 /// as the terminal is open. When the second write fails too, the old file
 /// gets its name back, so the folder never lacks a binary.
 ///
-/// The old file is left for the daemon, which runs with the user's rights
-/// and clears it at its next start once nothing runs from it, as the next
-/// install and uninstall do; and Windows deletes it at the next restart if
-/// none of them has.
+/// The old file stays until the next install or uninstall deletes it once
+/// nothing runs from it, or Windows does at the next restart.
 fn replacing(to: &Path, mut write: impl FnMut() -> std::io::Result<()>) -> anyhow::Result<()> {
     let Some(name) = to.file_name().and_then(|n| n.to_str()) else {
         return retrying(to, write);
@@ -1894,9 +1892,6 @@ fn replacing(to: &Path, mut write: impl FnMut() -> std::io::Result<()>) -> anyho
     retrying(to, || match write() {
         Err(_) if to.is_file() && std::fs::rename(to, &aside).is_ok() => match write() {
             Ok(()) => {
-                if let Some(sid) = setup::user_sid() {
-                    let _ = setup::let_user_delete(&aside, &sid);
-                }
                 let _ = setup::delete_at_restart(&aside);
                 Ok(())
             }
