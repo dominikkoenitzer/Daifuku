@@ -431,6 +431,35 @@ pub fn delete_at_restart(path: &Path) -> std::io::Result<()> {
     .map_err(std::io::Error::from)
 }
 
+/// How the name of an installed binary starts once it was renamed aside
+/// because it still ran, so a later install or uninstall can find and
+/// delete it.
+pub const OLD_PREFIX: &str = "daifuku-old-";
+
+/// Deletes every file in `dir` whose name starts with [`OLD_PREFIX`], and
+/// returns how many went and how many stayed: one a program still runs
+/// from stays, and goes on a later try. Removing a link removes the link,
+/// not what it points to.
+#[must_use]
+pub fn remove_old_binaries(dir: &Path) -> (usize, usize) {
+    let (mut removed, mut left) = (0, 0);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let old = entry.file_name().to_string_lossy().starts_with(OLD_PREFIX);
+        if !old || entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        } else {
+            left += 1;
+        }
+    }
+    (removed, left)
+}
+
 /// The name of the lock install and uninstall hold while they change the
 /// installed binaries. One for the machine: the daemon of every session runs
 /// from the same folder.
@@ -1029,5 +1058,45 @@ mod tests {
             .unwrap();
             let _ = LocalFree(Some(HLOCAL(sd.0)));
         }
+    }
+
+    /// A file a program still holds stays and goes on a later try; files of
+    /// other names are never touched.
+    #[test]
+    fn old_binaries_go_once_nothing_holds_them() {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_SHARE_READ`.
+        const FILE_SHARE_READ: u32 = 1;
+        let dir = std::env::temp_dir().join(format!("daifuku-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = dir.join(format!("{OLD_PREFIX}7-daifuku.exe"));
+        let free = dir.join(format!("{OLD_PREFIX}7-daifukud.exe"));
+        let other = dir.join("daifuku.exe");
+        for f in [&held, &free, &other] {
+            std::fs::write(f, "MZ").unwrap();
+        }
+        let hold = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&held)
+            .unwrap();
+
+        let first = remove_old_binaries(&dir);
+        let after_first = (held.is_file(), free.exists());
+        drop(hold);
+        let second = remove_old_binaries(&dir);
+        let after_second = held.exists();
+        let other_stayed = other.is_file();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(first, (1, 1));
+        assert_eq!(after_first, (true, false));
+        assert_eq!(second, (1, 0));
+        assert!(!after_second && other_stayed);
+        assert_eq!(
+            remove_old_binaries(&dir),
+            (0, 0),
+            "no folder, nothing to do"
+        );
     }
 }
