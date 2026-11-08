@@ -1974,35 +1974,16 @@ fn a_border_goes_when_its_agent_process_is_killed() {
             status().filter(|s| s.agents.iter().all(|a| a.window != w))
         });
         steps += 1;
-        let _ = window::close(w);
-        wait_for("the tab to close", Duration::from_secs(15), || {
-            (!window::exists(w)).then_some(())
-        });
+        // Nothing of its agent runs in it any more, so Daifuku closes it.
+        closes_by_itself(w, "the killed shell's tab");
+        steps += 1;
 
         // The case as it happens: the agent ends, and the shell it ran in
         // stays, its prompt back. The agent here is a second PowerShell on
         // the tab's console that reports two seconds after the shell started.
         std::fs::remove_file(dir.join("ran-.txt")).unwrap();
         std::fs::write(dir.join("agent-me"), "").unwrap();
-        let w = spawn(&["--dir", &dir.display().to_string(), "--label", "agent"]);
-        let shell = ran_full(&dir, "").pid;
-        let agent: u32 = wait_for("the agent's process id", Duration::from_secs(20), || {
-            std::fs::read_to_string(dir.join("agent-pid.txt"))
-                .ok()
-                .and_then(|t| t.trim().parse().ok())
-        });
-        let border = wait_for(
-            "a border around the agent's tab",
-            Duration::from_secs(20),
-            || {
-                status()?
-                    .agents
-                    .iter()
-                    .any(|a| a.window == w && a.state.name() == "waiting")
-                    .then(|| border_around(w))
-                    .flatten()
-            },
-        );
+        let (w, shell, agent, border) = agent_tab(&dir, "agent");
         let _ = Command::new("taskkill")
             .args(["/F", "/PID", &agent.to_string()])
             .output();
@@ -2011,20 +1992,135 @@ fn a_border_goes_when_its_agent_process_is_killed() {
             Duration::from_secs(15),
             || (!window::is_shown(border)).then_some(()),
         );
-        assert!(
-            alive(shell) && window::exists(w),
-            "the shell and its tab stay"
-        );
         wait_for("the agent to be forgotten", Duration::from_secs(5), || {
             status().filter(|s| s.agents.iter().all(|a| a.window != w))
         });
         steps += 1;
-        let _ = window::close(w);
+        // The shell is still at its prompt, but its agent is gone: the tab
+        // closes, and the shell with it.
+        closes_by_itself(w, "the ended agent's tab");
+        wait_for(
+            "the shell to end with its tab",
+            Duration::from_secs(5),
+            || (!alive(shell)).then_some(()),
+        );
+        steps += 1;
+
+        // An agent that ended and left a ping running: the tab stays while
+        // the ping runs, and says why.
+        std::fs::remove_file(dir.join("ran-.txt")).unwrap();
+        std::fs::remove_file(dir.join("agent-pid.txt")).unwrap();
+        std::fs::write(dir.join("leftover-me"), "").unwrap();
+        let (w, _, agent, _) = agent_tab(&dir, "held");
+        let leftover = leftover_pid(&dir);
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &agent.to_string()])
+            .output();
+        let problem = wait_for(
+            "the tab to say what its agent left running",
+            Duration::from_secs(20),
+            || {
+                status()?
+                    .terminals
+                    .into_iter()
+                    .find(|t| t.window == w)?
+                    .problem
+                    .filter(|p| {
+                        p.to_ascii_lowercase()
+                            .contains(&format!("ping.exe ({leftover})"))
+                    })
+            },
+        );
+        assert!(problem.starts_with("its agent ended"), "{problem}");
+        assert!(
+            window::exists(w),
+            "a tab whose agent left a process is kept"
+        );
+        let doctor = run(&["doctor"]);
+        assert!(
+            doctor.contains("close it with `daifuku close --terminal \"held\"`"),
+            "{doctor}"
+        );
+        steps += 1;
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &leftover.to_string()])
+            .output();
+        closes_by_itself(w, "the tab once what its agent left ended");
+        steps += 1;
+
+        // One command stops an agent: its tab closes, and what the agent
+        // started goes with it.
+        std::fs::remove_file(dir.join("ran-.txt")).unwrap();
+        std::fs::remove_file(dir.join("agent-pid.txt")).unwrap();
+        std::fs::remove_file(dir.join("leftover-pid.txt")).unwrap();
+        let (w, shell, agent, _) = agent_tab(&dir, "stopped");
+        let leftover = leftover_pid(&dir);
+        let closed = run(&["close", "--terminal", "stopped"]);
+        assert!(closed.contains("closed stopped"), "{closed}");
+        assert!(!window::exists(w));
+        wait_for(
+            "the agent, its shell and its ping to end",
+            Duration::from_secs(5),
+            || {
+                [agent, shell, leftover]
+                    .iter()
+                    .all(|&p| !alive(p))
+                    .then_some(())
+            },
+        );
+        steps += 1;
+        std::fs::remove_file(dir.join("leftover-me")).unwrap();
+        std::fs::remove_file(dir.join("agent-me")).unwrap();
     }
 
     stop(&mut cleanup);
     let _ = std::fs::remove_dir_all(&dir);
     println!("e2e: {steps} steps passed");
+}
+
+/// Waits for Daifuku to close terminal `w`, `what`, by itself: its agent's
+/// end is noticed within a sweep, and it closes once nothing of the agent
+/// runs in it six seconds later.
+fn closes_by_itself(w: u64, what: &str) {
+    wait_for(
+        &format!("{what} to close by itself"),
+        Duration::from_secs(20),
+        || (!window::exists(w)).then_some(()),
+    );
+}
+
+/// A peer labelled `label` in `dir`, opened with `agent-me` there: its tab,
+/// its shell, its agent and the border around it once the agent waits.
+fn agent_tab(dir: &Path, label: &str) -> (u64, u32, u32, u64) {
+    let w = spawn(&["--dir", &dir.display().to_string(), "--label", label]);
+    let shell = ran_full(dir, "").pid;
+    let agent: u32 = wait_for("the agent's process id", Duration::from_secs(20), || {
+        std::fs::read_to_string(dir.join("agent-pid.txt"))
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+    });
+    let border = wait_for(
+        "a border around the agent's tab",
+        Duration::from_secs(20),
+        || {
+            status()?
+                .agents
+                .iter()
+                .any(|a| a.window == w && a.state.name() == "waiting")
+                .then(|| border_around(w))
+                .flatten()
+        },
+    );
+    (w, shell, agent, border)
+}
+
+/// The ping an agent opened with `leftover-me` in `dir` started.
+fn leftover_pid(dir: &Path) -> u32 {
+    wait_for("the agent's ping", Duration::from_secs(20), || {
+        std::fs::read_to_string(dir.join("leftover-pid.txt"))
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+    })
 }
 
 /// `daifuku spawn` with `args`, as the daemon answered it.

@@ -1742,11 +1742,19 @@ impl Daemon {
     }
 
     /// Whether Daifuku opened terminal `w` to run an agent: it is a fleet's
-    /// or a peer, and its fleet has a command. A plain shell is left open.
+    /// or a peer, and its fleet has a command. A peer opened without a fleet
+    /// took the first one's, as `spawn` does. A plain shell is left open.
     fn runs_agents(&self, w: u64) -> bool {
-        self.fleet_of(w)
-            .and_then(|name| self.config.fleet(&name))
-            .is_some_and(|f| f.command.is_some())
+        let runs = |f: &daifuku_core::config::Fleet| f.command.is_some();
+        if let Some(name) = self.fleet_of(w) {
+            return self.config.fleet(&name).is_some_and(runs);
+        }
+        self.peers.iter().any(|p| p.window == w)
+            && self
+                .config
+                .fleets
+                .first()
+                .map_or_else(|| runs(&daifuku_core::config::Fleet::default()), runs)
     }
 
     /// Watches agent process `agent`, which reported from terminal `w`, so
@@ -4100,6 +4108,7 @@ mod tests {
             },
             daifuku_core::config::Fleet {
                 name: "plain".into(),
+                command: None,
                 ..daifuku_core::config::Fleet::default()
             },
         ];
@@ -4265,6 +4274,20 @@ mod tests {
         assert!(d.residents.is_empty());
         resident(&mut d, 7, agent);
         assert_eq!(d.residents[&agent].window, 7);
+
+        // A peer opened without a fleet runs the first fleet's command.
+        let mut d = crew_daemon();
+        d.peers.push(Peer {
+            window: 10,
+            spawn: Spawn {
+                directory: std::env::temp_dir(),
+                ..Spawn::default()
+            },
+        });
+        assert!(d.runs_agents(10));
+        d.config.fleets.swap(0, 1);
+        assert!(!d.runs_agents(10), "the first fleet opens a shell");
+        assert!(d.runs_agents(7), "a fleet's own terminal");
     }
 
     #[test]
