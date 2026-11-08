@@ -15,7 +15,7 @@ use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
 use daifuku_win::terminal::WINDOW_CLASS;
-use daifuku_win::{access, clock, dpi, paths, process, saver, window};
+use daifuku_win::{access, clock, dpi, job, paths, process, saver, window};
 use windows::Win32::UI::Shell::{QUNS_NOT_PRESENT, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
@@ -1239,7 +1239,9 @@ impl Daemon {
         let mut windowed = shown_window_owners();
         let mut found = self.started_by_agents(&[w], &windowed);
         if let Some(left) = self.left.get(&w) {
-            for (p, at) in process::started_by(&process::snapshot(), process::started, &left.chain)
+            let shown = |p: u32| windowed.contains(&p);
+            for (p, at) in
+                process::started_by(&process::snapshot(), process::started, &left.chain, shown)
             {
                 if !found.iter().any(|(_, f, _)| f.pid == p.pid) {
                     found.push((w, p, at));
@@ -1857,7 +1859,14 @@ impl Daemon {
             if !look {
                 continue;
             }
-            let still = process::started_by(&process::snapshot(), process::started, &left.chain);
+            // The last of the chain is the group the terminal runs in, if it
+            // has one: its job knows what still runs there.
+            let group = left
+                .chain
+                .last()
+                .filter(|&&(pid, at)| process::runs(pid, at))
+                .and_then(|&(pid, _)| job::members(pid));
+            let still = still_running(&process::snapshot(), process::started, &left.chain, group);
             if still.is_empty() {
                 if close(w) {
                     tracing::info!(
@@ -3352,6 +3361,29 @@ fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
     named.filter(|p| sender.iter().skip(1).any(|s| s == p))
 }
 
+/// What still runs in a terminal whose agent ended, each with when it
+/// started by `started`, of the processes in `all`: the members of its
+/// group's job, `group`, short of `chain`, the agent and what it ran under.
+/// That finds a dev server whose parent ended as well. With no job to ask,
+/// what `chain` started, down the process tree.
+fn still_running(
+    all: &HashMap<u32, process::Proc>,
+    started: impl Fn(u32) -> Option<u64>,
+    chain: &[(u32, u64)],
+    group: Option<Vec<u32>>,
+) -> Vec<(process::Proc, u64)> {
+    let Some(mut members) = group else {
+        return process::started_by(all, started, chain, |_| false);
+    };
+    members.sort_unstable();
+    members.dedup();
+    members
+        .into_iter()
+        .filter_map(|pid| Some((all.get(&pid)?.clone(), started(pid)?)))
+        .filter(|(p, at)| !chain.contains(&(p.pid, *at)))
+        .collect()
+}
+
 /// The agent `agent` and the processes it runs under, each with when it
 /// started by `started`, from `sender`, a hook's chain of processes, the
 /// hook first: from the agent up to `terminal`, the process that shows its
@@ -4134,6 +4166,55 @@ mod tests {
     /// hook, the agent, and 1 as the terminal's process.
     fn resident(d: &mut Daemon, w: u64, agent: u32) {
         d.note_resident(w, agent, &[99, agent, 1], 1);
+    }
+
+    #[test]
+    fn what_runs_in_a_terminal_comes_from_its_group_s_job_when_it_has_one() {
+        // The agent 10 ran under the shell 20, in the group 30. The shell
+        // started 40; 50 runs in the job, but its parent 90 ended; 60 is
+        // nobody's.
+        let proc = |pid: u32, parent: u32| process::Proc {
+            pid,
+            parent,
+            name: format!("{pid}.exe"),
+        };
+        let all: HashMap<u32, process::Proc> = [
+            proc(20, 30),
+            proc(30, 1),
+            proc(40, 20),
+            proc(50, 90),
+            proc(60, 1),
+        ]
+        .into_iter()
+        .map(|p| (p.pid, p))
+        .collect();
+        let started = |pid: u32| Some(u64::from(pid) * 10);
+        let chain = [(10, 100), (20, 200), (30, 300)];
+        let pids = |found: Vec<(process::Proc, u64)>| -> Vec<u32> {
+            found.into_iter().map(|(p, _)| p.pid).collect()
+        };
+        assert_eq!(
+            pids(still_running(
+                &all,
+                started,
+                &chain,
+                Some(vec![50, 30, 20, 40, 50])
+            )),
+            [40, 50]
+        );
+        assert!(still_running(&all, started, &chain, Some(vec![30, 20])).is_empty());
+        // A process given the shell's id after it ended is not the shell.
+        assert_eq!(
+            pids(still_running(
+                &all,
+                started,
+                &[(10, 100), (20, 150)],
+                Some(vec![20])
+            )),
+            [20]
+        );
+        // With no job, the tree: the process whose parent ended is missed.
+        assert_eq!(pids(still_running(&all, started, &chain, None)), [40]);
     }
 
     /// Runs [`Daemon::close_left`] as a sweep would `after` the agent was

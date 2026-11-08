@@ -251,12 +251,14 @@ pub fn descendants(
 /// so on down, the chain's own left out, each with when it started by
 /// `started`. Each process of the chain comes with when it started, so the
 /// children of one that ended are still told by its id: they started after
-/// it, and before any later process given the same id.
+/// it, and before any later process given the same id. The children of a
+/// process `spare` names are left out, as by [`descendants`].
 #[must_use]
 pub fn started_by(
     all: &HashMap<u32, Proc>,
     started: impl Fn(u32) -> Option<u64>,
     chain: &[(u32, u64)],
+    spare: impl Fn(u32) -> bool,
 ) -> Vec<(Proc, u64)> {
     let own = |pid: u32| chain.iter().any(|&(p, _)| p == pid);
     let mut roots: Vec<u32> = Vec::new();
@@ -277,7 +279,7 @@ pub fn started_by(
     }
     roots.sort_unstable();
     roots.dedup();
-    descendants(all, started, |_| false, &roots)
+    descendants(all, started, spare, &roots)
         .into_iter()
         .filter(|(p, _)| !own(p.pid))
         .collect()
@@ -887,12 +889,16 @@ mod tests {
             80 => Some(150),
             _ => None,
         };
-        let found: Vec<u32> = started_by(&all, when, &[(20, 200), (10, 100)])
-            .into_iter()
-            .map(|(p, _)| p.pid)
-            .collect();
-        assert_eq!(found, [30, 50, 40]);
-        assert!(started_by(&all, when, &[(10, 100), (50, 500)]).is_empty());
+        let found = |spare: u32| -> Vec<u32> {
+            started_by(&all, when, &[(20, 200), (10, 100)], |p| p == spare)
+                .into_iter()
+                .map(|(p, _)| p.pid)
+                .collect()
+        };
+        assert_eq!(found(0), [30, 50, 40]);
+        // 30 shows a window: it is found, what it started is not.
+        assert_eq!(found(30), [30, 50]);
+        assert!(started_by(&all, when, &[(10, 100), (50, 500)], |_| false).is_empty());
     }
 
     #[test]
