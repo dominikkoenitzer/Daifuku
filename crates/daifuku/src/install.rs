@@ -1857,15 +1857,19 @@ fn remove_binaries(dir: &Path, aside: &Path) -> (Vec<PathBuf>, std::io::Result<(
 /// one `exe` carries, or copies the file next to it. Old binaries an earlier
 /// install renamed aside are deleted first, where nothing runs from them any
 /// more.
+///
+/// Only the program is renamed aside when it runs: the daemon was told to
+/// stop, and one that still holds its file after the wait has not stopped,
+/// so the install fails rather than start a second daemon beside it.
 fn put_binaries(exe: &Path, daemon: &Daemon, to: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(to)?;
     let _ = setup::remove_old_binaries(to);
     let [program, daemon_file] = BINARIES.map(|name| to.join(name));
     replacing(&program, || std::fs::copy(exe, &program).map(drop))?;
     match daemon {
-        Daemon::Carried(bytes) => replacing(&daemon_file, || std::fs::write(&daemon_file, bytes)),
+        Daemon::Carried(bytes) => retrying(&daemon_file, || std::fs::write(&daemon_file, bytes)),
         Daemon::Beside(file) => {
-            replacing(&daemon_file, || std::fs::copy(file, &daemon_file).map(drop))
+            retrying(&daemon_file, || std::fs::copy(file, &daemon_file).map(drop))
         }
     }
 }
