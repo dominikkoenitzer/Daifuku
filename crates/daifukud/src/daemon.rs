@@ -534,6 +534,17 @@ impl Daemon {
             );
             return None;
         };
+        self.report(w, message, sender, answering)
+    }
+
+    /// [`Daemon::hook`] for the terminal window `w` the hook led to.
+    fn report(
+        &mut self,
+        w: u64,
+        message: &HookMessage,
+        sender: &[u32],
+        answering: Option<&ipc::Asking>,
+    ) -> Option<String> {
         if self.agents.window_state(w).is_none() {
             // The first report from a window says which window the hook
             // resolved to, which is the one thing a hook can get wrong.
