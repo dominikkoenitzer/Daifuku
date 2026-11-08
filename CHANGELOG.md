@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A label now stays with the session it was given to. Before, it stayed
+  with the terminal window, so after a resume one label could show on two
+  terminals, or name a job the terminal no longer ran. A terminal that
+  resumes a labelled session now shows its label, and a peer that moves
+  on to another session leaves its label with the one it named.
+- `daifuku status` no longer shows a session a terminal has left. When an
+  agent started or resumed another session, as `/resume` does, the old
+  one stayed with the terminal and could still be the `session_id`
+  shown, even with no transcript of its own. The new session now ends
+  every other session of the same agent.
 - Fleet and peer terminals carry the window property `NoTiling` (value 1)
   while the daemon holds them, so a tiling window manager can leave them in
   their cells. The daemon sets it as soon as it finds a new terminal and

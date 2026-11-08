@@ -247,6 +247,10 @@ struct Session<W> {
     /// by an older version.
     #[serde(default)]
     detail: Detail,
+    /// The agent process it last reported from, when its hook named one;
+    /// missing from a file saved by an older version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    process: Option<u32>,
 }
 
 /// What a session last reported about itself, for `daifuku status`. Each
@@ -343,6 +347,14 @@ impl<W: Ord + Copy> Agents<W> {
     /// whether any window's state changed as a result. An event with a
     /// session or subagent id longer than any agent's is dropped.
     pub fn apply(&mut self, window: W, event: &HookEvent) -> bool {
+        self.apply_from(window, None, event)
+    }
+
+    /// [`Agents::apply`] for an event from agent process `process`, when the
+    /// hook named it. An agent runs one session at a time: a session it
+    /// starts or resumes, as `/resume` does, replaces every other session it
+    /// reported, which may never send its own end.
+    pub fn apply_from(&mut self, window: W, process: Option<u32>, event: &HookEvent) -> bool {
         let too_long = event.session_id.len() > MAX_SESSION_ID
             || event
                 .agent_id
@@ -353,6 +365,7 @@ impl<W: Ord + Copy> Agents<W> {
         }
         let before = self.window_state(window);
         let moved_from = self.sessions.get(&event.session_id).map(|s| s.window);
+        let mut replaced = false;
         match event.transition() {
             Transition::Ignore => return false,
             Transition::End => {
@@ -408,6 +421,7 @@ impl<W: Ord + Copy> Agents<W> {
                         since: tick,
                         at: None,
                         detail: Detail::default(),
+                        process: None,
                     });
                 let shown = entry.shown();
                 let thread = event.agent_id.clone().unwrap_or_default();
@@ -433,13 +447,22 @@ impl<W: Ord + Copy> Agents<W> {
                 entry.window = window;
                 entry.at = entry.at.max(event.daifuku_at);
                 entry.detail.note(event);
+                entry.process = process.or(entry.process);
+                if let Some(pid) = process
+                    && event.hook_event_name == "SessionStart"
+                {
+                    let count = self.sessions.len();
+                    self.sessions
+                        .retain(|id, s| *id == event.session_id || s.process != Some(pid));
+                    replaced = self.sessions.len() != count;
+                }
             }
         }
         let changed_here = self.window_state(window) != before;
         // A session that reports from a new window (a tab dragged out into a
         // window of its own) also changes the window it left.
         let changed_there = moved_from.is_some_and(|w| w != window);
-        changed_here || changed_there
+        changed_here || changed_there || replaced
     }
 
     /// Whether an event was sent before one already applied for its session,
@@ -487,6 +510,12 @@ impl<W: Ord + Copy> Agents<W> {
     #[must_use]
     pub fn session_state(&self, session_id: &str) -> Option<AgentState> {
         self.sessions.get(session_id).map(Session::shown)
+    }
+
+    /// The window a session runs in, or `None` when it is not known.
+    #[must_use]
+    pub fn session_window(&self, session_id: &str) -> Option<W> {
+        self.sessions.get(session_id).map(|s| s.window)
     }
 
     /// What a session last said about itself, or `None` when it is not
@@ -628,6 +657,42 @@ mod tests {
         assert!(!a.knows("b"));
         a.apply(1, &ev("a", "SessionEnd"));
         assert!(!a.knows("a"));
+    }
+
+    fn start(session: &str, source: &str) -> HookEvent {
+        HookEvent {
+            source: Some(source.into()),
+            ..ev(session, "SessionStart")
+        }
+    }
+
+    #[test]
+    fn a_session_its_agent_starts_or_resumes_replaces_the_one_it_ran() {
+        let mut a = Agents::new();
+        a.apply_from(1, Some(40), &start("before", "startup"));
+        a.apply_from(1, Some(41), &start("tab", "startup"));
+        a.apply_from(1, Some(40), &ev("before", "Stop"));
+        assert!(
+            a.apply_from(1, Some(40), &start("resumed", "resume")),
+            "a session left the window"
+        );
+        assert!(!a.knows("before"), "its agent runs another session now");
+        assert!(a.knows("tab"), "another tab's agent runs on");
+        assert!(a.knows("resumed"));
+        assert_eq!(a.session_window("resumed"), Some(1));
+    }
+
+    #[test]
+    fn only_a_start_from_the_same_agent_replaces_a_session() {
+        let mut a = Agents::new();
+        a.apply_from(1, Some(40), &start("before", "startup"));
+        a.apply_from(1, Some(40), &ev("other", "PreToolUse"));
+        a.apply_from(1, None, &start("unnamed", "startup"));
+        a.apply(1, &start("old-hook", "startup"));
+        a.apply_from(1, Some(40), &start("before", "compact"));
+        for session in ["before", "other", "unnamed", "old-hook"] {
+            assert!(a.knows(session), "{session}");
+        }
     }
 
     fn ev(session: &str, name: &str) -> HookEvent {

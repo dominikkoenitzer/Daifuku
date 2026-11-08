@@ -86,8 +86,13 @@ struct Daemon {
     agent_processes:
         std::collections::HashMap<u32, (process::Watch, std::collections::BTreeSet<String>)>,
     /// Labels `daifuku label` gave terminals that are not peers, whose
-    /// labels live in their [`Spawn`].
+    /// labels live in their [`Spawn`], before a session reported from them.
+    /// The first session to report takes its terminal's label.
     labels: std::collections::HashMap<u64, String>,
+    /// The labels of sessions that no peer holds, oldest first, at most
+    /// [`MAX_SESSIONS`]. A label names a session's job, so it goes with
+    /// the session to whatever terminal resumes it.
+    session_labels: VecDeque<(String, String)>,
     /// Peers that were open when Windows last stopped, for `daifuku restore`
     /// to open again.
     dormant: Vec<Spawn>,
@@ -298,6 +303,7 @@ impl Daemon {
             peers: Vec::new(),
             agent_processes: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
+            session_labels: VecDeque::new(),
             dormant: Vec::new(),
             dormant_boot: 0,
             closed: Vec::new(),
@@ -534,6 +540,17 @@ impl Daemon {
             );
             return None;
         };
+        self.report(w, message, sender, answering)
+    }
+
+    /// [`Daemon::hook`] for the terminal window `w` the hook led to.
+    fn report(
+        &mut self,
+        w: u64,
+        message: &HookMessage,
+        sender: &[u32],
+        answering: Option<&ipc::Asking>,
+    ) -> Option<String> {
         if self.agents.window_state(w).is_none() {
             // The first report from a window says which window the hook
             // resolved to, which is the one thing a hook can get wrong.
@@ -556,10 +573,15 @@ impl Daemon {
         let agent = trusted_agent(message.pid, sender);
         self.note_peer_session(w, session, agent);
         let before = self.agents.session_state(session);
-        let changed = self.agents.apply(w, &message.event);
+        let changed = self.agents.apply_from(w, agent, &message.event);
         let now = self.agents.session_state(session);
         if changed || now != before {
             self.note_states();
+        }
+        if now.is_some()
+            && let Some(label) = self.labels.remove(&w)
+        {
+            self.set_session_label(session, Some(label));
         }
         if let Some(pid) = agent
             && now.is_some()
@@ -1386,7 +1408,10 @@ impl Daemon {
             {
                 Some(Spawn {
                     directory: PathBuf::from(directory),
-                    label: self.labels.get(&w).cloned(),
+                    label: self
+                        .session_label(&session)
+                        .map(str::to_owned)
+                        .or_else(|| self.labels.get(&w).cloned()),
                     resume: Some(session),
                     fleet: Some(cell.fleet.clone()),
                     cell: Some(peer::Cell::At(cell.cell)),
@@ -1960,10 +1985,18 @@ impl Daemon {
         forgot
     }
 
-    /// What to call terminal `w`: the label `daifuku label` or `spawn` gave
-    /// it, else its fleet's name and its number in the fleet, a peer in a
-    /// fleet's cell included.
+    /// What to call terminal `w`: the label of the session it runs, else
+    /// the label `daifuku label` or `spawn` gave it while its own session
+    /// runs nowhere else, else its fleet's name and its number in the
+    /// fleet, a peer in a fleet's cell included.
     fn label_of(&self, w: u64) -> Option<String> {
+        if let Some(label) = self
+            .sessions_in(w)
+            .iter()
+            .find_map(|s| self.session_label(s))
+        {
+            return Some(label.to_owned());
+        }
         if let Some(label) = self.labels.get(&w) {
             return Some(label.clone());
         }
@@ -1971,6 +2004,13 @@ impl Daemon {
             .peers
             .iter()
             .find(|p| p.window == w)
+            .filter(|p| {
+                p.spawn
+                    .resume
+                    .as_deref()
+                    .and_then(|s| self.agents.session_window(s))
+                    .is_none_or(|other| other == w)
+            })
             .and_then(|p| p.spawn.label.clone())
         {
             return Some(label);
@@ -1983,8 +2023,98 @@ impl Daemon {
         })
     }
 
-    /// Gives terminal `w` a label, or takes it away with `None`. A peer's
-    /// label is kept with it across a restart.
+    /// The sessions terminal `w` runs, the one whose state it shows first.
+    fn sessions_in(&self, w: u64) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .agents
+            .window_state(w)
+            .and_then(|state| shown_session(&self.agents, w, state))
+            .into_iter()
+            .collect();
+        for (id, window, _) in self.agents.sessions() {
+            if window == w && !out.iter().any(|s| s == id) {
+                out.push(id.to_owned());
+            }
+        }
+        out
+    }
+
+    /// The label of `session`: the one it was given outside any peer, else
+    /// the label of the peer that runs it.
+    fn session_label(&self, session: &str) -> Option<&str> {
+        self.session_labels
+            .iter()
+            .find(|(s, _)| s == session)
+            .map(|(_, label)| label.as_str())
+            .or_else(|| {
+                self.peers
+                    .iter()
+                    .find(|p| p.spawn.resume.as_deref() == Some(session))
+                    .and_then(|p| p.spawn.label.as_deref())
+            })
+    }
+
+    /// Gives `session` a label outside any peer, or takes it away with
+    /// `None`.
+    fn set_session_label(&mut self, session: &str, label: Option<String>) {
+        self.session_labels.retain(|(s, _)| s != session);
+        if let Some(label) = label {
+            if self.session_labels.len() >= MAX_SESSIONS {
+                self.session_labels.pop_front();
+            }
+            self.session_labels.push_back((session.to_owned(), label));
+        }
+    }
+
+    /// Takes away the label `session` has outside any peer, and returns it.
+    fn take_session_label(&mut self, session: &str) -> Option<String> {
+        let i = self.session_labels.iter().position(|(s, _)| s == session)?;
+        self.session_labels.remove(i).map(|(_, label)| label)
+    }
+
+    /// Takes away the labels of `sessions`, a peer's included.
+    fn drop_session_labels(&mut self, sessions: &[String]) {
+        self.session_labels
+            .retain(|(s, _)| !sessions.iter().any(|other| other == s));
+        let mut changed = false;
+        for p in &mut self.peers {
+            if p.spawn.label.is_some()
+                && p.spawn
+                    .resume
+                    .as_ref()
+                    .is_some_and(|r| sessions.contains(r))
+            {
+                p.spawn.label = None;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_peers();
+        }
+    }
+
+    /// Notes `session` as the one peer `i` runs now. The peer's label stays
+    /// with the session it named when the peer moves on to another, which
+    /// brings its own label, if it has one.
+    fn peer_moved_on(&mut self, i: usize, session: &str) {
+        let carried = self.take_session_label(session);
+        let spawn = &mut self.peers[i].spawn;
+        match spawn.resume.replace(session.to_owned()) {
+            Some(left) if left != session => {
+                let label = std::mem::replace(&mut spawn.label, carried);
+                self.set_session_label(&left, label);
+            }
+            _ => {
+                if spawn.label.is_none() {
+                    spawn.label = carried;
+                }
+            }
+        }
+    }
+
+    /// Gives terminal `w` a label, or takes it away with `None`. The label
+    /// goes to the session the terminal runs, or else to the first one that
+    /// reports from it. A peer's label is kept with it across a restart.
     fn label(&mut self, w: u64, label: Option<&str>) -> Response {
         if let Some(text) = label
             && let Some(problem) = (Spawn {
@@ -1998,13 +2128,22 @@ impl Daemon {
         if !window::exists(w) {
             return Response::error(format!("there is no window {w:#010x}"));
         }
-        if let Some(p) = self.peers.iter_mut().find(|p| p.window == w) {
-            p.spawn.label = label.map(str::to_owned);
+        let mut sessions = self.sessions_in(w);
+        if let Some(i) = self.peers.iter().position(|p| p.window == w) {
+            sessions.extend(self.peers[i].spawn.resume.clone());
+            self.drop_session_labels(&sessions);
+            self.peers[i].spawn.label = label.map(str::to_owned);
             self.save_peers();
-        } else if let Some(text) = label {
-            self.labels.insert(w, text.to_owned());
-        } else {
-            self.labels.remove(&w);
+            return Response::ok();
+        }
+        self.drop_session_labels(&sessions);
+        self.labels.remove(&w);
+        match (label, sessions.first()) {
+            (Some(text), Some(session)) => self.set_session_label(session, Some(text.to_owned())),
+            (Some(text), None) => {
+                self.labels.insert(w, text.to_owned());
+            }
+            (None, _) => {}
         }
         Response::ok()
     }
@@ -2052,16 +2191,18 @@ impl Daemon {
             return;
         }
         if let Some(i) = i {
-            self.peers[i].spawn.resume = Some(session.to_owned());
+            self.peer_moved_on(i, session);
         } else if let Some((fleet, n, directory)) = cell {
             // A terminal of a fleet that resumes becomes a peer in its cell,
             // kept as `daifuku spawn` keeps one.
             tracing::info!(window = format!("{w:#x}"), %fleet, cell = n, "kept a fleet terminal with its session");
+            let carried = self.take_session_label(session);
+            let label = self.labels.remove(&w).or(carried);
             self.peers.push(Peer {
                 window: w,
                 spawn: Spawn {
                     directory,
-                    label: self.labels.remove(&w),
+                    label,
                     resume: Some(session.to_owned()),
                     fleet: Some(fleet),
                     cell: Some(peer::Cell::At(n)),
@@ -2542,6 +2683,15 @@ impl Daemon {
         match opened {
             Ok(window) => {
                 tracing::info!(window = format!("{window:#x}"), label = ?spawn.label, fleet = ?in_fleet, "spawned a peer");
+                // The session it resumes brings its label, unless it was
+                // given one.
+                if let Some(session) = kept.resume.clone() {
+                    let carried = self.take_session_label(&session);
+                    if kept.label.is_none() {
+                        kept.label = carried;
+                    }
+                }
+                let label = kept.label.clone();
                 self.peers.push(Peer {
                     window,
                     spawn: kept,
@@ -2555,7 +2705,7 @@ impl Daemon {
                 };
                 Response::Spawned {
                     window,
-                    label: spawn.label.clone(),
+                    label,
                     fleet,
                     cell,
                     monitor,
@@ -3329,6 +3479,121 @@ mod tests {
         assert_eq!(a.last_tool.as_deref(), Some("Bash"));
         assert_eq!(a.last_message.as_deref(), Some("may I run Bash"));
         assert_eq!(a.transcript_path.as_deref(), Some(r"C:\t\asks.jsonl"));
+    }
+
+    /// What the hook of agent process `pid` sends when it starts `session`
+    /// in terminal `w`, `source` saying how.
+    fn session_start(w: u64, pid: u32, session: &str, source: &str) -> HookMessage {
+        HookMessage {
+            window: w,
+            event: daifuku_core::state::HookEvent {
+                session_id: session.into(),
+                hook_event_name: "SessionStart".into(),
+                source: Some(source.into()),
+                ..daifuku_core::state::HookEvent::default()
+            },
+            pid: Some(pid),
+            ask: false,
+        }
+    }
+
+    #[test]
+    fn status_shows_the_session_a_terminal_resumed_not_the_one_it_left() {
+        let mut d = daemon();
+        // A new session that never wrote a transcript, left by `/resume` for
+        // one whose id sorts after it.
+        d.report(5, &session_start(5, 40, "0-new", "startup"), &[1, 40], None);
+        d.report(5, &session_start(5, 40, "9-old", "resume"), &[1, 40], None);
+        let status = d.status();
+        let a = status.agents.iter().find(|a| a.window == 5).unwrap();
+        assert_eq!(a.session_id.as_deref(), Some("9-old"));
+        assert!(!d.agents.knows("0-new"));
+    }
+
+    /// Agent process `pid` in terminal `w` starts `session`, `source` saying
+    /// how, its hook run under it.
+    fn start(d: &mut Daemon, w: u64, pid: u32, session: &str, source: &str) {
+        d.report(w, &session_start(w, pid, session, source), &[1, pid], None);
+    }
+
+    /// The windows `status` shows with label `label`.
+    fn labelled(d: &Daemon, label: &str) -> Vec<u64> {
+        d.status()
+            .agents
+            .iter()
+            .filter(|a| a.label.as_deref() == Some(label))
+            .map(|a| a.window)
+            .collect()
+    }
+
+    #[test]
+    fn a_label_goes_with_its_session_and_not_with_the_terminal() {
+        let mut d = daemon();
+        let one = crate::test_support::OwnWindow::new();
+        let two = crate::test_support::OwnWindow::new();
+        start(&mut d, one.0, 40, "s-music", "startup");
+        assert_eq!(d.label(one.0, Some("music")), Response::ok());
+        // The terminal resumes another session, and a second one takes the
+        // labelled session up.
+        start(&mut d, one.0, 40, "s-other", "resume");
+        start(&mut d, two.0, 41, "s-music", "resume");
+        assert_eq!(d.label_of(one.0), None);
+        assert_eq!(d.label_of(two.0).as_deref(), Some("music"));
+        assert_eq!(labelled(&d, "music"), vec![two.0]);
+    }
+
+    #[test]
+    fn a_label_given_before_any_session_goes_with_the_first_one() {
+        let mut d = daemon();
+        let one = crate::test_support::OwnWindow::new();
+        let two = crate::test_support::OwnWindow::new();
+        assert_eq!(d.label(one.0, Some("site")), Response::ok());
+        assert_eq!(d.label_of(one.0).as_deref(), Some("site"));
+        start(&mut d, one.0, 40, "s-site", "startup");
+        start(&mut d, one.0, 40, "s-other", "resume");
+        start(&mut d, two.0, 41, "s-site", "resume");
+        assert_eq!(labelled(&d, "site"), vec![two.0]);
+    }
+
+    #[test]
+    fn a_peer_s_label_stays_with_the_session_it_moved_on_from() {
+        let mut d = daemon();
+        let peer = crate::test_support::OwnWindow::new();
+        let two = crate::test_support::OwnWindow::new();
+        d.peers.push(Peer {
+            window: peer.0,
+            spawn: Spawn {
+                label: Some("music".into()),
+                resume: Some("s-music".into()),
+                ..Spawn::default()
+            },
+        });
+        start(&mut d, peer.0, 40, "s-music", "resume");
+        assert_eq!(labelled(&d, "music"), vec![peer.0]);
+        start(&mut d, peer.0, 40, "s-other", "resume");
+        // What the peer's own hook notes; a test process is in no terminal.
+        d.peer_moved_on(0, "s-other");
+        start(&mut d, two.0, 41, "s-music", "resume");
+        assert_eq!(d.peers[0].spawn.label, None);
+        assert_eq!(d.peers[0].spawn.resume.as_deref(), Some("s-other"));
+        assert_eq!(labelled(&d, "music"), vec![two.0]);
+    }
+
+    #[test]
+    fn a_peer_s_label_is_not_shown_while_its_session_runs_elsewhere() {
+        let mut d = daemon();
+        let two = crate::test_support::OwnWindow::new();
+        d.peers.push(Peer {
+            window: 7,
+            spawn: Spawn {
+                label: Some("music".into()),
+                resume: Some("s-music".into()),
+                ..Spawn::default()
+            },
+        });
+        start(&mut d, two.0, 41, "s-music", "resume");
+        assert_eq!(d.label_of(7), None);
+        assert_eq!(d.label_of(two.0).as_deref(), Some("music"));
     }
 
     #[test]
