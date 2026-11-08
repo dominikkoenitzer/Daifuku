@@ -337,11 +337,24 @@ jobs:
           }
 
           # Installing twice changes nothing, the second time from the zip.
+          # Every open terminal of a fleet runs a group job from the installed
+          # daifuku.exe, which Windows lets no one write while it runs; the
+          # second install replaces it all the same, and the next one deletes
+          # the old file once nothing runs from it.
+          $installed = Join-Path $dir 'daifuku.exe'
+          $running = Start-Process -FilePath $installed -ArgumentList 'group', '--', 'ping.exe', '-n', '600', '127.0.0.1' -WindowStyle Hidden -PassThru
+          Start-Sleep -Seconds 2
+          if ($running.HasExited) { throw "the group job from $installed did not keep running" }
           $before = Get-Content -Raw $settings
           & (Join-Path $zip 'daifuku.exe') install --no-start | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "the install from the zip exited with $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "the install from the zip exited with $LASTEXITCODE while daifuku.exe ran" }
+          if ((Get-FileHash $installed).Hash -ne (Get-FileHash (Join-Path $zip 'daifuku.exe')).Hash) { throw 'the install from the zip left the running daifuku.exe in place' }
+          if (@(Get-ChildItem $dir -Filter 'daifuku-old-*').Count -ne 1) { throw "the running daifuku.exe was not renamed aside: $(Get-ChildItem $dir | Out-String)" }
+          if ($running.HasExited) { throw 'the install ended the running group job' }
           if ((Get-Content -Raw $settings) -ne $before) { throw 'a second install changed the settings' }
           if ((& $onPath) -ne 1) { throw "a second install left $dir on the machine PATH $(& $onPath) times" }
+          taskkill /T /F /PID $running.Id | Out-Null
+          $running.WaitForExit()
 
           # Elevation is the config's to ask for, and install registers the
           # task with the highest run level only then. The user could write
@@ -350,6 +363,7 @@ jobs:
           '{"elevated":true}' | Set-Content -Encoding utf8 $config
           & (Join-Path $zip 'daifuku.exe') install --no-start --no-hooks | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "the install that locks the config exited with $LASTEXITCODE" }
+          if (@(Get-ChildItem $dir -Filter 'daifuku-old-*').Count -ne 0) { throw 'the next install left the old daifuku.exe' }
           schtasks /Query /TN $task 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) { throw 'install trusted an elevation the user could have written' }
           if (@(& $writers).Count -ne 0) { throw "the config that asks for elevation is still writable: $(& $writers | Format-List | Out-String)" }
