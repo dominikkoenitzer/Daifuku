@@ -533,6 +533,18 @@ impl<W: Ord + Copy> Agents<W> {
             .map(|(id, s)| (id.as_str(), s.window, s.shown()))
     }
 
+    /// Of the sessions in `window` that show `state`, the one that entered
+    /// it last, so a session left behind in a terminal never stands in for
+    /// the one running there now.
+    #[must_use]
+    pub fn latest_in(&self, window: W, state: AgentState) -> Option<&str> {
+        self.sessions
+            .iter()
+            .filter(|(_, s)| s.window == window && s.shown() == state)
+            .max_by_key(|(_, s)| s.since)
+            .map(|(id, _)| id.as_str())
+    }
+
     /// Every window with at least one session, and the state it shows.
     #[must_use]
     pub fn windows(&self) -> BTreeMap<W, AgentState> {

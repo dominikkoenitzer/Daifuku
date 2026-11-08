@@ -3465,12 +3465,9 @@ fn in_terminal(pid: u32, w: u64) -> bool {
 }
 
 /// The session whose state window `w` shows as `state`: of the sessions in
-/// it, the first in that state.
+/// it, the latest to enter that state.
 fn shown_session(agents: &Agents<u64>, w: u64, state: AgentState) -> Option<String> {
-    agents
-        .sessions()
-        .find(|&(_, window, s)| window == w && s == state)
-        .map(|(id, _, _)| id.to_owned())
+    agents.latest_in(w, state).map(str::to_owned)
 }
 
 /// Sorts the peers read from `file` into the ones still open, by their
