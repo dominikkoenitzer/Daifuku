@@ -255,7 +255,9 @@ pub fn print_json<T: Serialize>(value: &T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daifuku_core::protocol::{AgentWindow, FleetStatus, Response, Status, to_line};
+    use daifuku_core::protocol::{
+        AgentWindow, FleetStatus, Response, Status, TerminalStatus, to_line,
+    };
     use daifuku_core::state::AgentState;
     use serde_json::json;
 
@@ -415,6 +417,12 @@ mod tests {
                 warning: false,
             }],
             peers: Vec::new(),
+            terminals: vec![TerminalStatus {
+                window: 1,
+                label: None,
+                agent: true,
+                problem: None,
+            }],
             usage: Vec::new(),
         };
         let line = to_line(&Response::Status(status)).unwrap();
@@ -430,6 +438,7 @@ mod tests {
                 "fleets": [{"name": "agents", "monitor": "portrait", "windows": [1, 2]}],
                 "agents": [{"window": 1, "title": "claude", "state": "waiting", "for_seconds": 73}],
                 "peers": [],
+                "terminals": [{"window": 1, "agent": true}],
                 "usage": [],
             })
         );
@@ -445,7 +454,7 @@ mod tests {
         let line = to_line(&Response::Status(status)).unwrap();
         assert_eq!(
             line,
-            "{\"result\":\"status\",\"version\":\"0.0.9\",\"config\":\"c\",\"elevated\":false,\"hotkeys\":[],\"fleets\":[],\"agents\":[],\"peers\":[],\"usage\":[]}\n"
+            "{\"result\":\"status\",\"version\":\"0.0.9\",\"config\":\"c\",\"elevated\":false,\"hotkeys\":[],\"fleets\":[],\"agents\":[],\"peers\":[],\"terminals\":[],\"usage\":[]}\n"
         );
     }
 }
