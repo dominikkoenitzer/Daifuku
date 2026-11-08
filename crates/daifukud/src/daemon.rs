@@ -1861,12 +1861,13 @@ impl Daemon {
             }
             // The last of the chain is the group the terminal runs in, if it
             // has one: its job knows what still runs there.
+            let all = process::snapshot();
             let group = left
                 .chain
                 .last()
                 .filter(|&&(pid, at)| process::runs(pid, at))
                 .and_then(|&(pid, _)| job::members(pid));
-            let still = still_running(&process::snapshot(), process::started, &left.chain, group);
+            let still = still_running(&all, process::started, &left.chain, group);
             if still.is_empty() {
                 if close(w) {
                     tracing::info!(
@@ -3365,14 +3366,17 @@ fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
 /// started by `started`, of the processes in `all`: the members of its
 /// group's job, `group`, short of `chain`, the agent and what it ran under.
 /// That finds a dev server whose parent ended as well. With no job to ask,
-/// what `chain` started, down the process tree.
+/// or one the group, the last of `chain`, does not run in, so someone else
+/// made it under the group's name, what `chain` started, down the process
+/// tree.
 fn still_running(
     all: &HashMap<u32, process::Proc>,
     started: impl Fn(u32) -> Option<u64>,
     chain: &[(u32, u64)],
     group: Option<Vec<u32>>,
 ) -> Vec<(process::Proc, u64)> {
-    let Some(mut members) = group else {
+    let ours = |members: &Vec<u32>| chain.last().is_some_and(|(g, _)| members.contains(g));
+    let Some(mut members) = group.filter(ours) else {
         return process::started_by(all, started, chain, |_| false);
     };
     members.sort_unstable();
@@ -4215,6 +4219,11 @@ mod tests {
         );
         // With no job, the tree: the process whose parent ended is missed.
         assert_eq!(pids(still_running(&all, started, &chain, None)), [40]);
+        // Nor is a job the group does not run in asked.
+        assert_eq!(
+            pids(still_running(&all, started, &chain, Some(vec![50]))),
+            [40]
+        );
     }
 
     /// Runs [`Daemon::close_left`] as a sweep would `after` the agent was
