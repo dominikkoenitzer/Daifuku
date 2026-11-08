@@ -75,15 +75,18 @@ impl Job {
         let name = to_wide(&name_for(std::process::id()));
         // SAFETY: the name is NUL terminated and there are no security
         // attributes; the handle is owned by the returned value. A job of
-        // that name already there is another's, so this one goes unnamed.
+        // that name already there is another's, and the name may be taken
+        // by something else, so this one then goes unnamed.
         let job = unsafe {
             SetLastError(WIN32_ERROR(0));
-            let named = CreateJobObjectW(None, PCWSTR(name.as_ptr())).map_err(io::Error::other)?;
-            if GetLastError() == ERROR_ALREADY_EXISTS {
-                let _ = CloseHandle(named);
-                CreateJobObjectW(None, None).map_err(io::Error::other)?
-            } else {
-                named
+            match CreateJobObjectW(None, PCWSTR(name.as_ptr())) {
+                Ok(named) if GetLastError() != ERROR_ALREADY_EXISTS => named,
+                other => {
+                    if let Ok(theirs) = other {
+                        let _ = CloseHandle(theirs);
+                    }
+                    CreateJobObjectW(None, None).map_err(io::Error::other)?
+                }
             }
         };
         let job = Self(job);

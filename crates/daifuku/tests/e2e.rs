@@ -1306,7 +1306,7 @@ if (Test-Path (Join-Path $here 'agent-me')) {{
     if (Test-Path (Join-Path $here 'leftover-me')) {{
         $leftover = "Set-Content -LiteralPath '$here\leftover-pid.txt' -Value (Start-Process ping.exe -ArgumentList '-n','120','127.0.0.1' -PassThru -WindowStyle Hidden).Id;"
         if (Test-Path (Join-Path $here 'orphan-me')) {{
-            $leftover = "Start-Process powershell.exe -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-File','$here\orphan.ps1';"
+            $leftover = "(Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-File','$here\orphan.ps1').WaitForExit();"
         }}
     }}
     $agent = Start-Process powershell.exe -NoNewWindow -PassThru -ArgumentList '-NoProfile','-Command',"Start-Sleep 2; $leftover Get-Content -Raw '$event' | & '{cli}' hook; Start-Sleep 120"
