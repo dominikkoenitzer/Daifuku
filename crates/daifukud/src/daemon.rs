@@ -4623,6 +4623,24 @@ mod tests {
         assert_eq!(shown_session(&agents, 6, state), None);
     }
 
+    #[test]
+    fn of_two_done_sessions_in_a_terminal_the_latest_is_shown() {
+        use daifuku_core::state::HookEvent;
+        let mut agents = Agents::new();
+        let event = |session: &str, name: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: name.into(),
+            ..HookEvent::default()
+        };
+        // An earlier session left in the terminal, whose id sorts first.
+        agents.apply(5, &event("a", "Stop"));
+        agents.apply(5, &event("z", "UserPromptSubmit"));
+        agents.apply(5, &event("z", "Stop"));
+        let state = agents.window_state(5).unwrap();
+        assert_eq!(state, AgentState::Done);
+        assert_eq!(shown_session(&agents, 5, state).as_deref(), Some("z"));
+    }
+
     fn kept(resume: Option<&str>, window: u64, boot: u64) -> Kept {
         Kept {
             spawn: Spawn {
