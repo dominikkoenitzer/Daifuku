@@ -567,7 +567,7 @@ impl Daemon {
         let agent = trusted_agent(message.pid, sender);
         self.note_peer_session(w, session, agent);
         let before = self.agents.session_state(session);
-        let changed = self.agents.apply(w, &message.event);
+        let changed = self.agents.apply_from(w, agent, &message.event);
         let now = self.agents.session_state(session);
         if changed || now != before {
             self.note_states();
@@ -3340,6 +3340,35 @@ mod tests {
         assert_eq!(a.last_tool.as_deref(), Some("Bash"));
         assert_eq!(a.last_message.as_deref(), Some("may I run Bash"));
         assert_eq!(a.transcript_path.as_deref(), Some(r"C:\t\asks.jsonl"));
+    }
+
+    /// What the hook of agent process `pid` sends when it starts `session`
+    /// in terminal `w`, `source` saying how.
+    fn session_start(w: u64, pid: u32, session: &str, source: &str) -> HookMessage {
+        HookMessage {
+            window: w,
+            event: daifuku_core::state::HookEvent {
+                session_id: session.into(),
+                hook_event_name: "SessionStart".into(),
+                source: Some(source.into()),
+                ..daifuku_core::state::HookEvent::default()
+            },
+            pid: Some(pid),
+            ask: false,
+        }
+    }
+
+    #[test]
+    fn status_shows_the_session_a_terminal_resumed_not_the_one_it_left() {
+        let mut d = daemon();
+        // A new session that never wrote a transcript, left by `/resume` for
+        // one whose id sorts after it.
+        d.report(5, &session_start(5, 40, "0-new", "startup"), &[1, 40], None);
+        d.report(5, &session_start(5, 40, "9-old", "resume"), &[1, 40], None);
+        let status = d.status();
+        let a = status.agents.iter().find(|a| a.window == 5).unwrap();
+        assert_eq!(a.session_id.as_deref(), Some("9-old"));
+        assert!(!d.agents.knows("0-new"));
     }
 
     #[test]
