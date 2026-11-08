@@ -36,6 +36,10 @@
   one stayed with the terminal and could still be the `session_id`
   shown, even with no transcript of its own. The new session now ends
   every other session of the same agent.
+- When a terminal held more than one session in the same state, `status`,
+  `doctor` and the wait before a terminal closes named the one with the
+  lowest id, which could be a session an older version left behind. They
+  now name the session that entered that state last.
 - Fleet and peer terminals carry the window property `NoTiling` (value 1)
   while the daemon holds them, so a tiling window manager can leave them in
   their cells. The daemon sets it as soon as it finds a new terminal and

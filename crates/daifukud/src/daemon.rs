@@ -3465,12 +3465,9 @@ fn in_terminal(pid: u32, w: u64) -> bool {
 }
 
 /// The session whose state window `w` shows as `state`: of the sessions in
-/// it, the first in that state.
+/// it, the latest to enter that state.
 fn shown_session(agents: &Agents<u64>, w: u64, state: AgentState) -> Option<String> {
-    agents
-        .sessions()
-        .find(|&(_, window, s)| window == w && s == state)
-        .map(|(id, _, _)| id.to_owned())
+    agents.latest_in(w, state).map(str::to_owned)
 }
 
 /// Sorts the peers read from `file` into the ones still open, by their
@@ -4621,6 +4618,24 @@ mod tests {
         let shown = shown_session(&agents, 5, state).unwrap();
         assert_eq!(agents.session_state(&shown), Some(state));
         assert_eq!(shown_session(&agents, 6, state), None);
+    }
+
+    #[test]
+    fn of_two_done_sessions_in_a_terminal_the_latest_is_shown() {
+        use daifuku_core::state::HookEvent;
+        let mut agents = Agents::new();
+        let event = |session: &str, name: &str| HookEvent {
+            session_id: session.into(),
+            hook_event_name: name.into(),
+            ..HookEvent::default()
+        };
+        // An earlier session left in the terminal, whose id sorts first.
+        agents.apply(5, &event("a", "Stop"));
+        agents.apply(5, &event("z", "UserPromptSubmit"));
+        agents.apply(5, &event("z", "Stop"));
+        let state = agents.window_state(5).unwrap();
+        assert_eq!(state, AgentState::Done);
+        assert_eq!(shown_session(&agents, 5, state).as_deref(), Some("z"));
     }
 
     fn kept(resume: Option<&str>, window: u64, boot: u64) -> Kept {
