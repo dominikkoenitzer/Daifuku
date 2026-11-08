@@ -23,9 +23,10 @@ use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
     CreateProcessW, CreateProcessWithTokenW, DETACHED_PROCESS, GetCurrentProcess,
-    GetCurrentProcessId, GetProcessTimes, LOGON_WITH_PROFILE, NORMAL_PRIORITY_CLASS, OpenProcess,
-    OpenProcessToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, STARTUPINFOW, SetThreadToken, TerminateProcess, WaitForSingleObject,
+    GetCurrentProcessId, GetExitCodeProcess, GetProcessTimes, LOGON_WITH_PROFILE,
+    NORMAL_PRIORITY_CLASS, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTUPINFOW,
+    SetThreadToken, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetShellWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_SHUTTINGDOWN,
@@ -43,10 +44,18 @@ impl Watch {
     /// has ended already.
     #[must_use]
     pub fn open(pid: u32) -> Option<Self> {
-        // SAFETY: the handle is owned by the returned value.
-        unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }
-            .ok()
-            .map(Self)
+        // SAFETY: the handle is owned by the returned value. Without the
+        // right to read its exit code, the process is still watched.
+        unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                pid,
+            )
+            .or_else(|_| OpenProcess(PROCESS_SYNCHRONIZE, false, pid))
+        }
+        .ok()
+        .map(Self)
     }
 
     /// Whether the process has ended.
@@ -54,6 +63,19 @@ impl Watch {
     pub fn ended(&self) -> bool {
         // SAFETY: a valid handle, not waited on.
         unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+    }
+
+    /// The code the process ended with, `None` while it runs or when it
+    /// cannot be read.
+    #[must_use]
+    pub fn exit_code(&self) -> Option<u32> {
+        if !self.ended() {
+            return None;
+        }
+        let mut code = 0;
+        // SAFETY: a valid handle and a valid out pointer.
+        unsafe { GetExitCodeProcess(self.0, &raw mut code) }.ok()?;
+        Some(code)
     }
 }
 
@@ -223,6 +245,42 @@ pub fn descendants(
         }
     }
     out
+}
+
+/// Every process in `all` that one of `chain` started, or one of those, and
+/// so on down, the chain's own left out, each with when it started by
+/// `started`. Each process of the chain comes with when it started, so the
+/// children of one that ended are still told by its id: they started after
+/// it, and before any later process given the same id.
+#[must_use]
+pub fn started_by(
+    all: &HashMap<u32, Proc>,
+    started: impl Fn(u32) -> Option<u64>,
+    chain: &[(u32, u64)],
+) -> Vec<(Proc, u64)> {
+    let own = |pid: u32| chain.iter().any(|&(p, _)| p == pid);
+    let mut roots: Vec<u32> = Vec::new();
+    for &(pid, at) in chain {
+        let later = all
+            .contains_key(&pid)
+            .then(|| started(pid))
+            .flatten()
+            .filter(|&s| s != at);
+        for child in all.values().filter(|c| c.parent == pid && !own(c.pid)) {
+            if let Some(s) = started(child.pid)
+                && s >= at
+                && later.is_none_or(|l| s < l)
+            {
+                roots.push(child.pid);
+            }
+        }
+    }
+    roots.sort_unstable();
+    roots.dedup();
+    descendants(all, started, |_| false, &roots)
+        .into_iter()
+        .filter(|(p, _)| !own(p.pid))
+        .collect()
 }
 
 /// Whether process `pid` is still the one that started at `started` and has
@@ -798,6 +856,43 @@ mod tests {
             .map(|(p, _)| p.pid)
             .collect();
         assert_eq!(found, [10, 20, 40]);
+    }
+
+    #[test]
+    fn what_a_chain_started_counts_the_children_of_one_that_ended() {
+        // The agent 20 ran under shell 10 and ended; 30 and its child 40 are
+        // what it started. Its id now names 60, which started 70: not ours.
+        // 50 is a second shell 10 started, and 80 started before the agent
+        // did, under an earlier process with its id.
+        let all: HashMap<u32, Proc> = [
+            proc(10, 1),
+            proc(30, 20),
+            proc(40, 30),
+            proc(50, 10),
+            proc(60, 1),
+            proc(20, 1),
+            proc(70, 20),
+            proc(80, 20),
+        ]
+        .into_iter()
+        .map(|p| (p.pid, p))
+        .collect();
+        let when = |pid: u32| match pid {
+            10 => Some(100),
+            20 => Some(900),
+            30 => Some(300),
+            40 => Some(400),
+            50 => Some(500),
+            70 => Some(950),
+            80 => Some(150),
+            _ => None,
+        };
+        let found: Vec<u32> = started_by(&all, when, &[(20, 200), (10, 100)])
+            .into_iter()
+            .map(|(p, _)| p.pid)
+            .collect();
+        assert_eq!(found, [30, 50, 40]);
+        assert!(started_by(&all, when, &[(10, 100), (50, 500)]).is_empty());
     }
 
     #[test]

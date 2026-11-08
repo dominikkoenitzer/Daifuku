@@ -1490,6 +1490,12 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                         refused.join(", ")
                     ),
                 );
+                let lacking = lacking_agents(&s.terminals);
+                doctor.check(
+                    lacking.is_empty(),
+                    "every terminal Daifuku opened for an agent runs one",
+                    &lacking.join("; "),
+                );
             }
             StatusReply::Busy | StatusReply::Stuck => doctor.check(
                 false,
@@ -1669,6 +1675,24 @@ fn status_reply(reply: std::io::Result<Option<String>>) -> StatusReply {
         }
         _ => StatusReply::Silent,
     }
+}
+
+/// What to do about each terminal Daifuku opened that lacks the agent it
+/// was opened for, as `status` tells it.
+fn lacking_agents(terminals: &[daifuku_core::protocol::TerminalStatus]) -> Vec<String> {
+    terminals
+        .iter()
+        .filter_map(|t| {
+            let problem = t.problem.as_deref()?;
+            let name = t
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("{:#010x}", t.window));
+            Some(format!(
+                "{name}: {problem}; close it with `daifuku close --terminal \"{name}\"`"
+            ))
+        })
+        .collect()
 }
 
 /// The combinations the daemon's status lists as refused. Matched on the
@@ -3191,6 +3215,32 @@ mod tests {
             "Ctrl+Alt+S: refused, another program holds it".to_owned(),
         ];
         assert_eq!(refused_hotkeys(&hotkeys), ["Ctrl+Alt+S"]);
+    }
+
+    #[test]
+    fn doctor_names_each_terminal_without_its_agent_and_how_to_close_it() {
+        use daifuku_core::protocol::TerminalStatus;
+        let terminals = [
+            TerminalStatus {
+                window: 1,
+                label: Some("crew 1".into()),
+                agent: true,
+                problem: None,
+            },
+            TerminalStatus {
+                window: 0x2a,
+                label: None,
+                agent: false,
+                problem: Some("no agent has reported from it".into()),
+            },
+        ];
+        assert_eq!(
+            lacking_agents(&terminals),
+            [
+                "0x0000002a: no agent has reported from it; close it with `daifuku close --terminal \"0x0000002a\"`"
+            ]
+        );
+        assert!(lacking_agents(&terminals[..1]).is_empty());
     }
 
     /// What `send` returns while another command holds the control pipe.
