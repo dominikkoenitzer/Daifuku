@@ -173,7 +173,8 @@ enum Command {
         format: Format,
     },
     /// Give an agent's terminal a label, which `status` shows and `wait`
-    /// takes. Without a label, take it away.
+    /// takes. The label goes with the session the terminal runs, also when
+    /// another terminal resumes it. Without a label, take it away.
     Label {
         /// The terminal's window handle, as `status` lists it, in decimal or
         /// as 0x and hex.

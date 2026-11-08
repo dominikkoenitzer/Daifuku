@@ -116,7 +116,7 @@ runs.
 | `agents[].title` | string | Its title now. |
 | `agents[].state` | string | `"waiting"`, `"failed"`, `"working"` or `"done"`. |
 | `agents[].for_seconds` | integer | How long it has been in that state. |
-| `agents[].label` | string | What to call it: the label `spawn` or `label` gave it, else its fleet's name and its number, such as `"agents 2"`. Left out when it has neither. |
+| `agents[].label` | string | What to call it: the label `spawn` or `label` gave the session it runs, else its fleet's name and its number, such as `"agents 2"`. Left out when it has neither. A label stays with its session: after a resume it shows on the terminal that runs that session. |
 | `agents[].fleet` | string | The fleet it is in; left out when it is in none. |
 | `agents[].session_id` | string | The session whose state it shows, as the agent names it. |
 | `agents[].cwd` | string | The folder that session works in. Left out until one of its hooks names it, as are the three below. |
@@ -127,7 +127,7 @@ runs.
 | `agents[].warning` | boolean | `true` when its account has reached its `warn`, so its border shows the warning colour; left out otherwise. |
 | `peers` | array of objects | Every terminal `daifuku spawn` opened that is still open. |
 | `peers[].window` | integer | Its window handle. |
-| `peers[].label` | string | Its label; left out when it has none. |
+| `peers[].label` | string | The label of the session in `session_id`, or the one it was opened with until a session reports; left out when it has none. |
 | `peers[].directory` | string | The folder it was opened in. |
 | `peers[].session_id` | string | The last session its agent reported, which `restore` resumes; left out until it reports. |
 | `usage` | array of objects | Each account a status line reported for, most recent first (after 0.3.0). |
