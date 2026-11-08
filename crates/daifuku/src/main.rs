@@ -2091,12 +2091,43 @@ fn print_status(s: &daifuku_core::protocol::Status) {
             p.window
         );
     }
+    if !s.terminals.is_empty() {
+        println!("\nterminals");
+    }
+    for line in terminal_lines(&s.terminals) {
+        println!("  {line}");
+    }
     if !s.usage.is_empty() {
         println!("\nusage");
     }
     for u in &s.usage {
         println!("  {}", usage_line(u));
     }
+}
+
+/// The terminals Daifuku opened for `daifuku status`: how many are open and
+/// how many run an agent, then each one without the agent it should have,
+/// and why.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn terminal_lines(all: &[daifuku_core::protocol::TerminalStatus]) -> Vec<String> {
+    if all.is_empty() {
+        return Vec::new();
+    }
+    let with = all.iter().filter(|t| t.agent).count();
+    let mut lines = vec![format!(
+        "{} open, {with} with an agent",
+        terminals(all.len())
+    )];
+    for t in all {
+        if let Some(problem) = &t.problem {
+            lines.push(format!(
+                "{}  ({:#010x}): {problem}",
+                t.label.as_deref().unwrap_or("-"),
+                t.window
+            ));
+        }
+    }
+    lines
 }
 
 /// One account's limits for `daifuku status`: `work  5h 80%, 3 over pace,
@@ -2393,6 +2424,35 @@ mod tests {
         assert_eq!(
             usage_line(&u),
             r"C:\Users\me\.claude-work  5h reset since; 2m 5s ago"
+        );
+    }
+
+    #[test]
+    fn status_counts_the_terminals_and_says_which_lack_their_agent() {
+        use daifuku_core::protocol::TerminalStatus;
+        let t =
+            |window: u64, label: Option<&str>, agent: bool, problem: Option<&str>| TerminalStatus {
+                window,
+                label: label.map(str::to_owned),
+                agent,
+                problem: problem.map(str::to_owned),
+            };
+        assert!(terminal_lines(&[]).is_empty());
+        assert_eq!(
+            terminal_lines(&[
+                t(1, Some("crew 1"), true, None),
+                t(
+                    0x2a,
+                    Some("site"),
+                    false,
+                    Some("no agent has reported from it")
+                ),
+                t(3, None, false, None),
+            ]),
+            [
+                "3 terminals open, 1 with an agent",
+                "site  (0x0000002a): no agent has reported from it",
+            ]
         );
     }
 

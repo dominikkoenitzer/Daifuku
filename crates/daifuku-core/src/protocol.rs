@@ -270,6 +270,10 @@ pub struct Status {
     /// Every terminal `daifuku spawn` opened that is still open.
     #[serde(default)]
     pub peers: Vec<PeerStatus>,
+    /// Every terminal Daifuku opened, a fleet's or a peer, and whether an
+    /// agent runs in it.
+    #[serde(default)]
+    pub terminals: Vec<TerminalStatus>,
     /// Each account's use of its limits, as its agents' status lines last
     /// reported it.
     #[serde(default)]
@@ -578,6 +582,24 @@ pub struct Leftover {
     pub reason: Option<String>,
 }
 
+/// One terminal Daifuku opened, a fleet's or a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalStatus {
+    /// Its window.
+    pub window: u64,
+    /// What it is called, as `close --terminal` takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Whether an agent runs in it.
+    pub agent: bool,
+    /// Why no agent runs in it although its fleet's command starts one,
+    /// once it had the time to: its agent ended and something it started
+    /// still runs, Windows Terminal kept it open, or no agent reported from
+    /// it. Left out while all is well, as for a plain shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
 /// One terminal `daifuku spawn` opened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerStatus {
@@ -808,6 +830,12 @@ mod tests {
                 label: Some("site".into()),
                 directory: r"C:\src\site".into(),
                 session_id: None,
+            }],
+            terminals: vec![TerminalStatus {
+                window: 3,
+                label: Some("site".into()),
+                agent: false,
+                problem: Some("no agent has reported from it".into()),
             }],
             usage: vec![AccountUsage {
                 account: Some("work".into()),

@@ -9,7 +9,7 @@ use daifuku_core::peer::{self, FleetCell, Kept, KeptFile, Spawn};
 use daifuku_core::protocol::{
     AgentWindow, FleetEvent, FleetQueue, FleetStatus, HandedTo, HookAnswer, HookMessage, Leftover,
     LoggedEvent, PeerStatus, QueuedTask, Request, Response, RestoredPeer, Status, StoppedTerminal,
-    UsageReport,
+    TerminalStatus, UsageReport,
 };
 use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
 use daifuku_core::state::{AgentState, Agents};
@@ -63,6 +63,48 @@ const PULSE_PERIOD: f64 = 1.6;
 /// often enough that a daemon restarted on an error finds it fresh.
 const RESAVE_TICKS: u64 = 60 * 10_000_000;
 
+/// How long a terminal Daifuku opened stays once its agent ended, for what
+/// the agent started to end with it before the terminal is looked at.
+const LEFT_GRACE: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// How long a terminal Daifuku opened for an agent may go without one
+/// reporting from it before `status` says so: an agent takes a while to
+/// start and runs its first hook only then.
+const STARTING: std::time::Duration = std::time::Duration::from_secs(59);
+
+/// An agent that runs in a terminal Daifuku opened for one, watched so that
+/// the terminal closes once the agent ends.
+struct Resident {
+    /// Its terminal.
+    window: u64,
+    watch: process::Watch,
+    /// The agent and the processes it runs under up to Windows Terminal,
+    /// the agent first, each with when it started.
+    chain: Vec<(u32, u64)>,
+}
+
+/// A terminal Daifuku opened whose agent ended, and what it waits for to
+/// close.
+struct Left {
+    /// The agent and the processes it ran under, as [`Resident::chain`].
+    chain: Vec<(u32, u64)>,
+    wait: Leaving,
+}
+
+/// What a terminal whose agent ended waits for.
+enum Leaving {
+    /// [`LEFT_GRACE`] from when the agent was seen to end.
+    Grace(std::time::Instant),
+    /// These processes the agent or its shell started, which end with the
+    /// terminal, to end first. Looked at again once none runs.
+    Held(Vec<(process::Proc, u64)>),
+    /// Asked to close at this time.
+    Asked(std::time::Instant),
+    /// Still open after it was asked, as when someone opened a second tab
+    /// in it and Windows Terminal asks first: left to them.
+    Kept,
+}
+
 /// A peer `daifuku spawn` opened.
 struct Peer {
     /// Its terminal.
@@ -85,6 +127,13 @@ struct Daemon {
     /// killed: nothing else would tell the daemon.
     agent_processes:
         std::collections::HashMap<u32, (process::Watch, std::collections::BTreeSet<String>)>,
+    /// The agents of the terminals Daifuku opened to run one, by process.
+    residents: std::collections::HashMap<u32, Resident>,
+    /// The terminals Daifuku opened whose agent ended, by window, until
+    /// they close.
+    left: std::collections::HashMap<u64, Left>,
+    /// When each terminal Daifuku opened was first seen by a sweep.
+    seen: std::collections::HashMap<u64, std::time::Instant>,
     /// Labels `daifuku label` gave terminals that are not peers, whose
     /// labels live in their [`Spawn`], before a session reported from them.
     /// The first session to report takes its terminal's label.
@@ -302,6 +351,9 @@ impl Daemon {
             fleets: Vec::new(),
             peers: Vec::new(),
             agent_processes: std::collections::HashMap::new(),
+            residents: std::collections::HashMap::new(),
+            left: std::collections::HashMap::new(),
+            seen: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
             session_labels: VecDeque::new(),
             dormant: Vec::new(),
@@ -587,6 +639,7 @@ impl Daemon {
             && now.is_some()
         {
             self.watch_agent(pid, session);
+            self.note_resident(w, pid, sender, window::pid(w));
         }
         if self.config.sound && now == Some(AgentState::Waiting) && before != now {
             access::chime();
@@ -1166,7 +1219,9 @@ impl Daemon {
     }
 
     /// Closes the one terminal `target` names, by its window or its label,
-    /// of the terminals Daifuku knows, and waits for it to go.
+    /// of the terminals Daifuku knows, and waits for it to go. Then ends
+    /// what its agent started that outlives it, by process, as
+    /// `stop-agents` does: a terminal still open keeps its agent.
     fn close_terminal(&mut self, target: &str) -> Response {
         let known: Vec<(u64, Option<String>)> = self
             .known_terminals()
@@ -1179,6 +1234,18 @@ impl Daemon {
             Err(message) => return Response::error(message),
         };
         let name = self.label_of(w).unwrap_or_else(|| format!("{w:#010x}"));
+        // Found before it goes: once it went, nothing says which processes
+        // were its agent's.
+        let mut windowed = shown_window_owners();
+        let mut found = self.started_by_agents(&[w], &windowed);
+        if let Some(left) = self.left.get(&w) {
+            for (p, at) in process::started_by(&process::snapshot(), process::started, &left.chain)
+            {
+                if !found.iter().any(|(_, f, _)| f.pid == p.pid) {
+                    found.push((w, p, at));
+                }
+            }
+        }
         if !window::close(w) {
             return Response::error(format!("Windows refused to close {name}"));
         }
@@ -1187,10 +1254,14 @@ impl Daemon {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         let closed = !window::exists(w);
-        if closed && self.window_destroyed(w) {
+        if !closed {
+            return close_outcome(&name, false, &[]);
+        }
+        if self.window_destroyed(w) {
             self.refresh_borders();
         }
-        close_outcome(&name, closed)
+        let leftovers = end_leftovers(found, &mut windowed);
+        close_outcome(&name, true, &leftovers)
     }
 
     /// Every terminal Daifuku knows: the fleets', the peers, the ones agents
@@ -1259,11 +1330,6 @@ impl Daemon {
         // first to open, is for its owner to close, with all it started.
         let mut windowed = shown_window_owners();
         let found = self.started_by_agents(&targets, &windowed);
-        let spared = |pid: u32, windowed: &std::collections::HashSet<u32>| {
-            windowed
-                .contains(&pid)
-                .then(|| "it shows a window of its own".to_owned())
-        };
         if dry_run {
             let leftovers = found
                 .into_iter()
@@ -1313,37 +1379,7 @@ impl Daemon {
         // when Windows Terminal asks first about its tabs, keeps its agent.
         let found: Vec<(u64, process::Proc, u64)> =
             found.into_iter().filter(|&(w, _, _)| gone(w)).collect();
-        let runs = |p: &process::Proc, at: u64| process::runs(p.pid, at);
-        let start = std::time::Instant::now();
-        while found.iter().any(|(_, p, at)| runs(p, *at)) && start.elapsed() < LEFTOVER_WAIT {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        windowed.extend(shown_window_owners());
-        let leftovers = found
-            .into_iter()
-            .map(|(w, p, at)| {
-                let (ended, reason) = if !runs(&p, at) {
-                    (false, None)
-                } else if let Some(reason) = spared(p.pid, &windowed) {
-                    (false, Some(reason))
-                } else {
-                    match process::end(p.pid, at) {
-                        Ok(ended) => (ended, None),
-                        Err(e) => (false, Some(daifuku_core::config::io_reason(&e))),
-                    }
-                };
-                if ended {
-                    tracing::info!(pid = p.pid, name = %p.name, "ended what an agent left running");
-                }
-                Leftover {
-                    pid: p.pid,
-                    name: p.name,
-                    window: w,
-                    ended,
-                    reason,
-                }
-            })
-            .collect();
+        let leftovers = end_leftovers(found, &mut windowed);
         self.drop_closed_fleets();
         self.refresh_borders();
         Response::Stopped {
@@ -1569,8 +1605,55 @@ impl Daemon {
             fleets,
             agents,
             peers,
+            terminals: self.terminals(),
             usage: self.usage.status(&self.config, wall_seconds()),
         }
+    }
+
+    /// Every terminal Daifuku opened, in window order, and whether an agent
+    /// runs in it, as `status` and `doctor` show them.
+    fn terminals(&self) -> Vec<TerminalStatus> {
+        let ours: std::collections::BTreeSet<u64> = self
+            .fleets
+            .iter()
+            .flat_map(OpenFleet::windows)
+            .chain(self.peers.iter().map(|p| p.window))
+            .collect();
+        ours.into_iter()
+            .map(|w| {
+                let agent = self.agents.sessions().any(|(_, window, _)| window == w)
+                    || self.residents.values().any(|r| r.window == w);
+                let problem = if agent || !self.runs_agents(w) {
+                    None
+                } else if let Some(left) = self.left.get(&w) {
+                    match &left.wait {
+                        Leaving::Grace(_) | Leaving::Asked(_) => None,
+                        Leaving::Held(still) => Some(format!(
+                            "its agent ended, and what it started still runs in it: {}",
+                            still
+                                .iter()
+                                .map(|(p, _)| format!("{} ({})", p.name, p.pid))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )),
+                        Leaving::Kept => Some(
+                            "its agent ended, and Windows Terminal kept it open when asked to close"
+                                .to_owned(),
+                        ),
+                    }
+                } else if self.seen.get(&w).is_some_and(|t| t.elapsed() >= STARTING) {
+                    Some("no agent has reported from it".to_owned())
+                } else {
+                    None
+                };
+                TerminalStatus {
+                    window: w,
+                    label: self.label_of(w),
+                    agent,
+                    problem,
+                }
+            })
+            .collect()
     }
 
     fn window_events(&mut self) {
@@ -1658,8 +1741,160 @@ impl Daemon {
         }
     }
 
+    /// Whether Daifuku opened terminal `w` to run an agent: it is a fleet's
+    /// or a peer, and its fleet has a command. A plain shell is left open.
+    fn runs_agents(&self, w: u64) -> bool {
+        self.fleet_of(w)
+            .and_then(|name| self.config.fleet(&name))
+            .is_some_and(|f| f.command.is_some())
+    }
+
+    /// Watches agent process `agent`, which reported from terminal `w`, so
+    /// that the terminal closes once it ends: only in a terminal Daifuku
+    /// opened to run an agent, and only when `sender`, the hook's chain of
+    /// processes, leads from the agent to `terminal`, the process that shows
+    /// the window, so the agent runs in it.
+    fn note_resident(&mut self, w: u64, agent: u32, sender: &[u32], terminal: u32) {
+        if self.residents.contains_key(&agent)
+            || self.residents.len() >= MAX_SESSIONS
+            || !self.runs_agents(w)
+        {
+            return;
+        }
+        let Some(chain) = resident_chain(agent, sender, terminal, process::started) else {
+            return;
+        };
+        let Some(watch) = process::Watch::open(agent) else {
+            return;
+        };
+        self.left.remove(&w);
+        self.residents.insert(
+            agent,
+            Resident {
+                window: w,
+                watch,
+                chain,
+            },
+        );
+    }
+
+    /// Closes the terminals Daifuku opened whose agent ended, gracefully, as
+    /// their close button would: once [`LEFT_GRACE`] passed, no agent runs in
+    /// one again, and nothing the agent or its shell started still runs, as
+    /// that would end with it. One that holds such a process waits for it;
+    /// one Windows Terminal keeps open when asked is left open. Nothing
+    /// closes while Windows signs out or shuts down, `ending`, so that
+    /// `daifuku restore` still has the peers. `terminal` tells a window that
+    /// is still a terminal, `close` asks one to close.
+    fn close_left(
+        &mut self,
+        ending: bool,
+        terminal: impl Fn(u64) -> bool,
+        close: impl Fn(u64) -> bool,
+    ) {
+        if self.residents.is_empty() && self.left.is_empty() {
+            return;
+        }
+        let ended: Vec<u32> = self
+            .residents
+            .iter()
+            .filter(|(_, r)| r.watch.ended())
+            .map(|(&pid, _)| pid)
+            .collect();
+        for pid in ended {
+            let Some(r) = self.residents.remove(&pid) else {
+                continue;
+            };
+            if ending {
+                continue;
+            }
+            tracing::info!(pid, window = format!("{:#x}", r.window), exit_code = ?r.watch.exit_code(), "the agent of a terminal Daifuku opened ended");
+            self.left.insert(
+                r.window,
+                Left {
+                    chain: r.chain,
+                    wait: Leaving::Grace(std::time::Instant::now()),
+                },
+            );
+        }
+        if ending {
+            return;
+        }
+        let windows: Vec<u64> = self.left.keys().copied().collect();
+        for w in windows {
+            let in_use = self.agents.sessions().any(|(_, window, _)| window == w)
+                || self.residents.values().any(|r| r.window == w);
+            if in_use || !self.runs_agents(w) || !terminal(w) {
+                self.left.remove(&w);
+                continue;
+            }
+            let Some(left) = self.left.get_mut(&w) else {
+                continue;
+            };
+            let look = match &left.wait {
+                Leaving::Grace(since) => since.elapsed() >= LEFT_GRACE,
+                Leaving::Held(still) => !still.iter().any(|(p, at)| process::runs(p.pid, *at)),
+                Leaving::Asked(at) => {
+                    if at.elapsed() >= CLOSE_WAIT {
+                        tracing::info!(
+                            window = format!("{w:#x}"),
+                            "a terminal whose agent ended was kept open when asked to close"
+                        );
+                        left.wait = Leaving::Kept;
+                    }
+                    false
+                }
+                Leaving::Kept => false,
+            };
+            if !look {
+                continue;
+            }
+            let still = process::started_by(&process::snapshot(), process::started, &left.chain);
+            if still.is_empty() {
+                if close(w) {
+                    tracing::info!(
+                        window = format!("{w:#x}"),
+                        "closed a terminal whose agent ended"
+                    );
+                    left.wait = Leaving::Asked(std::time::Instant::now());
+                } else {
+                    left.wait = Leaving::Kept;
+                }
+            } else {
+                let names: Vec<String> = still
+                    .iter()
+                    .map(|(p, _)| format!("{} ({})", p.name, p.pid))
+                    .collect();
+                tracing::info!(window = format!("{w:#x}"), still = %names.join(", "), "a terminal whose agent ended still runs what it started");
+                left.wait = Leaving::Held(still);
+            }
+        }
+    }
+
+    /// Notes when each terminal Daifuku opened was first seen, for
+    /// [`STARTING`], and forgets the ones that went.
+    fn note_seen(&mut self) {
+        let now = std::time::Instant::now();
+        let ours: std::collections::BTreeSet<u64> = self
+            .fleets
+            .iter()
+            .flat_map(OpenFleet::windows)
+            .chain(self.peers.iter().map(|p| p.window))
+            .collect();
+        self.seen.retain(|w, _| ours.contains(w));
+        for w in ours {
+            self.seen.entry(w).or_insert(now);
+        }
+    }
+
     fn sweep(&mut self) {
         self.reap_agents();
+        self.close_left(
+            process::session_ending(),
+            |w| window::exists(w) && window::class(w) == WINDOW_CLASS,
+            window::close,
+        );
+        self.note_seen();
         // The config changed on disk: take it, as `daifuku reload` would.
         if stamp(&self.config_path) != self.config_stamp {
             tracing::info!("config file changed, reloading");
@@ -1981,6 +2216,9 @@ impl Daemon {
         if self.queue.window_closed(w) {
             self.queue.save();
         }
+        self.residents.retain(|_, r| r.window != w);
+        self.left.remove(&w);
+        self.seen.remove(&w);
         self.drop_closed_fleets();
         forgot
     }
@@ -2914,12 +3152,79 @@ fn single_quoted(text: &str) -> String {
     out
 }
 
+/// Of `found`, what agents started in terminals that went, each with its
+/// terminal and when it started, ends what still runs once
+/// [`LEFTOVER_WAIT`] passed, by process: never a program in `windowed`, or
+/// one that shows a window of its own by then, as a browser an agent was
+/// the first to open.
+fn end_leftovers(
+    found: Vec<(u64, process::Proc, u64)>,
+    windowed: &mut std::collections::HashSet<u32>,
+) -> Vec<Leftover> {
+    let runs = |p: &process::Proc, at: u64| process::runs(p.pid, at);
+    let start = std::time::Instant::now();
+    while found.iter().any(|(_, p, at)| runs(p, *at)) && start.elapsed() < LEFTOVER_WAIT {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    windowed.extend(shown_window_owners());
+    found
+        .into_iter()
+        .map(|(w, p, at)| {
+            let (ended, reason) = if !runs(&p, at) {
+                (false, None)
+            } else if let Some(reason) = spared(p.pid, windowed) {
+                (false, Some(reason))
+            } else {
+                match process::end(p.pid, at) {
+                    Ok(ended) => (ended, None),
+                    Err(e) => (false, Some(daifuku_core::config::io_reason(&e))),
+                }
+            };
+            if ended {
+                tracing::info!(pid = p.pid, name = %p.name, "ended what an agent left running");
+            }
+            Leftover {
+                pid: p.pid,
+                name: p.name,
+                window: w,
+                ended,
+                reason,
+            }
+        })
+        .collect()
+}
+
+/// Why process `pid` is not ended, when it shows a window of its own, as
+/// `windowed` lists them.
+fn spared(pid: u32, windowed: &std::collections::HashSet<u32>) -> Option<String> {
+    windowed
+        .contains(&pid)
+        .then(|| "it shows a window of its own".to_owned())
+}
+
 /// What `close --terminal` says about terminal `name`, once it `closed` or
-/// the wait for it ended: a terminal still open is a failure, as nothing
-/// was closed.
-fn close_outcome(name: &str, closed: bool) -> Response {
+/// the wait for it ended, with the `leftovers` its agent started: a
+/// terminal still open is a failure, as nothing was closed.
+fn close_outcome(name: &str, closed: bool, leftovers: &[Leftover]) -> Response {
     if closed {
-        Response::said(format!("closed {name}"))
+        let mut said = format!("closed {name}");
+        let ended: Vec<String> = leftovers
+            .iter()
+            .filter(|l| l.ended)
+            .map(|l| format!("{} ({})", l.name, l.pid))
+            .collect();
+        if !ended.is_empty() {
+            said.push_str(&format!(
+                "; ended what its agent left running: {}",
+                ended.join(", ")
+            ));
+        }
+        for l in leftovers {
+            if let Some(reason) = &l.reason {
+                said.push_str(&format!("; left {} ({}) running: {reason}", l.name, l.pid));
+            }
+        }
+        Response::said(said)
     } else {
         Response::error(format!(
             "asked {name} to close, and it is still open: Windows Terminal may be asking whether to close its tabs"
@@ -3037,6 +3342,31 @@ fn hand_out_text(path: &std::path::Path, task: &daifuku_core::backlog::Task) -> 
 /// it: one of the client's ancestors, not the client itself.
 fn trusted_agent(named: Option<u32>, sender: &[u32]) -> Option<u32> {
     named.filter(|p| sender.iter().skip(1).any(|s| s == p))
+}
+
+/// The agent `agent` and the processes it runs under, each with when it
+/// started by `started`, from `sender`, a hook's chain of processes, the
+/// hook first: from the agent up to `terminal`, the process that shows its
+/// window, left out. `None` when the chain does not lead there, so the
+/// agent runs somewhere else, or a start cannot be read.
+fn resident_chain(
+    agent: u32,
+    sender: &[u32],
+    terminal: u32,
+    started: impl Fn(u32) -> Option<u64>,
+) -> Option<Vec<(u32, u64)>> {
+    if terminal == 0 {
+        return None;
+    }
+    let from = sender.iter().skip(1).position(|&p| p == agent)? + 1;
+    let to = sender[from..].iter().position(|&p| p == terminal)? + from;
+    if to == from {
+        return None;
+    }
+    sender[from..to]
+        .iter()
+        .map(|&pid| started(pid).map(|at| (pid, at)))
+        .collect()
 }
 
 /// How long the daemon waits for `daifuku console-window`.
@@ -3720,11 +4050,237 @@ mod tests {
 
     #[test]
     fn a_terminal_still_open_after_the_wait_was_not_closed() {
-        assert_eq!(close_outcome("site", true), Response::said("closed site"));
+        assert_eq!(
+            close_outcome("site", true, &[]),
+            Response::said("closed site")
+        );
         assert!(matches!(
-            close_outcome("site", false),
+            close_outcome("site", false, &[]),
             Response::Error { message } if message.starts_with("asked site to close, and it is still open")
         ));
+    }
+
+    #[test]
+    fn closing_a_terminal_says_what_of_its_agent_was_ended_and_what_was_left() {
+        let leftover = |pid: u32, name: &str, ended: bool, reason: Option<&str>| Leftover {
+            pid,
+            name: name.into(),
+            window: 7,
+            ended,
+            reason: reason.map(str::to_owned),
+        };
+        let found = [
+            leftover(10, "node.exe", true, None),
+            leftover(11, "ping.exe", false, None),
+            leftover(
+                12,
+                "chrome.exe",
+                false,
+                Some("it shows a window of its own"),
+            ),
+            leftover(13, "bun.exe", true, None),
+        ];
+        assert_eq!(
+            close_outcome("site", true, &found),
+            Response::said(
+                "closed site; ended what its agent left running: node.exe (10), bun.exe (13); left chrome.exe (12) running: it shows a window of its own"
+            )
+        );
+    }
+
+    /// A daemon with fleet `crew`, whose command runs an agent, in terminal
+    /// 7, and `plain`, a shell, in 8.
+    fn crew_daemon() -> Daemon {
+        let mut d = daemon();
+        d.config.fleets = vec![
+            daifuku_core::config::Fleet {
+                name: "crew".into(),
+                command: Some("claude".into()),
+                ..daifuku_core::config::Fleet::default()
+            },
+            daifuku_core::config::Fleet {
+                name: "plain".into(),
+                ..daifuku_core::config::Fleet::default()
+            },
+        ];
+        let mut crew = OpenFleet::new("crew");
+        crew.slots = vec![Some(7)];
+        let mut plain = OpenFleet::new("plain");
+        plain.slots = vec![Some(8)];
+        d.fleets.push(crew);
+        d.fleets.push(plain);
+        d
+    }
+
+    /// A process that runs until it is ended and starts nothing.
+    fn sleeper() -> std::process::Child {
+        std::process::Command::new("ping.exe")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// The agent `agent` in terminal `w`, as a hook it ran names it: the
+    /// hook, the agent, and 1 as the terminal's process.
+    fn resident(d: &mut Daemon, w: u64, agent: u32) {
+        d.note_resident(w, agent, &[99, agent, 1], 1);
+    }
+
+    /// Runs [`Daemon::close_left`] as a sweep would `after` the agent was
+    /// seen to end, with every window a terminal, and returns the windows it
+    /// asked to close.
+    fn close_left_after(d: &mut Daemon, after: std::time::Duration) -> Vec<u64> {
+        for left in d.left.values_mut() {
+            if let Leaving::Grace(since) = &mut left.wait {
+                *since = std::time::Instant::now().checked_sub(after).unwrap();
+            }
+        }
+        let asked = std::cell::RefCell::new(Vec::new());
+        d.close_left(
+            false,
+            |_| true,
+            |w| {
+                asked.borrow_mut().push(w);
+                true
+            },
+        );
+        asked.into_inner()
+    }
+
+    #[test]
+    fn a_terminal_daifuku_opened_closes_once_its_agent_ended() {
+        let mut d = crew_daemon();
+        let mut agent = sleeper();
+        resident(&mut d, 7, agent.id());
+        assert_eq!(d.residents.len(), 1);
+        assert!(
+            close_left_after(&mut d, LEFT_GRACE).is_empty(),
+            "its agent runs"
+        );
+        let _ = agent.kill();
+        let _ = agent.wait();
+        // Seen to end now: it closes only once the grace passed.
+        assert!(close_left_after(&mut d, std::time::Duration::ZERO).is_empty());
+        assert!(d.residents.is_empty() && d.left.contains_key(&7));
+        assert_eq!(close_left_after(&mut d, LEFT_GRACE), [7]);
+        assert!(matches!(d.left[&7].wait, Leaving::Asked(_)));
+        // Asked once: still open after that, it is left to whoever keeps it.
+        if let Some(left) = d.left.get_mut(&7) {
+            left.wait = Leaving::Asked(std::time::Instant::now().checked_sub(CLOSE_WAIT).unwrap());
+        }
+        assert!(close_left_after(&mut d, LEFT_GRACE).is_empty());
+        assert!(matches!(d.left[&7].wait, Leaving::Kept));
+        assert!(
+            close_left_after(&mut d, LEFT_GRACE).is_empty(),
+            "asked only once"
+        );
+        d.window_destroyed(7);
+        assert!(d.left.is_empty());
+    }
+
+    #[test]
+    fn a_terminal_whose_agent_ended_stays_while_what_it_started_runs() {
+        let mut d = crew_daemon();
+        // The agent is a cmd that started a ping and ended; the ping
+        // outlives it, on the terminal's console as far as anyone can tell.
+        let mut agent = std::process::Command::new("cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                "start /b ping -n 60 127.0.0.1 >nul & ping -n 2 127.0.0.1 >nul",
+            ])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        resident(&mut d, 7, agent.id());
+        let _ = agent.wait();
+        let _ = close_left_after(&mut d, std::time::Duration::ZERO);
+        assert!(
+            close_left_after(&mut d, LEFT_GRACE).is_empty(),
+            "the ping runs"
+        );
+        let Leaving::Held(still) = &d.left[&7].wait else {
+            panic!("not held");
+        };
+        let ping = still
+            .iter()
+            .find(|(p, _)| p.name.eq_ignore_ascii_case("ping.exe"))
+            .map(|(p, at)| (p.pid, *at))
+            .unwrap();
+        assert!(
+            close_left_after(&mut d, LEFT_GRACE).is_empty(),
+            "still held"
+        );
+        assert!(process::end(ping.0, ping.1).unwrap());
+        let start = std::time::Instant::now();
+        while process::runs(ping.0, ping.1) && start.elapsed() < CLOSE_WAIT {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(close_left_after(&mut d, LEFT_GRACE), [7]);
+    }
+
+    #[test]
+    fn a_terminal_stays_while_another_agent_runs_in_it_or_windows_signs_out() {
+        let mut d = crew_daemon();
+        let mut agent = sleeper();
+        resident(&mut d, 7, agent.id());
+        let _ = agent.kill();
+        let _ = agent.wait();
+        // A second agent reported from it meanwhile.
+        d.agents.apply(
+            7,
+            &daifuku_core::state::HookEvent {
+                session_id: "s-2".into(),
+                hook_event_name: "Stop".into(),
+                ..daifuku_core::state::HookEvent::default()
+            },
+        );
+        let _ = close_left_after(&mut d, std::time::Duration::ZERO);
+        assert!(close_left_after(&mut d, LEFT_GRACE).is_empty());
+        assert!(d.left.is_empty(), "in use again");
+
+        // Windows signs out: what ends then is not looked at again.
+        let mut d = crew_daemon();
+        let mut agent = sleeper();
+        resident(&mut d, 7, agent.id());
+        let _ = agent.kill();
+        let _ = agent.wait();
+        d.close_left(true, |_| true, |_| panic!("closed while signing out"));
+        assert!(d.residents.is_empty() && d.left.is_empty());
+    }
+
+    #[test]
+    fn only_a_terminal_daifuku_opened_for_an_agent_waits_for_it_to_end() {
+        let mut d = crew_daemon();
+        let agent = std::process::id();
+        resident(&mut d, 8, agent);
+        resident(&mut d, 9, agent);
+        assert!(
+            d.residents.is_empty(),
+            "a plain shell, and none of Daifuku's"
+        );
+        // The hook's chain does not lead to the terminal's process.
+        d.note_resident(7, agent, &[99, agent, 2], 1);
+        assert!(d.residents.is_empty());
+        resident(&mut d, 7, agent);
+        assert_eq!(d.residents[&agent].window, 7);
+    }
+
+    #[test]
+    fn an_agent_s_chain_runs_from_it_up_to_the_terminal_s_process() {
+        let started = |pid: u32| (pid != 66).then_some(u64::from(pid) * 10);
+        assert_eq!(
+            resident_chain(20, &[10, 20, 30, 40, 50, 60], 50, started),
+            Some(vec![(20, 200), (30, 300), (40, 400)])
+        );
+        // The hook itself is not the agent; the chain must reach the
+        // terminal; a start that cannot be read leaves it out.
+        assert_eq!(resident_chain(10, &[10, 20, 50], 50, started), None);
+        assert_eq!(resident_chain(20, &[10, 20, 30], 50, started), None);
+        assert_eq!(resident_chain(20, &[10, 20, 66, 50], 50, started), None);
+        assert_eq!(resident_chain(20, &[10, 20, 50], 20, started), None);
+        assert_eq!(resident_chain(20, &[10, 20, 0], 0, started), None);
     }
 
     #[test]
