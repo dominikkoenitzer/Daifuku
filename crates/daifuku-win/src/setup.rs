@@ -220,7 +220,7 @@ pub fn keep_config(file: &Path, owner: &str) -> std::io::Result<()> {
 }
 
 /// Gives the plain file at `file` the owner and access list in `sddl`,
-/// without following a link.
+/// without following a link. An `sddl` with no owner keeps the owner.
 ///
 /// # Errors
 ///
@@ -230,8 +230,11 @@ fn set_security(file: &Path, sddl: &str) -> std::io::Result<()> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;
 
+    // An access list alone, with no owner in it, leaves the owner as it is.
+    let owned = sddl.starts_with("O:");
+    let owner_right = if owned { WRITE_OWNER.0 } else { 0 };
     let handle = std::fs::OpenOptions::new()
-        .access_mode(READ_CONTROL.0 | WRITE_DAC.0 | WRITE_OWNER.0 | FILE_READ_ATTRIBUTES.0)
+        .access_mode(READ_CONTROL.0 | WRITE_DAC.0 | owner_right | FILE_READ_ATTRIBUTES.0)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
         .open(file)?;
     let attributes = handle.metadata()?.file_attributes();
@@ -263,13 +266,15 @@ fn set_security(file: &Path, sddl: &str) -> std::io::Result<()> {
             })
             .map_err(std::io::Error::other)
             .and_then(|()| {
+                let mut info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+                if owned {
+                    info |= OWNER_SECURITY_INFORMATION;
+                }
                 let e = SetSecurityInfo(
                     HANDLE(handle.as_raw_handle()),
                     SE_FILE_OBJECT,
-                    OWNER_SECURITY_INFORMATION
-                        | DACL_SECURITY_INFORMATION
-                        | PROTECTED_DACL_SECURITY_INFORMATION,
-                    Some(owner),
+                    info,
+                    owned.then_some(owner),
                     None,
                     Some(dacl),
                     None,
@@ -429,6 +434,65 @@ pub fn delete_at_restart(path: &Path) -> std::io::Result<()> {
         )
     }
     .map_err(std::io::Error::from)
+}
+
+/// How the name of an installed binary starts once it was renamed aside
+/// because it still ran, so a later install, uninstall or daemon start can
+/// find and delete it.
+pub const OLD_PREFIX: &str = "daifuku-old-";
+
+/// The access list of a binary install renamed aside in the locked install
+/// folder: as the folder's, and `user`, that user's SID, may also delete it,
+/// so the daemon, which runs with that user's rights, can clear it once
+/// nothing runs from it any more. Deleting is all: the user still cannot
+/// write it, and cannot add a file to the folder under any name.
+#[must_use]
+pub fn old_binary_sddl(user: &str) -> String {
+    /// `DELETE`.
+    const DELETE: &str = "0x10000";
+    format!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)(A;;{DELETE};;;{user})")
+}
+
+/// Lets `user`, a SID, delete the old binary at `file` as
+/// [`old_binary_sddl`] says, opened without following a link; the owner
+/// stays.
+///
+/// # Errors
+///
+/// When `user` is not a SID, `file` cannot be opened or is not a plain file,
+/// or Windows refuses the change.
+pub fn let_user_delete(file: &Path, user: &str) -> std::io::Result<()> {
+    if !is_sid(user) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the user is not a SID",
+        ));
+    }
+    set_security(file, &old_binary_sddl(user))
+}
+
+/// Deletes every file in `dir` whose name starts with [`OLD_PREFIX`], and
+/// returns how many went and how many stayed: one a program still runs
+/// from stays, and goes on a later try. Removing a link removes the link,
+/// not what it points to.
+#[must_use]
+pub fn remove_old_binaries(dir: &Path) -> (usize, usize) {
+    let (mut removed, mut left) = (0, 0);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let old = entry.file_name().to_string_lossy().starts_with(OLD_PREFIX);
+        if !old || entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        } else {
+            left += 1;
+        }
+    }
+    (removed, left)
 }
 
 /// The name of the lock install and uninstall hold while they change the
@@ -1029,5 +1093,116 @@ mod tests {
             .unwrap();
             let _ = LocalFree(Some(HLOCAL(sd.0)));
         }
+    }
+
+    /// Gives `path` the access list in `sddl` and nothing inherited; the
+    /// owner, this user, may always change it back.
+    fn only(path: &Path, sddl: &str) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL.0 | WRITE_DAC.0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+            .open(path)
+            .unwrap();
+        let wide = to_wide(sddl);
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: the string is NUL terminated; dacl points into sd, freed
+        // after the call that reads it.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(wide.as_ptr()),
+                SDDL_REVISION_1,
+                &raw mut sd,
+                None,
+            )
+            .unwrap();
+            let mut present = windows::core::BOOL(0);
+            let mut defaulted = windows::core::BOOL(0);
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            GetSecurityDescriptorDacl(sd, &raw mut present, &raw mut dacl, &raw mut defaulted)
+                .unwrap();
+            let e = SetSecurityInfo(
+                HANDLE(handle.as_raw_handle()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(dacl),
+                None,
+            );
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            assert!(e.is_ok(), "{e:?}");
+        }
+    }
+
+    /// In a folder this user may not delete from, as the install folder is,
+    /// an old binary goes only when install let the user delete it, and its
+    /// owner stays.
+    #[test]
+    fn an_old_binary_install_let_go_of_can_be_deleted_by_the_user() {
+        let sid = user_sid().unwrap();
+        let dir = std::env::temp_dir().join(format!("daifuku-let-go-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let granted = dir.join(format!("{OLD_PREFIX}1-daifuku.exe"));
+        let kept = dir.join(format!("{OLD_PREFIX}2-daifuku.exe"));
+        std::fs::write(&granted, "MZ old").unwrap();
+        std::fs::write(&kept, "MZ old").unwrap();
+        let read_only = format!("D:P(A;OICI;0x1200a9;;;{sid})");
+        only(&kept, &read_only);
+        let_user_delete(&granted, &sid).unwrap();
+        only(&dir, &read_only);
+
+        let (removed, left) = crate::test_support::as_ordinary_user(|| remove_old_binaries(&dir));
+        let granted_gone = !granted.exists();
+        let kept_stayed = kept.is_file();
+
+        only(&dir, &format!("D:P(A;OICI;FA;;;{sid})"));
+        only(&kept, &format!("D:P(A;;FA;;;{sid})"));
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(granted_gone && kept_stayed);
+        assert_eq!((removed, left), (1, 1));
+        assert!(let_user_delete(&granted, "S-1-5-21-1)(A;;FA;;;WD").is_err());
+    }
+
+    /// A file a program still holds stays and goes on a later try; files of
+    /// other names are never touched.
+    #[test]
+    fn old_binaries_go_once_nothing_holds_them() {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_SHARE_READ`.
+        const FILE_SHARE_READ: u32 = 1;
+        let dir = std::env::temp_dir().join(format!("daifuku-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = dir.join(format!("{OLD_PREFIX}7-daifuku.exe"));
+        let free = dir.join(format!("{OLD_PREFIX}7-daifukud.exe"));
+        let other = dir.join("daifuku.exe");
+        for f in [&held, &free, &other] {
+            std::fs::write(f, "MZ").unwrap();
+        }
+        let hold = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&held)
+            .unwrap();
+
+        let first = remove_old_binaries(&dir);
+        let after_first = (held.is_file(), free.exists());
+        drop(hold);
+        let second = remove_old_binaries(&dir);
+        let after_second = held.exists();
+        let other_stayed = other.is_file();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(first, (1, 1));
+        assert_eq!(after_first, (true, false));
+        assert_eq!(second, (1, 0));
+        assert!(!after_second && other_stayed);
+        assert_eq!(
+            remove_old_binaries(&dir),
+            (0, 0),
+            "no folder, nothing to do"
+        );
     }
 }
