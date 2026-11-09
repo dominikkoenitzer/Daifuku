@@ -436,9 +436,9 @@ footer p { margin: 0.3rem 0; }
 <h2 id="new-h" class="vh">Details</h2>
 <div class="grid2">
 <div class="card">
-<div class="num">Version 0.4.1</div>
+<div class="num">Version 0.4.2</div>
 <h3>What's new</h3>
-<ul><li>An ordinary install writes no logon task and removes the one 0.4.0 wrote: the daemon starts with the first <code>daifuku</code> command or agent hook.</li><li>The daemon runs with your own rights even when an administrator terminal starts it, unless the config sets <code>"elevated": true</code>.</li></ul>
+<ul><li>A terminal Daifuku opened for a fleet or a peer closes by itself once its agent ends, and stays open while something the agent started still runs in it.</li><li><code>daifuku install</code> works while those terminals are open, and a label stays with its session after a resume.</li></ul>
 </div>
 <div class="card">
 <div class="num">Requirements</div>
