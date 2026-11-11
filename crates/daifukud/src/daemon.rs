@@ -11,7 +11,7 @@ use daifuku_core::protocol::{
     LoggedEvent, PeerStatus, QueuedTask, Request, Response, RestoredPeer, Status, StoppedTerminal,
     TerminalStatus, UsageReport,
 };
-use daifuku_core::saved::{self, Saved, SavedFleet, SavedShown};
+use daifuku_core::saved::{Saved, SavedFleet, SavedShown, Stamp};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
 use daifuku_win::terminal::WINDOW_CLASS;
@@ -146,7 +146,7 @@ struct Daemon {
     /// to open again.
     dormant: Vec<Spawn>,
     /// The start of Windows the dormant peers were open in.
-    dormant_boot: u64,
+    dormant_boot_id: u64,
     /// Peers closed with their fleet in this start of Windows, which
     /// `daifuku restore` opens again with the dormant ones.
     closed: Vec<Spawn>,
@@ -357,7 +357,7 @@ impl Daemon {
             labels: std::collections::HashMap::new(),
             session_labels: VecDeque::new(),
             dormant: Vec::new(),
-            dormant_boot: 0,
+            dormant_boot_id: 0,
             closed: Vec::new(),
             peers_file: None,
             borders: None,
@@ -705,7 +705,7 @@ impl Daemon {
             id: task.id.clone(),
             window: w,
             session: event.session_id.clone(),
-            at: wall_seconds(),
+            since: stamp(),
         });
         if !claimed {
             tracing::warn!("handed out no task: too many are out");
@@ -747,7 +747,7 @@ impl Daemon {
             .filter(|f| f.backlog.is_some())
             .cloned()
             .collect();
-        let now = wall_seconds();
+        let now = stamp();
         let mut settled = false;
         let mut queues = Vec::new();
         for fleet in fleets {
@@ -779,7 +779,7 @@ impl Daemon {
                                 window: (c.window != 0).then_some(c.window),
                                 label: (c.window != 0).then(|| self.label_of(c.window)).flatten(),
                                 session_id: c.session.clone(),
-                                age_seconds: now.saturating_sub(c.at),
+                                age_seconds: c.since.seconds_before(now),
                             }),
                         });
                     }
@@ -972,7 +972,7 @@ impl Daemon {
     /// when the numbers changed: a status line runs after every answer.
     fn usage_report(&mut self, report: &UsageReport) {
         let window = report.window.and_then(daifuku_win::console::visible_window);
-        if self.usage.note(report, window, wall_seconds()) {
+        if self.usage.note(report, window, stamp()) {
             self.usage.save();
             // The first numbers of an account with rules may lift its stop.
             self.idle_stale = true;
@@ -1608,7 +1608,7 @@ impl Daemon {
             agents,
             peers,
             terminals: self.terminals(),
-            usage: self.usage.status(&self.config, wall_seconds()),
+            usage: self.usage.status(&self.config, wall_seconds(), stamp()),
         }
     }
 
@@ -2046,7 +2046,7 @@ impl Daemon {
         if !now && key == *last && ticks.saturating_sub(*at) < RESAVE_TICKS {
             return;
         }
-        saved.boot = saved::boot(wall_seconds(), ticks);
+        saved.boot_id = clock::boot_id();
         saved.at = ticks;
         let written = serde_json::to_string(&saved)
             .map_err(std::io::Error::other)
@@ -2078,7 +2078,7 @@ impl Daemon {
         // In a set order, so a state that did not change saves the same.
         shown.sort_by(|a, b| (&a.session, a.window).cmp(&(&b.session, b.window)));
         Saved {
-            boot: 0,
+            boot_id: 0,
             at: 0,
             agents: self.agents.clone(),
             fleets: self
@@ -2119,7 +2119,7 @@ impl Daemon {
             }
         };
         let ticks = clock::ticks();
-        if !saved.usable(saved::boot(wall_seconds(), ticks), ticks) {
+        if !saved.usable(clock::boot_id(), ticks) {
             tracing::info!("the saved state is from another start of Windows or too old");
             return;
         }
@@ -2586,31 +2586,31 @@ impl Daemon {
         if process::session_ending() {
             return;
         }
-        let boot = saved::boot(wall_seconds(), clock::ticks());
+        let boot_id = clock::boot_id();
         let kept = KeptFile {
-            boot,
-            dormant_boot: self.dormant_boot,
+            boot_id,
+            dormant_boot_id: self.dormant_boot_id,
             peers: self
                 .peers
                 .iter()
                 .map(|p| Kept {
                     spawn: p.spawn.clone(),
                     window: p.window,
-                    boot,
+                    boot_id,
                     closed_with_fleet: false,
                     in_cell: self.cell_of(p.window),
                 })
                 .chain(self.dormant.iter().map(|spawn| Kept {
                     spawn: spawn.clone(),
                     window: 0,
-                    boot: self.dormant_boot,
+                    boot_id: self.dormant_boot_id,
                     closed_with_fleet: false,
                     in_cell: None,
                 }))
                 .chain(self.closed.iter().map(|spawn| Kept {
                     spawn: spawn.clone(),
                     window: 0,
-                    boot,
+                    boot_id,
                     closed_with_fleet: true,
                     in_cell: None,
                 }))
@@ -2664,13 +2664,12 @@ impl Daemon {
                 return;
             }
         };
-        let boot = saved::boot(wall_seconds(), clock::ticks());
         let Sorted {
             open,
             dormant,
             closed,
-            from: dormant_boot,
-        } = sort_kept(kept, boot, |w| {
+            from: dormant_boot_id,
+        } = sort_kept(kept, clock::boot_id(), |w| {
             window::exists(w) && window::class(w) == WINDOW_CLASS
         });
         let mut seats = Vec::new();
@@ -2682,7 +2681,7 @@ impl Daemon {
             })
             .collect();
         self.dormant = dormant;
-        self.dormant_boot = dormant_boot;
+        self.dormant_boot_id = dormant_boot_id;
         self.closed = closed;
         self.rejoin_fleets(seats);
         self.drop_unresumed();
@@ -3310,6 +3309,14 @@ fn dim(c: daifuku_core::config::Colour, k: f64) -> daifuku_core::config::Colour 
     daifuku_core::config::Colour::new(f(c.r), f(c.g), f(c.b))
 }
 
+/// Now, as the daemon keeps it on disk: with no clock time.
+fn stamp() -> Stamp {
+    Stamp {
+        boot_id: clock::boot_id(),
+        ticks: clock::ticks(),
+    }
+}
+
 /// The wall clock, in seconds since 1970.
 fn wall_seconds() -> u64 {
     std::time::SystemTime::now()
@@ -3474,8 +3481,11 @@ fn shown_session(agents: &Agents<u64>, w: u64, state: AgentState) -> Option<Stri
 /// window, the dormant ones, the ones closed with their fleet in this start
 /// of Windows, and the start of Windows the dormant ones are from.
 ///
-/// A peer is open when it was saved in this start of Windows, by the clock
-/// `boot` worked out now, and its window passes `alive`. Dormant are the
+/// A peer is open when it was saved in the start of Windows `boot_id` names,
+/// and its window passes `alive`. A file from a version that kept the start
+/// as a clock time names none, nor does a start whose id does not read: then
+/// a peer is open when its window passes `alive`, and none is dormant or
+/// closed with its fleet. Dormant are the
 /// peers of one start of Windows only: the one the file was written in when
 /// that was an earlier one, as after a restart; else, as after a daemon
 /// restart, the one its dormant peers were already from. A peer closed with
@@ -3483,22 +3493,25 @@ fn shown_session(agents: &Agents<u64>, w: u64, state: AgentState) -> Option<Stri
 /// start before is dormant. Of all these, only the ones with a session to
 /// resume. Everything else is dropped: older peers, and peers of this start
 /// of Windows whose terminal closed otherwise.
-fn sort_kept(file: KeptFile, boot: u64, alive: impl Fn(u64) -> bool) -> Sorted {
-    let now = |b: u64| b.abs_diff(boot) <= 10;
-    let from = if now(file.boot) {
-        file.dormant_boot
+fn sort_kept(file: KeptFile, boot_id: u64, alive: impl Fn(u64) -> bool) -> Sorted {
+    let known = boot_id != 0 && file.boot_id != 0;
+    let from = if !known {
+        0
+    } else if file.boot_id == boot_id {
+        file.dormant_boot_id
     } else {
-        file.boot
+        file.boot_id
     };
     let mut open = Vec::new();
     let mut dormant = Vec::new();
     let mut closed = Vec::new();
     for k in file.peers {
-        if k.window != 0 && k.same_boot(boot) && alive(k.window) {
+        let now = k.of_start(boot_id);
+        if k.window != 0 && (now || !known) && alive(k.window) {
             open.push((k.window, k.spawn, k.in_cell));
-        } else if k.resumable() && k.closed_with_fleet && now(k.boot) {
+        } else if k.resumable() && k.closed_with_fleet && now {
             closed.push(k.spawn);
-        } else if k.resumable() && from != 0 && !now(k.boot) && k.same_boot(from) {
+        } else if k.resumable() && !now && k.of_start(from) {
             dormant.push(k.spawn);
         }
     }
@@ -4638,7 +4651,7 @@ mod tests {
         assert_eq!(shown_session(&agents, 5, state).as_deref(), Some("z"));
     }
 
-    fn kept(resume: Option<&str>, window: u64, boot: u64) -> Kept {
+    fn kept(resume: Option<&str>, window: u64, boot_id: u64) -> Kept {
         Kept {
             spawn: Spawn {
                 directory: format!(r"C:\src\{window}").into(),
@@ -4646,7 +4659,7 @@ mod tests {
                 ..Spawn::default()
             },
             window,
-            boot,
+            boot_id,
             closed_with_fleet: false,
             in_cell: None,
         }
@@ -4661,10 +4674,10 @@ mod tests {
 
     #[test]
     fn after_a_restart_only_the_peers_open_when_windows_stopped_come_back() {
-        // Written in the start of Windows at 500, before this one at 1000.
+        // Written in the start of Windows 500, before this one, 1000.
         let file = KeptFile {
-            boot: 500,
-            dormant_boot: 300,
+            boot_id: 500,
+            dormant_boot_id: 300,
             peers: vec![
                 // Open when Windows stopped, with and without a session.
                 kept(Some("a"), 2, 500),
@@ -4689,8 +4702,8 @@ mod tests {
     fn after_a_daemon_restart_open_peers_stay_open_and_dormant_ones_dormant() {
         // Written earlier in this start of Windows, as before an install.
         let file = KeptFile {
-            boot: 1_000,
-            dormant_boot: 500,
+            boot_id: 1_000,
+            dormant_boot_id: 500,
             peers: vec![
                 kept(Some("a"), 1, 1_000),
                 kept(None, 2, 1_000),
@@ -4705,7 +4718,7 @@ mod tests {
             dormant,
             from,
             ..
-        } = sort_kept(file, 1_005, |w| w == 1 || w == 2);
+        } = sort_kept(file, 1_000, |w| w == 1 || w == 2);
         let windows: Vec<_> = open.iter().map(|(w, _, _)| *w).collect();
         assert_eq!(windows, [1, 2]);
         assert_eq!(sessions(&dormant), ["b"]);
@@ -4713,14 +4726,53 @@ mod tests {
         // A file of nothing but open peers has nothing dormant.
         let Sorted { dormant, .. } = sort_kept(
             KeptFile {
-                boot: 1_000,
-                dormant_boot: 0,
+                boot_id: 1_000,
+                dormant_boot_id: 0,
                 peers: vec![kept(Some("x"), 0, 0)],
             },
             1_000,
             |_| false,
         );
         assert!(dormant.is_empty());
+    }
+
+    #[test]
+    fn with_no_start_of_windows_known_only_open_terminals_count() {
+        let peers = |boot_id| {
+            vec![
+                kept(Some("a"), 1, boot_id),
+                kept(Some("gone"), 2, boot_id),
+                kept(Some("b"), 0, boot_id),
+                Kept {
+                    closed_with_fleet: true,
+                    ..kept(Some("c"), 0, boot_id)
+                },
+            ]
+        };
+        // A file from a version that kept the start as a clock time, and
+        // one this version wrote while the id did not read now.
+        let old = KeptFile {
+            boot_id: 0,
+            dormant_boot_id: 0,
+            peers: peers(0),
+        };
+        let unread = KeptFile {
+            boot_id: 1_000,
+            dormant_boot_id: 500,
+            peers: peers(1_000),
+        };
+        for (file, boot_id) in [(old, 1_000), (unread, 0)] {
+            let Sorted {
+                open,
+                dormant,
+                closed,
+                from,
+            } = sort_kept(file, boot_id, |w| w == 1);
+            let windows: Vec<_> = open.iter().map(|(w, _, _)| *w).collect();
+            assert_eq!(windows, [1]);
+            assert!(dormant.is_empty() && closed.is_empty());
+            assert_eq!(from, 0);
+        }
     }
 
     #[test]
@@ -4934,7 +4986,7 @@ mod tests {
         // Only the one the fleet holds; the other asked for the cell too,
         // but opened beside the fleet.
         assert_eq!(cells, [Some(seat.clone()), None]);
-        let Sorted { open, .. } = sort_kept(read.clone(), read.boot, |_| true);
+        let Sorted { open, .. } = sort_kept(read.clone(), read.boot_id, |_| true);
         let seats: Vec<_> = open.into_iter().map(|(w, _, c)| (w, c)).collect();
         assert_eq!(seats, [(inside, Some(seat)), (beside, None)]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -4994,11 +5046,11 @@ mod tests {
             d.save_peers();
         };
         // Written by a later version, with a cell this one does not know.
-        let foreign = r#"{"boot": 1, "dormant_boot": 1, "peers": [{"spawn": {"directory": "C:\\old", "resume": "def", "cell": "last"}, "window": 0, "boot": 1}]}"#;
+        let foreign = r#"{"boot_id": 1, "dormant_boot_id": 1, "peers": [{"spawn": {"directory": "C:\\old", "resume": "def", "cell": "last"}, "window": 0, "boot_id": 1}]}"#;
         // Whole, but held by another program while the daemon starts.
         let dormant = KeptFile {
-            boot: 1,
-            dormant_boot: 1,
+            boot_id: 1,
+            dormant_boot_id: 1,
             peers: vec![Kept {
                 spawn: Spawn {
                     directory: r"C:\old".into(),
@@ -5006,7 +5058,7 @@ mod tests {
                     ..Spawn::default()
                 },
                 window: 0,
-                boot: 1,
+                boot_id: 1,
                 closed_with_fleet: false,
                 in_cell: None,
             }],
@@ -5038,8 +5090,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("peers.json");
         let kept = KeptFile {
-            boot: 1,
-            dormant_boot: 1,
+            boot_id: 1,
+            dormant_boot_id: 1,
             peers: vec![Kept {
                 spawn: Spawn {
                     directory: r"C:\old".into(),
@@ -5047,7 +5099,7 @@ mod tests {
                     ..Spawn::default()
                 },
                 window: 0,
-                boot: 1,
+                boot_id: 1,
                 closed_with_fleet: false,
                 in_cell: None,
             }],
@@ -5101,13 +5153,13 @@ mod tests {
 
     #[test]
     fn peers_closed_with_their_fleet_stay_restorable_until_the_next_restart() {
-        let closed = |resume, boot| Kept {
+        let closed = |resume, boot_id| Kept {
             closed_with_fleet: true,
-            ..kept(resume, 0, boot)
+            ..kept(resume, 0, boot_id)
         };
         let file = KeptFile {
-            boot: 1_000,
-            dormant_boot: 500,
+            boot_id: 1_000,
+            dormant_boot_id: 500,
             peers: vec![
                 closed(Some("crew"), 1_000),
                 closed(None, 1_000),
@@ -5120,7 +5172,7 @@ mod tests {
             dormant,
             closed: kept_closed,
             ..
-        } = sort_kept(file.clone(), 1_005, |_| false);
+        } = sort_kept(file.clone(), 1_000, |_| false);
         assert_eq!(sessions(&dormant), ["b"]);
         assert_eq!(sessions(&kept_closed), ["crew"]);
         // After a restart they are dormant, the older ones gone.
@@ -5449,7 +5501,7 @@ mod tests {
             id: "T1".into(),
             window: 7,
             session: "s".into(),
-            at: wall_seconds(),
+            since: stamp(),
         });
         d.queue.save();
 
@@ -5500,13 +5552,16 @@ mod tests {
 
         let text = std::fs::read_to_string(&file).unwrap();
         let saved: Saved = serde_json::from_str(&text).unwrap();
-        let usable = saved.usable(saved::boot(wall_seconds(), clock::ticks()), clock::ticks());
+        let usable = saved.usable(clock::boot_id(), clock::ticks());
         let mut after = daemon();
         after.take_back(saved.clone(), clock::ticks(), |w| w == 7);
 
         let mut stale = daemon();
         stale.state_file = Some(file.clone());
-        let old = Saved { boot: 1, ..saved };
+        let old = Saved {
+            boot_id: clock::boot_id() + 1,
+            ..saved
+        };
         std::fs::write(&file, serde_json::to_string(&old).unwrap()).unwrap();
         stale.restore();
         std::fs::remove_dir_all(&dir).unwrap();

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Nothing Daifuku keeps holds a clock time any more. The daemon's log
+  lines carry no time, and the log is one `daifukud.log` that starts over
+  at 1 MiB, with the six before it kept as `daifukud.1.log` to
+  `daifukud.6.log`; the logs earlier versions wrote, a file a day, are
+  removed. `install.log` lines carry no time either.
+- The saved state and the peers file know a start of Windows by its boot
+  id, and the age of a handed out task or an account's numbers by the time
+  since that start, so `daifuku status` shows an age only for what was
+  reported since Windows last started. The first start after the update
+  reads no saved fleet state and takes back only the peers whose terminals
+  are still open.
+
 ## 0.4.2, 2026-11-09
 
 - `daifuku install` no longer fails with "could not write daifuku.exe"

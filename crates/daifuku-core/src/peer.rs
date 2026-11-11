@@ -341,10 +341,6 @@ pub fn without_agent_variables(
         .collect()
 }
 
-/// How far the start of Windows may drift between a saved peer and its use,
-/// in seconds, as for the daemon's saved state.
-const BOOT_DRIFT_SECONDS: u64 = 10;
-
 /// One peer as the daemon keeps it in `peers.json`, so it can be opened
 /// again after Windows restarts: what it was opened with, with `resume` set
 /// to the session it ran last, and the window and the start of Windows it
@@ -356,9 +352,10 @@ pub struct Kept {
     pub spawn: Spawn,
     /// Its window, as long as it is open.
     pub window: u64,
-    /// When Windows started, in seconds since 1970 by the wall clock, for
-    /// the start of Windows the window belongs to.
-    pub boot: u64,
+    /// The boot id of the start of Windows the window belongs to, 0 in a
+    /// file from a version that kept the start as a clock time.
+    #[serde(default)]
+    pub boot_id: u64,
     /// Closed with its fleet, by `daifuku close` or the close key, in that
     /// start of Windows: `daifuku restore` opens it again as it would one
     /// that was open when Windows stopped.
@@ -382,11 +379,11 @@ pub struct FleetCell {
 }
 
 impl Kept {
-    /// Whether its window can still be the one it was open in: the same
-    /// start of Windows, by the clock `boot` the caller works out now.
+    /// Whether it is of the start of Windows `boot_id` names, 0 naming
+    /// none.
     #[must_use]
-    pub const fn same_boot(&self, boot: u64) -> bool {
-        self.boot.abs_diff(boot) <= BOOT_DRIFT_SECONDS
+    pub const fn of_start(&self, boot_id: u64) -> bool {
+        self.boot_id != 0 && self.boot_id == boot_id
     }
 
     /// Whether it can be opened again: only with a session to resume, as a
@@ -401,12 +398,13 @@ impl Kept {
 /// one its dormant peers are from, and the peers.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeptFile {
-    /// When Windows started, for the start of Windows the file was written
-    /// in.
-    pub boot: u64,
-    /// The start of Windows the dormant peers in it were open in.
+    /// The boot id of the start of Windows the file was written in, 0 in a
+    /// file from a version that kept the start as a clock time.
     #[serde(default)]
-    pub dormant_boot: u64,
+    pub boot_id: u64,
+    /// The boot id of the start of Windows its dormant peers were open in.
+    #[serde(default)]
+    pub dormant_boot_id: u64,
     /// Every peer, open and dormant.
     pub peers: Vec<Kept>,
 }
@@ -483,7 +481,7 @@ mod tests {
         }
     }
 
-    fn kept(resume: Option<&str>, window: u64, boot: u64) -> Kept {
+    fn kept(resume: Option<&str>, window: u64, boot_id: u64) -> Kept {
         Kept {
             spawn: Spawn {
                 directory: r"C:\src".into(),
@@ -491,7 +489,7 @@ mod tests {
                 ..Spawn::default()
             },
             window,
-            boot,
+            boot_id,
             closed_with_fleet: false,
             in_cell: None,
         }
@@ -499,11 +497,12 @@ mod tests {
 
     #[test]
     fn a_kept_peer_knows_its_start_of_windows_and_whether_it_resumes() {
-        let k = kept(Some("abc"), 7, 1_000);
-        assert!(k.same_boot(1_000) && k.same_boot(1_010) && k.same_boot(990));
-        assert!(!k.same_boot(1_011) && !k.same_boot(5_000));
+        let k = kept(Some("abc"), 7, 290);
+        assert!(k.of_start(290));
+        assert!(!k.of_start(291) && !k.of_start(289) && !k.of_start(0));
+        assert!(!kept(Some("abc"), 7, 0).of_start(0));
         assert!(k.resumable());
-        assert!(!kept(None, 7, 1_000).resumable());
+        assert!(!kept(None, 7, 290).resumable());
     }
 
     #[test]
@@ -513,7 +512,7 @@ mod tests {
                 fleet: "crew".into(),
                 cell: 2,
             }),
-            ..kept(Some("abc"), 7, 1_000)
+            ..kept(Some("abc"), 7, 290)
         };
         let text = serde_json::to_string(&k).unwrap();
         assert!(
@@ -523,7 +522,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Kept>(&text).unwrap(), k);
         // One outside a fleet writes none, and peers kept before read as
         // outside one.
-        let plain = serde_json::to_string(&kept(Some("abc"), 7, 1_000)).unwrap();
+        let plain = serde_json::to_string(&kept(Some("abc"), 7, 290)).unwrap();
         assert!(!plain.contains("in_cell"), "{plain}");
         assert_eq!(serde_json::from_str::<Kept>(&plain).unwrap().in_cell, None);
     }
@@ -531,13 +530,13 @@ mod tests {
     #[test]
     fn the_kept_file_drops_ids_that_are_not_ids_and_refuses_what_does_not_read() {
         let file = KeptFile {
-            boot: 1_000,
-            dormant_boot: 500,
-            peers: vec![kept(Some("abc-1"), 7, 1_000), kept(Some("a;rm"), 8, 1_000)],
+            boot_id: 290,
+            dormant_boot_id: 289,
+            peers: vec![kept(Some("abc-1"), 7, 290), kept(Some("a;rm"), 8, 290)],
         };
         let read = read_kept(&serde_json::to_string(&file).unwrap()).unwrap();
-        assert_eq!((read.boot, read.dormant_boot), (1_000, 500));
-        assert_eq!(read.peers[0], kept(Some("abc-1"), 7, 1_000));
+        assert_eq!((read.boot_id, read.dormant_boot_id), (290, 289));
+        assert_eq!(read.peers[0], kept(Some("abc-1"), 7, 290));
         assert_eq!(read.peers[1].spawn.resume, None);
         assert!(read_kept("").unwrap().peers.is_empty());
         assert!(read_kept(" \n").unwrap().peers.is_empty());
@@ -546,6 +545,18 @@ mod tests {
         assert!(read_kept(r#"{"boot": 1, "peers": ["#).is_err());
         // The list alone, as no released version wrote.
         assert!(read_kept("[]").is_err());
+    }
+
+    #[test]
+    fn a_kept_file_from_before_boot_ids_names_no_start_of_windows() {
+        let old = r#"{"boot": 1762851000, "dormant_boot": 1762000000, "peers": [{"spawn": {"directory": "C:\\src", "resume": "abc"}, "window": 7, "boot": 1762851000}]}"#;
+        let read = read_kept(old).unwrap();
+        assert_eq!((read.boot_id, read.dormant_boot_id), (0, 0));
+        assert_eq!(read.peers.len(), 1);
+        assert_eq!((read.peers[0].window, read.peers[0].boot_id), (7, 0));
+        // Written again, it keeps no clock time.
+        let text = serde_json::to_string(&read).unwrap();
+        assert!(!text.contains("1762"), "{text}");
     }
 
     #[test]
