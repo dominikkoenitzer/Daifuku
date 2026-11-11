@@ -5387,6 +5387,89 @@ mod tests {
         assert_eq!(shown.len(), 1);
     }
 
+    /// Every whole number in `value`, with the key it is under, but for the
+    /// `resets_at` of a usage window: that is the account's, not ours.
+    fn numbers(value: &serde_json::Value, key: &str, out: &mut Vec<(String, u64)>) {
+        match value {
+            serde_json::Value::Number(n) if key != "resets_at" => {
+                out.extend(n.as_u64().map(|n| (key.to_owned(), n)));
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| numbers(v, key, out)),
+            serde_json::Value::Object(o) => o.iter().for_each(|(k, v)| numbers(v, k, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn nothing_the_daemon_keeps_on_disk_holds_a_clock_time() {
+        use daifuku_core::state::HookEvent;
+        use daifuku_core::usage::{Limits, Window};
+        const WEEK: u64 = 7 * 24 * 3600;
+        let dir = std::env::temp_dir().join(format!("daifukud-noclock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut d = daemon();
+        d.state_file = Some(dir.join("state.json"));
+        d.peers_file = Some(dir.join("peers.json"));
+        d.usage.file = Some(dir.join("usage.json"));
+        d.queue.file = Some(dir.join("tasks.json"));
+
+        d.agents.apply(
+            7,
+            &HookEvent {
+                session_id: "s".into(),
+                hook_event_name: "PermissionRequest".into(),
+                daifuku_at: Some(clock::ticks()),
+                ..HookEvent::default()
+            },
+        );
+        d.note_states();
+        d.save(true);
+        d.peers.push(Peer {
+            window: 7,
+            spawn: Spawn {
+                directory: r"C:\src".into(),
+                resume: Some("s".into()),
+                ..Spawn::default()
+            },
+        });
+        d.save_peers();
+        d.usage_report(&UsageReport {
+            usage: Limits {
+                five_hour: Some(Window {
+                    used: 40,
+                    resets_at: wall_seconds() + 3600,
+                }),
+                seven_day: None,
+            },
+            folder: r"C:\Users\me\.claude".into(),
+            window: None,
+        });
+        d.queue.claim(queue::Claim {
+            backlog: dir.join("BACKLOG.md"),
+            id: "T1".into(),
+            window: 7,
+            session: "s".into(),
+            at: wall_seconds(),
+        });
+        d.queue.save();
+
+        let now = wall_seconds();
+        let mut clock_times = Vec::new();
+        for name in ["state.json", "peers.json", "usage.json", "tasks.json"] {
+            let text = std::fs::read_to_string(dir.join(name)).unwrap();
+            let mut found = Vec::new();
+            numbers(&serde_json::from_str(&text).unwrap(), "", &mut found);
+            clock_times.extend(
+                found
+                    .into_iter()
+                    .filter(|(_, n)| n.abs_diff(now) < WEEK)
+                    .map(|(key, n)| format!("{name}: {key} {n}")),
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(clock_times, Vec::<String>::new());
+    }
+
     #[test]
     fn a_restarted_daemon_takes_back_its_agents_and_lets_go_of_dead_windows() {
         use daifuku_core::state::HookEvent;
