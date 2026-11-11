@@ -705,7 +705,7 @@ impl Daemon {
             id: task.id.clone(),
             window: w,
             session: event.session_id.clone(),
-            since: stamp(),
+            since: now_stamp(),
         });
         if !claimed {
             tracing::warn!("handed out no task: too many are out");
@@ -747,7 +747,7 @@ impl Daemon {
             .filter(|f| f.backlog.is_some())
             .cloned()
             .collect();
-        let now = stamp();
+        let now = now_stamp();
         let mut settled = false;
         let mut queues = Vec::new();
         for fleet in fleets {
@@ -972,7 +972,7 @@ impl Daemon {
     /// when the numbers changed: a status line runs after every answer.
     fn usage_report(&mut self, report: &UsageReport) {
         let window = report.window.and_then(daifuku_win::console::visible_window);
-        if self.usage.note(report, window, stamp()) {
+        if self.usage.note(report, window, now_stamp()) {
             self.usage.save();
             // The first numbers of an account with rules may lift its stop.
             self.idle_stale = true;
@@ -1608,7 +1608,7 @@ impl Daemon {
             agents,
             peers,
             terminals: self.terminals(),
-            usage: self.usage.status(&self.config, wall_seconds(), stamp()),
+            usage: self.usage.status(&self.config, wall_seconds(), now_stamp()),
         }
     }
 
@@ -3310,7 +3310,7 @@ fn dim(c: daifuku_core::config::Colour, k: f64) -> daifuku_core::config::Colour 
 }
 
 /// Now, as the daemon keeps it on disk: with no clock time.
-fn stamp() -> Stamp {
+fn now_stamp() -> Stamp {
     Stamp {
         boot_id: clock::boot_id(),
         ticks: clock::ticks(),
@@ -5501,7 +5501,7 @@ mod tests {
             id: "T1".into(),
             window: 7,
             session: "s".into(),
-            since: stamp(),
+            since: now_stamp(),
         });
         d.queue.save();
 
