@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use daifuku_core::config::{Config, LimitWindow, LocalTime, folder_key};
 use daifuku_core::protocol::{AccountUsage, FleetEvent, UsageReport, WindowUsage};
+use daifuku_core::saved::Stamp;
 use daifuku_core::usage::{Change, FIVE_HOURS, Limits, SEVEN_DAYS, Seen, Window};
 use serde::{Deserialize, Serialize};
 
@@ -27,8 +28,10 @@ const MAX_FOLDER: usize = 1024;
 struct Entry {
     /// Its Claude Code folder, as the status line wrote it.
     folder: String,
-    /// When they were reported, in seconds since 1970.
-    at: u64,
+    /// When they were reported, by the start of Windows and its interrupt
+    /// time; none from a version that kept the clock time.
+    #[serde(default)]
+    since: Stamp,
     limits: Limits,
 }
 
@@ -49,9 +52,9 @@ pub struct Book {
 
 impl Book {
     /// Takes in one report, `window` being the terminal it came from as the
-    /// daemon checked it. True when an account's numbers changed, and so
-    /// perhaps its warning.
-    pub fn note(&mut self, report: &UsageReport, window: Option<u64>, now: u64) -> bool {
+    /// daemon checked it, and `at` now. True when an account's numbers
+    /// changed, and so perhaps its warning.
+    pub fn note(&mut self, report: &UsageReport, window: Option<u64>, at: Stamp) -> bool {
         let folder = report.folder.trim();
         if folder.is_empty() || folder.chars().count() > MAX_FOLDER {
             return false;
@@ -92,7 +95,7 @@ impl Book {
         let changed = old.as_ref().is_none_or(|e| e.limits != limits);
         self.entries.push(Entry {
             folder: folder.to_owned(),
-            at: now,
+            since: at,
             limits,
         });
         changed
@@ -128,8 +131,9 @@ impl Book {
             .map(|e| e.limits)
     }
 
-    /// Every account, most recently reported first, for `daifuku status`.
-    pub fn status(&self, config: &Config, now: u64) -> Vec<AccountUsage> {
+    /// Every account, most recently reported first, for `daifuku status`:
+    /// `now` the wall clock its windows reset by, `at` the daemon's now.
+    pub fn status(&self, config: &Config, now: u64, at: Stamp) -> Vec<AccountUsage> {
         self.entries
             .iter()
             .rev()
@@ -139,7 +143,7 @@ impl Book {
                 AccountUsage {
                     account: account.map(|(n, _)| n.to_owned()),
                     folder: e.folder.clone(),
-                    age_seconds: now.saturating_sub(e.at),
+                    age_seconds: e.since.seconds_before(at),
                     five_hour: e.limits.five_hour.map(|w| window(w, FIVE_HOURS, now)),
                     seven_day: e.limits.seven_day.map(|w| window(w, SEVEN_DAYS, now)),
                     warn: account.and_then(|(_, a)| a.warn),
@@ -265,6 +269,14 @@ mod tests {
 
     const NOW: u64 = 1_000_000;
 
+    /// `seconds` on in a start of Windows.
+    fn stamp(seconds: u64) -> Stamp {
+        Stamp {
+            boot_id: 290,
+            ticks: seconds * daifuku_core::saved::TICKS_PER_SECOND,
+        }
+    }
+
     fn report(folder: &str, five: Option<u8>, week: Option<u8>) -> UsageReport {
         UsageReport {
             usage: Limits {
@@ -295,23 +307,23 @@ mod tests {
         assert!(b.note(
             &report(r"C:\Users\me\.claude-work", Some(40), Some(20)),
             Some(7),
-            NOW
+            stamp(NOW)
         ));
         assert!(!b.note(
             &report(r"c:\users\me\.claude-work\", Some(40), Some(20)),
             None,
-            NOW + 5
+            stamp(NOW + 5)
         ));
         assert!(b.note(
             &report(r"C:\Users\me\.claude-work", Some(80), None),
             None,
-            NOW + 9
+            stamp(NOW + 9)
         ));
-        let s = b.status(&config(), NOW + 10);
+        let s = b.status(&config(), NOW + 10, stamp(NOW + 10));
         assert_eq!(s.len(), 1);
         let work = &s[0];
         assert_eq!(work.account.as_deref(), Some("work"));
-        assert_eq!(work.age_seconds, 1);
+        assert_eq!(work.age_seconds, Some(1));
         assert_eq!(work.five_hour.unwrap().used, 80);
         // The weekly number the last report left out stays.
         assert_eq!(work.seven_day.unwrap().used, 20);
@@ -323,12 +335,12 @@ mod tests {
     fn a_report_from_before_the_reset_keeps_the_newer_window() {
         let mut b = Book::default();
         let folder = r"C:\Users\me\.claude-work";
-        b.note(&report(folder, Some(5), Some(30)), None, NOW);
+        b.note(&report(folder, Some(5), Some(30)), None, stamp(NOW));
         let mut late = report(folder, Some(90), Some(29));
         late.usage.five_hour.as_mut().unwrap().resets_at -= FIVE_HOURS;
         late.usage.seven_day.as_mut().unwrap().resets_at -= 60;
-        assert!(b.note(&late, None, NOW + 5));
-        let s = b.status(&config(), NOW + 5);
+        assert!(b.note(&late, None, stamp(NOW + 5)));
+        let s = b.status(&config(), NOW + 5, stamp(NOW + 5));
         assert_eq!(s[0].five_hour.unwrap().used, 5);
         // The same week a little later is still the latest report.
         assert_eq!(s[0].seven_day.unwrap().used, 29);
@@ -340,9 +352,9 @@ mod tests {
         b.note(
             &report(r"C:\Users\me\.claude", Some(99), Some(99)),
             None,
-            NOW,
+            stamp(NOW),
         );
-        let s = b.status(&config(), NOW);
+        let s = b.status(&config(), NOW, stamp(NOW));
         assert_eq!(
             (s[0].account.as_deref(), s[0].warn, s[0].warning),
             (None, None, false)
@@ -355,12 +367,14 @@ mod tests {
         b.note(
             &report(r"C:\Users\me\.claude-work", Some(90), Some(10)),
             None,
-            NOW,
+            stamp(NOW),
         );
         let folder = Path::new(r"C:\Users\me\.claude-work");
         assert!(b.warning(&config(), folder, NOW + 3599));
         assert!(!b.warning(&config(), folder, NOW + 3600));
-        let five = b.status(&config(), NOW + 3600)[0].five_hour.unwrap();
+        let five = b.status(&config(), NOW + 3600, stamp(NOW + 3600))[0]
+            .five_hour
+            .unwrap();
         assert_eq!((five.resets_in_seconds, five.pace), (None, None));
     }
 
@@ -369,20 +383,24 @@ mod tests {
         let mut b = Book::default();
         let mut r = report(r"C:\x", None, None);
         r.window = Some(3);
-        assert!(!b.note(&r, Some(3), NOW));
+        assert!(!b.note(&r, Some(3), stamp(NOW)));
         assert_eq!(b.folder_of(3), Some(r"C:\x"));
-        assert!(b.status(&config(), NOW).is_empty());
+        assert!(b.status(&config(), NOW, stamp(NOW)).is_empty());
     }
 
     #[test]
     fn made_up_folders_cannot_grow_the_book_without_end() {
         let mut b = Book::default();
         for i in 0..100 {
-            b.note(&report(&format!(r"C:\f{i}"), Some(1), None), Some(i), NOW);
+            b.note(
+                &report(&format!(r"C:\f{i}"), Some(1), None),
+                Some(i),
+                stamp(NOW),
+            );
         }
-        assert_eq!(b.status(&config(), NOW).len(), MAX_ACCOUNTS);
+        assert_eq!(b.status(&config(), NOW, stamp(NOW)).len(), MAX_ACCOUNTS);
         assert!(b.folder_of(99).is_some());
-        assert!(!b.note(&report("  ", Some(1), None), None, NOW));
+        assert!(!b.note(&report("  ", Some(1), None), None, stamp(NOW)));
     }
 
     #[test]
@@ -401,9 +419,13 @@ mod tests {
         b.note(
             &report(r"C:\Users\me\.claude-work", Some(70), Some(20)),
             None,
-            NOW,
+            stamp(NOW),
         );
-        b.note(&report(r"C:\Users\me\.claude", Some(90), None), None, NOW);
+        b.note(
+            &report(r"C:\Users\me\.claude", Some(90), None),
+            None,
+            stamp(NOW),
+        );
         assert!(
             b.watch(&config, at(NOW)).is_empty(),
             "nothing on first sight"
@@ -411,7 +433,7 @@ mod tests {
         b.note(
             &report(r"c:\users\me\.claude-work", Some(80), Some(21)),
             None,
-            NOW + 1,
+            stamp(NOW + 1),
         );
         assert_eq!(
             b.watch(&config, at(NOW + 1)),
@@ -456,8 +478,8 @@ mod tests {
             file: Some(file.clone()),
             ..Book::default()
         };
-        b.note(&report(r"C:\a", Some(50), None), None, NOW);
-        b.note(&report(r"C:\b", Some(5), Some(5)), None, NOW);
+        b.note(&report(r"C:\a", Some(50), None), None, stamp(NOW));
+        b.note(&report(r"C:\b", Some(5), Some(5)), None, stamp(NOW));
         b.save();
         let mut again = Book {
             file: Some(file),
@@ -465,7 +487,7 @@ mod tests {
         };
         // An hour on, the first account's only window has reset.
         again.load(NOW + 3600);
-        let s = again.status(&config(), NOW + 3600);
+        let s = again.status(&config(), NOW + 3600, stamp(NOW + 3600));
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].folder, r"C:\b");
         let _ = std::fs::remove_dir_all(&dir);

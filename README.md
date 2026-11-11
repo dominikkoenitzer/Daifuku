@@ -275,7 +275,7 @@ install names that file, and doctor names it when the hooks there are
 missing.
 
 The config lives in `C:\ProgramData\Daifuku`. The daemon keeps its saved
-state and its logs, a file a day in a `logs` folder, in
+state and its log, in a `logs` folder, in
 `%LocalAppData%\Daifuku`, or beside the config when the config sets
 `"elevated": true`.
 

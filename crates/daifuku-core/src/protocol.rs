@@ -289,8 +289,10 @@ pub struct AccountUsage {
     pub account: Option<String>,
     /// Its folder.
     pub folder: String,
-    /// How long ago a status line last reported it, in seconds.
-    pub age_seconds: u64,
+    /// How long ago a status line last reported it, in seconds; left out
+    /// when that was before Windows last started, or before an update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_seconds: Option<u64>,
     /// The 5-hour window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub five_hour: Option<WindowUsage>,
@@ -368,8 +370,10 @@ pub struct HandedTo {
     pub label: Option<String>,
     /// The session it was handed to.
     pub session_id: String,
-    /// How long ago, in seconds.
-    pub age_seconds: u64,
+    /// How long ago, in seconds; left out when that was before Windows last
+    /// started, or before an update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_seconds: Option<u64>,
 }
 
 /// One event as the daemon logged it.
@@ -840,7 +844,7 @@ mod tests {
             usage: vec![AccountUsage {
                 account: Some("work".into()),
                 folder: r"C:\Users\me\.claude-work".into(),
-                age_seconds: 12,
+                age_seconds: Some(12),
                 five_hour: Some(WindowUsage {
                     used: 80,
                     resets_at: 1_792_548_000,

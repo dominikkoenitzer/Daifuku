@@ -2154,7 +2154,9 @@ fn usage_line(u: &daifuku_core::protocol::AccountUsage) -> String {
         .into_iter()
         .filter_map(|(name, w)| Some(window(name, &w?)))
         .collect();
-    parts.push(format!("{} ago", since(u.age_seconds)));
+    if let Some(age) = u.age_seconds {
+        parts.push(format!("{} ago", since(age)));
+    }
     if let Some(warn) = u.warn {
         parts.push(if u.warning {
             format!("past its warn at {warn}%")
@@ -2205,7 +2207,10 @@ fn tasks_text(fleets: &[daifuku_core::protocol::FleetQueue]) -> String {
                     .clone()
                     .or_else(|| h.window.map(|w| format!("{w:#010x}")))
                     .unwrap_or_else(|| format!("session {}, terminal closed", h.session_id));
-                let _ = write!(out, ", with {who} for {}", since(h.age_seconds));
+                let _ = write!(out, ", with {who}");
+                if let Some(age) = h.age_seconds {
+                    let _ = write!(out, " for {}", since(age));
+                }
             }
             out.push('\n');
         }
@@ -2394,7 +2399,7 @@ mod tests {
         let mut u = AccountUsage {
             account: Some("work".into()),
             folder: r"C:\Users\me\.claude-work".into(),
-            age_seconds: 125,
+            age_seconds: Some(125),
             five_hour: Some(WindowUsage {
                 used: 80,
                 resets_at: 0,
@@ -2966,7 +2971,7 @@ mod tests {
                             window: Some(0x1234),
                             label: Some("crew 1".into()),
                             session_id: "s".into(),
-                            age_seconds: 90,
+                            age_seconds: Some(90),
                         }),
                     ),
                     task("A2", None),
