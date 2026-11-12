@@ -292,6 +292,42 @@ mod tests {
     }
 
     #[test]
+    fn a_log_written_past_midnight_moves_to_the_new_day() {
+        use std::os::windows::fs::{FileTimesExt, OpenOptionsExt};
+        const TICKS_PER_DAY: i64 = 24 * 3600 * 10_000_000;
+        // File time ticks from 1601 to 1970.
+        const UNIX_START: i64 = 116_444_736_000_000_000;
+        let dir = scratch("midnight");
+        let mut log = Rolling::open(&dir, 1 << 20, 3).unwrap();
+        log.write_all(b"before\n").unwrap();
+        // A daemon started the day before: that day's stamp on disk and in `day`.
+        let yesterday = daifuku_win::day::start_of_today().unwrap() - TICKS_PER_DAY;
+        let at = std::time::UNIX_EPOCH
+            + std::time::Duration::from_nanos(u64::try_from(yesterday - UNIX_START).unwrap() * 100);
+        for path in [log_path(&dir, 0), dir.clone()] {
+            OpenOptions::new()
+                // FILE_WRITE_ATTRIBUTES, and FILE_FLAG_BACKUP_SEMANTICS for the folder.
+                .access_mode(0x100)
+                .custom_flags(0x0200_0000)
+                .open(&path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_created(at)
+                        .set_accessed(at)
+                        .set_modified(at),
+                )
+                .unwrap();
+        }
+        log.day = Some(yesterday);
+        log.write_all(b"after\n").unwrap();
+        drop(log);
+        let finer = finer_than_the_day(&[log_path(&dir, 0), dir.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(finer, Vec::<String>::new());
+    }
+
+    #[test]
     fn the_log_goes_on_where_the_last_daemon_left_it() {
         let dir = scratch("reopen");
         std::fs::write(log_path(&dir, 0), "old\nold\n").unwrap();
