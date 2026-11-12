@@ -5587,7 +5587,7 @@ mod tests {
             id: id.to_owned(),
             window,
             session: session.to_owned(),
-            at: 1,
+            since: Stamp::default(),
         };
         d.queue.claim(claim("A1", 7, "s1"));
         d.queue.claim(claim("A2", 8, "s2"));
@@ -5724,7 +5724,7 @@ mod tests {
             id: id.into(),
             window,
             session: format!("s{window}"),
-            at: 1,
+            since: Stamp::default(),
         };
         d.queue.claim(claim(r"C:\work\BACKLOG.md", "A1", 1));
         d.queue.claim(claim(r"C:\docs\BACKLOG.md", "A1", 2));

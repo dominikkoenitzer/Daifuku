@@ -1753,7 +1753,7 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
 
     // As at a restart of Windows: the daemon stops, then its terminal goes,
     // and the next daemon runs in a later start of Windows. A runner cannot
-    // restart, so the file is moved a day back instead.
+    // restart, so the file is set to the start of Windows before this one.
     stop(&mut cleanup);
     assert!(window::close(w));
     wait_for("the peer to close", Duration::from_secs(15), || {
@@ -1761,10 +1761,9 @@ fn a_spawned_peer_comes_back_by_its_session_after_a_restart() {
     });
     let file = peers_file(&state);
     let mut kept = json(&std::fs::read_to_string(&file).unwrap());
-    let day = 86_400;
-    kept["boot"] = (kept["boot"].as_u64().unwrap() - day).into();
+    kept["boot_id"] = (kept["boot_id"].as_u64().unwrap() - 1).into();
     for p in kept["peers"].as_array_mut().unwrap() {
-        p["boot"] = (p["boot"].as_u64().unwrap() - day).into();
+        p["boot_id"] = (p["boot_id"].as_u64().unwrap() - 1).into();
     }
     std::fs::write(&file, kept.to_string()).unwrap();
     let (mut cleanup, first) = start_with(&config, Some(&state), &[]);
@@ -2878,7 +2877,7 @@ fn a_fleet_that_resumes_opens_each_terminal_back_in_its_cell_and_session() {
 
     // As at a restart of Windows: the daemon stops, then the terminals go,
     // and the next daemon runs in a later start of Windows. A runner cannot
-    // restart, so the file is moved a day back instead.
+    // restart, so the file is set to the start of Windows before this one.
     stop(&mut cleanup);
     for &w in &again {
         assert!(window::close(w));
@@ -2888,10 +2887,9 @@ fn a_fleet_that_resumes_opens_each_terminal_back_in_its_cell_and_session() {
     });
     let file = peers_file(&state);
     let mut saved = json(&std::fs::read_to_string(&file).unwrap());
-    let day = 86_400;
-    saved["boot"] = (saved["boot"].as_u64().unwrap() - day).into();
+    saved["boot_id"] = (saved["boot_id"].as_u64().unwrap() - 1).into();
     for p in saved["peers"].as_array_mut().unwrap() {
-        p["boot"] = (p["boot"].as_u64().unwrap() - day).into();
+        p["boot_id"] = (p["boot_id"].as_u64().unwrap() - 1).into();
     }
     std::fs::write(&file, saved.to_string()).unwrap();
     let (mut cleanup, first) = start_with(&config, Some(&state), &[]);
