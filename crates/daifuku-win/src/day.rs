@@ -154,7 +154,8 @@ pub fn hold_day_only(file: &File) -> io::Result<()> {
 
 /// Reads `path` as text without leaving the moment of the read in its last
 /// access time. A file the reader may not set times on, such as one another
-/// user's daemon wrote, is read as it is.
+/// user's daemon wrote, or one on a disk that cannot hold them, is read as
+/// it is.
 ///
 /// # Errors
 /// As [`std::fs::read_to_string`], the sharing violation of a file another
@@ -174,7 +175,8 @@ fn read_holding(path: &Path, hold: impl FnOnce(&File) -> io::Result<()>) -> io::
         }
         Err(e) => return Err(e),
     };
-    hold(&file)?;
+    // The text counts for more than the moment of the read, so a failed hold reads on.
+    let _ = hold(&file);
     let mut text = String::new();
     io::Read::read_to_string(&mut file, &mut text)?;
     Ok(text)
