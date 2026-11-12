@@ -215,7 +215,7 @@ impl Book {
     /// has nothing left worth showing and is dropped.
     pub fn load(&mut self, now: u64) {
         let Some(file) = &self.file else { return };
-        let Ok(text) = std::fs::read_to_string(file) else {
+        let Ok(text) = daifuku_win::day::read_day_only(file) else {
             return;
         };
         let Ok(mut entries) = serde_json::from_str::<Vec<Entry>>(&text) else {

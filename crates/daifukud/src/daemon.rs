@@ -2103,7 +2103,7 @@ impl Daemon {
             return;
         };
         let file = state_to_read(own, self.legacy_state_file.as_deref());
-        let text = match std::fs::read_to_string(file) {
+        let text = match daifuku_win::day::read_day_only(file) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => {
@@ -3594,7 +3594,20 @@ pub(crate) fn replace_file(path: &std::path::Path, text: &str) -> std::io::Resul
     std::io::Write::write_all(&mut f, text.as_bytes())?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&new, path)
+    std::fs::rename(&new, path)?;
+    keep_day_only(path);
+    Ok(())
+}
+
+/// Leaves only the day in the times of `path` and of its folder, which the
+/// rename moved too. One whose times cannot be set keeps them: the file
+/// itself was written.
+pub(crate) fn keep_day_only(path: &std::path::Path) {
+    for p in std::iter::once(path).chain(path.parent()) {
+        if let Err(e) = daifuku_win::day::keep_day_only(p) {
+            tracing::debug!(path = %p.display(), error = %e, "could not set the file times");
+        }
+    }
 }
 
 /// When a file last changed, `None` when it does not exist.
@@ -3608,7 +3621,7 @@ fn stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
 fn read_while_held(file: &std::path::Path) -> std::io::Result<String> {
     let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
     loop {
-        match std::fs::read_to_string(file) {
+        match daifuku_win::day::read_day_only(file) {
             // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
             Err(e)
                 if matches!(e.raw_os_error(), Some(32 | 33))

@@ -1,5 +1,6 @@
 //! The log file. The daemon has no console, so the file is the only place it
-//! can say anything. Its lines hold no time: the newest is the last one.
+//! can say anything. Its lines hold no time: the newest is the last one. Its
+//! times on disk hold the day only.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -98,6 +99,8 @@ struct Rolling {
     written: u64,
     max: u64,
     kept: usize,
+    /// The start of the day the file's times hold, `None` before they do.
+    day: Option<i64>,
 }
 
 impl Rolling {
@@ -108,13 +111,30 @@ impl Rolling {
             .append(true)
             .open(log_path(dir, 0))?;
         let written = file.metadata()?.len();
-        Ok(Self {
+        let mut log = Self {
             dir: dir.to_owned(),
             file,
             written,
             max,
             kept,
-        })
+            day: None,
+        };
+        log.hold_day();
+        // The older logs an earlier version wrote keep their moments until
+        // a roll moves them, so they get the day now.
+        for n in 1..kept {
+            let _ = daifuku_win::day::keep_day_only(&log_path(dir, n));
+        }
+        Ok(log)
+    }
+
+    /// Sets the times of the file written now and of the folder to the
+    /// start of today, and holds the file's there while it is written, so a
+    /// line costs no call to keep them.
+    fn hold_day(&mut self) {
+        self.day = daifuku_win::day::start_of_today().ok();
+        let _ = daifuku_win::day::hold_day_only(&self.file);
+        let _ = daifuku_win::day::keep_day_only(&self.dir);
     }
 
     /// Moves every log one older, the oldest out, and starts a new one. A
@@ -124,6 +144,10 @@ impl Rolling {
         for n in (0..self.kept - 1).rev() {
             let _ = std::fs::rename(log_path(&self.dir, n), log_path(&self.dir, n + 1));
         }
+        // A move changes a file's times as well as its name.
+        for n in 1..self.kept {
+            let _ = daifuku_win::day::keep_day_only(&log_path(&self.dir, n));
+        }
         if let Ok(file) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -132,6 +156,7 @@ impl Rolling {
             self.file = file;
         }
         self.written = 0;
+        self.hold_day();
     }
 }
 
@@ -139,6 +164,9 @@ impl Write for Rolling {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.written > 0 && self.written + buf.len() as u64 > self.max {
             self.roll();
+        } else if daifuku_win::day::start_of_today().ok() != self.day {
+            // A daemon that runs past midnight moves its log to the new day.
+            self.hold_day();
         }
         let n = self.file.write(buf)?;
         self.written += n as u64;

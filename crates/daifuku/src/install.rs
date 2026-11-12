@@ -1989,16 +1989,20 @@ pub(crate) fn log_failure(what: &str, error: &anyhow::Error) {
 
 /// Appends `<what> failed: <error>` to [`FAILURE_LOG`] in `dir`, the error
 /// and its causes on one line, with no time: the newest line is the last.
+/// The file and the folder keep only the day in their times.
 fn append_failure(dir: &Path, what: &str, error: &anyhow::Error) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let cause = format!("{error:#}").replace(['\r', '\n'], " ");
     let line = format!("{what} failed: {cause}\n");
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join(FAILURE_LOG))?
-        .write_all(line.as_bytes())
+        .open(dir.join(FAILURE_LOG))?;
+    let _ = daifuku_win::day::hold_day_only(&file);
+    file.write_all(line.as_bytes())?;
+    let _ = daifuku_win::day::keep_day_only(dir);
+    Ok(())
 }
 
 /// Runs `write`, which makes `to`, again for a few seconds while it fails,
