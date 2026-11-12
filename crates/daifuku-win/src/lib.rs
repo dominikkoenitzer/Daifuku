@@ -8,6 +8,7 @@
 //!
 //! - [`access`]: high contrast, reduced motion and the notification sound.
 //! - [`clock`]: a clock that setting the time does not move.
+//! - [`day`]: file times that hold the day and nothing finer.
 //! - [`dpi`]: per-monitor DPI awareness, which every other call depends on.
 //! - [`monitor`]: the attached monitors in physical pixels.
 //! - [`window`]: reading windows and placing them by their visible frame.
@@ -30,6 +31,7 @@ pub mod access;
 pub mod apps;
 pub mod clock;
 pub mod console;
+pub mod day;
 pub mod dpi;
 pub mod elevate;
 pub mod environment;

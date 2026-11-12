@@ -3385,6 +3385,26 @@ mod tests {
     }
 
     #[test]
+    fn the_failure_log_and_its_folder_hold_only_the_day_in_their_times() {
+        use daifuku_win::day::{Times, start_of_today, times};
+        let dir = Scratch::new("faillogday");
+        let logs = dir.0.join("logs");
+        append_failure(&logs, "install", &anyhow!("access denied")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        append_failure(&logs, "uninstall", &anyhow!("access denied")).unwrap();
+
+        let day = start_of_today().unwrap();
+        let only_day = Times {
+            created: day,
+            accessed: day,
+            written: day,
+            changed: day,
+        };
+        assert_eq!(times(&logs.join(FAILURE_LOG)).unwrap(), only_day);
+        assert_eq!(times(&logs).unwrap(), only_day);
+    }
+
+    #[test]
     fn without_a_daemon_the_install_stops_before_it_copies_anything() {
         let dir = Scratch::new("none");
         let to = dir.0.join("Daifuku");

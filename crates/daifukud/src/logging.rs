@@ -210,6 +210,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Each of `paths` whose times hold more than the start of today.
+    fn finer_than_the_day(paths: &[PathBuf]) -> Vec<String> {
+        use daifuku_win::day::{Times, start_of_today, times};
+        let day = start_of_today().unwrap();
+        let only_day = Times {
+            created: day,
+            accessed: day,
+            written: day,
+            changed: day,
+        };
+        paths
+            .iter()
+            .filter_map(|path| {
+                let kept = times(path).unwrap();
+                (kept != only_day).then(|| format!("{}: {kept:?} for {day}", path.display()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_logs_and_their_folder_hold_only_the_day_in_their_times() {
+        let dir = scratch("day");
+        // What the last daemon left, with the moment it wrote it.
+        std::fs::write(log_path(&dir, 0), "old\n").unwrap();
+        let mut log = Rolling::open(&dir, 8, 3).unwrap();
+        for line in ["a", "b", "c", "d"] {
+            log.write_all(format!("{line}{line}{line}\n").as_bytes())
+                .unwrap();
+            log.flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        drop(log);
+        let mut paths: Vec<PathBuf> = [0, 1, 2].map(|n| log_path(&dir, n)).into();
+        paths.push(dir.clone());
+        let finer = finer_than_the_day(&paths);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(finer, Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_older_logs_an_earlier_daemon_left_hold_only_the_day_too() {
+        let dir = scratch("dayold");
+        for n in [0, 1, 2] {
+            std::fs::write(log_path(&dir, n), "old\n").unwrap();
+        }
+        let mut log = Rolling::open(&dir, 1 << 20, 3).unwrap();
+        log.write_all(b"new\n").unwrap();
+        drop(log);
+        let finer = finer_than_the_day(&[1, 2].map(|n| log_path(&dir, n)));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(finer, Vec::<String>::new());
+    }
+
     #[test]
     fn the_log_goes_on_where_the_last_daemon_left_it() {
         let dir = scratch("reopen");
