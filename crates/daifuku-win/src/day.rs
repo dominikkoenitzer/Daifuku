@@ -160,6 +160,13 @@ pub fn hold_day_only(file: &File) -> io::Result<()> {
 /// As [`std::fs::read_to_string`], the sharing violation of a file another
 /// program holds included.
 pub fn read_day_only(path: &Path) -> io::Result<String> {
+    read_holding(path, |file| {
+        set(handle(file), UNCHANGED, HELD, UNCHANGED, HELD)
+    })
+}
+
+/// [`read_day_only`] with the step that holds the times passed in.
+fn read_holding(path: &Path, hold: impl FnOnce(&File) -> io::Result<()>) -> io::Result<String> {
     let mut file = match open(path, FILE_GENERIC_READ.0 | FILE_WRITE_ATTRIBUTES.0) {
         Ok(file) => file,
         Err(e) if e.raw_os_error() == Some(i32::try_from(ERROR_ACCESS_DENIED.0).unwrap_or(5)) => {
@@ -167,7 +174,7 @@ pub fn read_day_only(path: &Path) -> io::Result<String> {
         }
         Err(e) => return Err(e),
     };
-    set(handle(&file), UNCHANGED, HELD, UNCHANGED, HELD)?;
+    hold(&file)?;
     let mut text = String::new();
     io::Read::read_to_string(&mut file, &mut text)?;
     Ok(text)
@@ -298,5 +305,15 @@ mod tests {
             "a plain read moved its file's: {moved}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_whose_times_cannot_be_held_is_read_all_the_same() {
+        let dir = scratch("unheld");
+        let path = dir.join("tasks.json");
+        std::fs::write(&path, "[1]").unwrap();
+        let text = read_holding(&path, |_| Err(io::Error::other("no times on this disk")));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(text.unwrap(), "[1]");
     }
 }
