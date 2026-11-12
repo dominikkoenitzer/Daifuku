@@ -147,7 +147,7 @@ runs.
 | `usage` | array of objects | Each account a status line reported for, most recent first (after 0.3.0). |
 | `usage[].account` | string | Its name under `accounts`; left out for a folder no account names. |
 | `usage[].folder` | string | Its Claude Code folder. |
-| `usage[].age_seconds` | integer | How long ago a status line last reported it. |
+| `usage[].age_seconds` | integer | How long ago a status line last reported it; left out when that was before Windows last started. |
 | `usage[].five_hour`, `usage[].seven_day` | object | The 5-hour and the weekly window; left out when Claude Code has not reported it. |
 | `...used` | integer | The share used, in percent, when it was reported. |
 | `...resets_at` | integer | When the window starts over, in seconds since 1970. |
@@ -300,7 +300,7 @@ terminal ([configuration](configuration.md)).
 | `fleets[].tasks[].id` | string | The task's id. |
 | `fleets[].tasks[].title` | string | The rest of its heading's first part. |
 | `fleets[].tasks[].status` | string | Its `status:` field. |
-| `fleets[].tasks[].handed_to` | object | Who has it; left out when nobody does. `window` and `label` are the terminal and its label, left out once it closed; `session_id` is the session it went to, and `age_seconds` how long ago. |
+| `fleets[].tasks[].handed_to` | object | Who has it; left out when nobody does. `window` and `label` are the terminal and its label, left out once it closed; `session_id` is the session it went to, and `age_seconds` how long ago, left out when that was before Windows last started. |
 | `fleets[].next` | string | The task that goes out next; left out when there is none. |
 | `fleets[].stopped` | string | Why no task goes out now, as the account's `stop_at` says, such as `5h 80%, stops at 75%`; left out while tasks go out. |
 

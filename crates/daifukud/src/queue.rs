@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use daifuku_core::backlog::{self, Task};
 use daifuku_core::config::{folder_key, io_reason};
+use daifuku_core::saved::Stamp;
 use serde::{Deserialize, Serialize};
 
 /// The most tasks handed out at once, across every backlog.
@@ -29,8 +30,10 @@ pub struct Claim {
     pub window: u64,
     /// The session it went to.
     pub session: String,
-    /// When, in seconds since 1970.
-    pub at: u64,
+    /// When, by the start of Windows and its interrupt time; none from a
+    /// version that kept the clock time.
+    #[serde(default)]
+    pub since: Stamp,
 }
 
 /// A backlog as read.
@@ -256,7 +259,7 @@ mod tests {
             id: id.to_owned(),
             window,
             session: session.to_owned(),
-            at: 1,
+            since: Stamp::default(),
         }
     }
 

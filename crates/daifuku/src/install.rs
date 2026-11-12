@@ -1965,10 +1965,7 @@ const FAILURE_LOG: &str = "install.log";
 /// elevated one in a hidden window is, still leaves its cause on record.
 /// Writing is best effort: a log that cannot be written changes nothing.
 pub(crate) fn log_failure(what: &str, error: &anyhow::Error) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let write = |dir: PathBuf| append_failure(&dir, what, error, now);
+    let write = |dir: PathBuf| append_failure(&dir, what, error);
     if !process::current_is_elevated() {
         if let Some(dir) = paths::log_dir(false) {
             let _ = write(dir);
@@ -1990,40 +1987,18 @@ pub(crate) fn log_failure(what: &str, error: &anyhow::Error) {
     }
 }
 
-/// Appends `<UTC time> <what> failed: <error>` to [`FAILURE_LOG`] in `dir`,
-/// the error and its causes on one line, at `now`, seconds since 1970.
-fn append_failure(dir: &Path, what: &str, error: &anyhow::Error, now: u64) -> std::io::Result<()> {
+/// Appends `<what> failed: <error>` to [`FAILURE_LOG`] in `dir`, the error
+/// and its causes on one line, with no time: the newest line is the last.
+fn append_failure(dir: &Path, what: &str, error: &anyhow::Error) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let cause = format!("{error:#}").replace(['\r', '\n'], " ");
-    let line = format!("{} {what} failed: {cause}\n", utc_stamp(now));
+    let line = format!("{what} failed: {cause}\n");
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join(FAILURE_LOG))?
         .write_all(line.as_bytes())
-}
-
-/// `secs` since 1970 as `YYYY-MM-DDTHH:MM:SSZ`, the form the daemon's log
-/// lines start with.
-fn utc_stamp(secs: u64) -> String {
-    let (days, rest) = (secs / 86_400, secs % 86_400);
-    // Days to a civil date, counted in 400-year eras from 1 March 0000.
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + u64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rest / 3600,
-        rest % 3600 / 60,
-        rest % 60
-    )
 }
 
 /// Runs `write`, which makes `to`, again for a few seconds while it fails,
@@ -3397,23 +3372,16 @@ mod tests {
             .context(r"could not write C:\Program Files\Daifuku\daifuku.exe");
         let second = anyhow!("the daemon did not stop\nin time");
 
-        append_failure(&logs, "install", &first, 1_794_174_612).unwrap();
-        append_failure(&logs, "uninstall", &second, 1_794_174_673).unwrap();
+        append_failure(&logs, "install", &first).unwrap();
+        append_failure(&logs, "uninstall", &second).unwrap();
         let text = std::fs::read_to_string(logs.join(FAILURE_LOG)).unwrap();
 
         assert_eq!(
             text,
-            "2026-11-08T21:50:12Z install failed: could not write \
+            "install failed: could not write \
              C:\\Program Files\\Daifuku\\daifuku.exe: access denied\n\
-             2026-11-08T21:51:13Z uninstall failed: the daemon did not stop in time\n"
+             uninstall failed: the daemon did not stop in time\n"
         );
-    }
-
-    #[test]
-    fn times_are_written_as_utc_dates() {
-        assert_eq!(utc_stamp(0), "1970-01-01T00:00:00Z");
-        assert_eq!(utc_stamp(951_782_400), "2000-02-29T00:00:00Z");
-        assert_eq!(utc_stamp(4_102_444_799), "2099-12-31T23:59:59Z");
     }
 
     #[test]
