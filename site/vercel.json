@@ -50,5 +50,16 @@
       "destination": "https://github.com/dominikkoenitzer/Daifuku/releases/latest/download/daifuku-windows-arm64.zip.sha256",
       "permanent": false
     }
+  ],
+  "headers": [
+    {
+      "source": "/diag(.*)",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
+        }
+      ]
+    }
   ]
 }
