@@ -13,6 +13,11 @@
   reported since Windows last started. The first start after the update
   reads no saved fleet state and takes back only the peers whose terminals
   are still open.
+- The times Windows keeps on the files Daifuku writes hold the day and
+  nothing finer. After each save the state, peers, usage and task files,
+  the logs, `install.log` and the folders they sit in carry the start of
+  that day as their created, written, accessed and changed times, and
+  reading them back leaves those times as they are.
 
 ## 0.4.2, 2026-11-09
 
