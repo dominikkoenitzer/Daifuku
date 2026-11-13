@@ -13,4 +13,5 @@ portait = "portait"
 BA = "BA"
 
 [files]
-extend-exclude = ["docs/demo.gif", "Cargo.lock", "schema.json"]
+# The diagnostics panel is synced byte for byte from its source, German text included.
+extend-exclude = ["docs/demo.gif", "Cargo.lock", "schema.json", "site/diag/vendor/panel.js"]
