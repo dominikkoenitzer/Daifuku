@@ -415,7 +415,8 @@ jobs:
       # A version with a pre-release part, such as v0.2.0-rc.1, is published
       # as a pre-release, so it never becomes the latest release the README's
       # download link leads to. Only the tag this run is on is published, so
-      # the release can never create a tag of its own.
+      # the release can never create a tag of its own. Generated notes would
+      # list commit authors, so the body is fixed text.
       - name: Publish release
         if: github.ref == format('refs/tags/{0}', inputs.tag || github.ref_name)
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -423,7 +424,8 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: ${{ inputs.tag || github.ref_name }}
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
-          generate_release_notes: true
+          body: "Download and install Daifuku from https://daifuku.punds.ch."
+          generate_release_notes: false
           files: |
             dist/*.exe
             dist/*.exe.sha256
