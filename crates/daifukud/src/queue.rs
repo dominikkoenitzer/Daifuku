@@ -205,7 +205,7 @@ impl Queue {
     /// handle, which Windows may give a new window, holds nothing.
     pub fn load(&mut self, alive: impl Fn(u64) -> bool) {
         let Some(file) = &self.file else { return };
-        let Ok(text) = std::fs::read_to_string(file) else {
+        let Ok(text) = daifuku_win::day::read_day_only(file) else {
             return;
         };
         match serde_json::from_str::<Vec<Claim>>(&text) {

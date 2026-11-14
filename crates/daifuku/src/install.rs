@@ -1989,16 +1989,20 @@ pub(crate) fn log_failure(what: &str, error: &anyhow::Error) {
 
 /// Appends `<what> failed: <error>` to [`FAILURE_LOG`] in `dir`, the error
 /// and its causes on one line, with no time: the newest line is the last.
+/// The file and the folder keep only the day in their times.
 fn append_failure(dir: &Path, what: &str, error: &anyhow::Error) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let cause = format!("{error:#}").replace(['\r', '\n'], " ");
     let line = format!("{what} failed: {cause}\n");
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join(FAILURE_LOG))?
-        .write_all(line.as_bytes())
+        .open(dir.join(FAILURE_LOG))?;
+    let _ = daifuku_win::day::hold_day_only(&file);
+    file.write_all(line.as_bytes())?;
+    let _ = daifuku_win::day::keep_day_only(dir);
+    Ok(())
 }
 
 /// Runs `write`, which makes `to`, again for a few seconds while it fails,
@@ -3382,6 +3386,26 @@ mod tests {
              C:\\Program Files\\Daifuku\\daifuku.exe: access denied\n\
              uninstall failed: the daemon did not stop in time\n"
         );
+    }
+
+    #[test]
+    fn the_failure_log_and_its_folder_hold_only_the_day_in_their_times() {
+        use daifuku_win::day::{Times, start_of_today, times};
+        let dir = Scratch::new("faillogday");
+        let logs = dir.0.join("logs");
+        append_failure(&logs, "install", &anyhow!("access denied")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        append_failure(&logs, "uninstall", &anyhow!("access denied")).unwrap();
+
+        let day = start_of_today().unwrap();
+        let only_day = Times {
+            created: day,
+            accessed: day,
+            written: day,
+            changed: day,
+        };
+        assert_eq!(times(&logs.join(FAILURE_LOG)).unwrap(), only_day);
+        assert_eq!(times(&logs).unwrap(), only_day);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! The log file. The daemon has no console, so the file is the only place it
-//! can say anything. Its lines hold no time: the newest is the last one.
+//! can say anything. Its lines hold no time: the newest is the last one. Its
+//! times on disk hold the day only.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -98,6 +99,8 @@ struct Rolling {
     written: u64,
     max: u64,
     kept: usize,
+    /// The start of the day the file's times hold, `None` before they do.
+    day: Option<i64>,
 }
 
 impl Rolling {
@@ -108,13 +111,30 @@ impl Rolling {
             .append(true)
             .open(log_path(dir, 0))?;
         let written = file.metadata()?.len();
-        Ok(Self {
+        let mut log = Self {
             dir: dir.to_owned(),
             file,
             written,
             max,
             kept,
-        })
+            day: None,
+        };
+        log.hold_day();
+        // The older logs an earlier version wrote keep their moments until
+        // a roll moves them, so they get the day now.
+        for n in 1..kept {
+            let _ = daifuku_win::day::keep_day_only(&log_path(dir, n));
+        }
+        Ok(log)
+    }
+
+    /// Sets the times of the file written now and of the folder to the
+    /// start of today, and holds the file's there while it is written, so a
+    /// line costs no call to keep them.
+    fn hold_day(&mut self) {
+        self.day = daifuku_win::day::start_of_today().ok();
+        let _ = daifuku_win::day::hold_day_only(&self.file);
+        let _ = daifuku_win::day::keep_day_only(&self.dir);
     }
 
     /// Moves every log one older, the oldest out, and starts a new one. A
@@ -124,6 +144,10 @@ impl Rolling {
         for n in (0..self.kept - 1).rev() {
             let _ = std::fs::rename(log_path(&self.dir, n), log_path(&self.dir, n + 1));
         }
+        // A move changes a file's times as well as its name.
+        for n in 1..self.kept {
+            let _ = daifuku_win::day::keep_day_only(&log_path(&self.dir, n));
+        }
         if let Ok(file) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -132,6 +156,7 @@ impl Rolling {
             self.file = file;
         }
         self.written = 0;
+        self.hold_day();
     }
 }
 
@@ -139,6 +164,9 @@ impl Write for Rolling {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.written > 0 && self.written + buf.len() as u64 > self.max {
             self.roll();
+        } else if daifuku_win::day::start_of_today().ok() != self.day {
+            // A daemon that runs past midnight moves its log to the new day.
+            self.hold_day();
         }
         let n = self.file.write(buf)?;
         self.written += n as u64;
@@ -208,6 +236,95 @@ mod tests {
         assert_eq!(read(&dir, 2).as_deref(), Some("ccc\nddd\n"));
         assert_eq!(read(&dir, 3), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each of `paths` whose times hold more than the start of today.
+    fn finer_than_the_day(paths: &[PathBuf]) -> Vec<String> {
+        use daifuku_win::day::{Times, start_of_today, times};
+        let day = start_of_today().unwrap();
+        let only_day = Times {
+            created: day,
+            accessed: day,
+            written: day,
+            changed: day,
+        };
+        paths
+            .iter()
+            .filter_map(|path| {
+                let kept = times(path).unwrap();
+                (kept != only_day).then(|| format!("{}: {kept:?} for {day}", path.display()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_logs_and_their_folder_hold_only_the_day_in_their_times() {
+        let dir = scratch("day");
+        // What the last daemon left, with the moment it wrote it.
+        std::fs::write(log_path(&dir, 0), "old\n").unwrap();
+        let mut log = Rolling::open(&dir, 8, 3).unwrap();
+        for line in ["a", "b", "c", "d"] {
+            log.write_all(format!("{line}{line}{line}\n").as_bytes())
+                .unwrap();
+            log.flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        drop(log);
+        let mut paths: Vec<PathBuf> = [0, 1, 2].map(|n| log_path(&dir, n)).into();
+        paths.push(dir.clone());
+        let finer = finer_than_the_day(&paths);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(finer, Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_older_logs_an_earlier_daemon_left_hold_only_the_day_too() {
+        let dir = scratch("dayold");
+        for n in [0, 1, 2] {
+            std::fs::write(log_path(&dir, n), "old\n").unwrap();
+        }
+        let mut log = Rolling::open(&dir, 1 << 20, 3).unwrap();
+        log.write_all(b"new\n").unwrap();
+        drop(log);
+        let finer = finer_than_the_day(&[1, 2].map(|n| log_path(&dir, n)));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(finer, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_log_written_past_midnight_moves_to_the_new_day() {
+        use std::os::windows::fs::{FileTimesExt, OpenOptionsExt};
+        const TICKS_PER_DAY: i64 = 24 * 3600 * 10_000_000;
+        // File time ticks from 1601 to 1970.
+        const UNIX_START: i64 = 116_444_736_000_000_000;
+        let dir = scratch("midnight");
+        let mut log = Rolling::open(&dir, 1 << 20, 3).unwrap();
+        log.write_all(b"before\n").unwrap();
+        // A daemon started the day before: that day's stamp on disk and in `day`.
+        let yesterday = daifuku_win::day::start_of_today().unwrap() - TICKS_PER_DAY;
+        let at = std::time::UNIX_EPOCH
+            + std::time::Duration::from_nanos(u64::try_from(yesterday - UNIX_START).unwrap() * 100);
+        for path in [log_path(&dir, 0), dir.clone()] {
+            OpenOptions::new()
+                // FILE_WRITE_ATTRIBUTES, and FILE_FLAG_BACKUP_SEMANTICS for the folder.
+                .access_mode(0x100)
+                .custom_flags(0x0200_0000)
+                .open(&path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_created(at)
+                        .set_accessed(at)
+                        .set_modified(at),
+                )
+                .unwrap();
+        }
+        log.day = Some(yesterday);
+        log.write_all(b"after\n").unwrap();
+        drop(log);
+        let finer = finer_than_the_day(&[log_path(&dir, 0), dir.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(finer, Vec::<String>::new());
     }
 
     #[test]

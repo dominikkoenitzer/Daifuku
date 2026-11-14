@@ -2103,7 +2103,7 @@ impl Daemon {
             return;
         };
         let file = state_to_read(own, self.legacy_state_file.as_deref());
-        let text = match std::fs::read_to_string(file) {
+        let text = match daifuku_win::day::read_day_only(file) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => {
@@ -3594,7 +3594,20 @@ pub(crate) fn replace_file(path: &std::path::Path, text: &str) -> std::io::Resul
     std::io::Write::write_all(&mut f, text.as_bytes())?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&new, path)
+    std::fs::rename(&new, path)?;
+    keep_day_only(path);
+    Ok(())
+}
+
+/// Leaves only the day in the times of `path` and of its folder, which the
+/// rename moved too. One whose times cannot be set keeps them: the file
+/// itself was written.
+pub(crate) fn keep_day_only(path: &std::path::Path) {
+    for p in std::iter::once(path).chain(path.parent()) {
+        if let Err(e) = daifuku_win::day::keep_day_only(p) {
+            tracing::debug!(path = %p.display(), error = %e, "could not set the file times");
+        }
+    }
 }
 
 /// When a file last changed, `None` when it does not exist.
@@ -3608,7 +3621,7 @@ fn stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
 fn read_while_held(file: &std::path::Path) -> std::io::Result<String> {
     let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
     loop {
-        match std::fs::read_to_string(file) {
+        match daifuku_win::day::read_day_only(file) {
             // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
             Err(e)
                 if matches!(e.raw_os_error(), Some(32 | 33))
@@ -5520,6 +5533,92 @@ mod tests {
         }
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(clock_times, Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_files_the_daemon_keeps_hold_only_the_day_in_their_times() {
+        use daifuku_core::state::HookEvent;
+        use daifuku_core::usage::{Limits, Window};
+        use daifuku_win::day::{Times, start_of_today, times};
+        let dir = std::env::temp_dir().join(format!("daifukud-day-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let point = |d: &mut Daemon| {
+            d.state_file = Some(dir.join("state.json"));
+            d.peers_file = Some(dir.join("peers.json"));
+            d.usage.file = Some(dir.join("usage.json"));
+            d.queue.file = Some(dir.join("tasks.json"));
+        };
+        let mut d = daemon();
+        point(&mut d);
+        d.agents.apply(
+            7,
+            &HookEvent {
+                session_id: "s".into(),
+                hook_event_name: "PermissionRequest".into(),
+                daifuku_at: Some(clock::ticks()),
+                ..HookEvent::default()
+            },
+        );
+        d.note_states();
+        d.save(true);
+        d.peers.push(Peer {
+            window: 7,
+            spawn: Spawn {
+                directory: r"C:\src".into(),
+                resume: Some("s".into()),
+                ..Spawn::default()
+            },
+        });
+        d.save_peers();
+        d.usage_report(&UsageReport {
+            usage: Limits {
+                five_hour: Some(Window {
+                    used: 40,
+                    resets_at: wall_seconds() + 3600,
+                }),
+                seven_day: None,
+            },
+            folder: r"C:\Users\me\.claude".into(),
+            window: None,
+        });
+        d.queue.claim(queue::Claim {
+            backlog: dir.join("BACKLOG.md"),
+            id: "T1".into(),
+            window: 7,
+            session: "s".into(),
+            since: now_stamp(),
+        });
+        d.queue.save();
+        // A daemon that starts again reads every file back.
+        let mut again = daemon();
+        point(&mut again);
+        again.restore();
+        again.load_peers();
+        again.usage.load(wall_seconds());
+        again.queue.load(|_| false);
+
+        let day = start_of_today().unwrap();
+        let only_day = Times {
+            created: day,
+            accessed: day,
+            written: day,
+            changed: day,
+        };
+        let mut finer = Vec::new();
+        for name in ["state.json", "peers.json", "usage.json", "tasks.json", ""] {
+            let path = if name.is_empty() {
+                dir.clone()
+            } else {
+                dir.join(name)
+            };
+            let kept = times(&path).unwrap();
+            if kept != only_day {
+                finer.push(format!("{}: {kept:?}", path.display()));
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(finer, Vec::<String>::new(), "the day starts at {day}");
     }
 
     #[test]
