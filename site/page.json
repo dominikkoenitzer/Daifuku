@@ -143,10 +143,10 @@
     "code": "{\n  \"fleets\": [\n    { \"name\": \"agents\", \"count\": 6, \"monitor\": \"portrait\" },\n    {\n      \"name\": \"site\",\n      \"count\": 4,\n      \"monitor\": \"primary\",\n      \"directory\": \"C:\\\\src\\\\site\",\n      \"hotkey\": \"ctrl + alt + w\"\n    }\n  ]\n}"
   },
   "new": {
-    "version": "0.4.2",
+    "version": "0.4.3",
     "items": [
-      "A terminal Daifuku opened for a fleet or a peer closes by itself once its agent ends, and stays open while something the agent started still runs in it.",
-      "<code>daifuku install</code> works while those terminals are open, and a label stays with its session after a resume."
+      "When the daemon could not start, <code>daifuku install</code> now ends by telling you to run <code>daifuku open</code>.",
+      "<code>daifuku uninstall --purge</code> no longer warns about a config that reads fine."
     ]
   },
   "requirements": [
