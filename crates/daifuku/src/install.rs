@@ -942,8 +942,9 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     let facts = Facts::gather()?;
     // Until the new binaries are in place, no hook starts the old daemon.
     let installing = setup::installing();
+    let mut started = true;
     for step in install_plan(&facts, options) {
-        run(&step)?;
+        started &= run(&step)?;
     }
     drop(installing);
     if !options.no_hooks {
@@ -967,21 +968,34 @@ pub fn install(options: &Options) -> anyhow::Result<()> {
     if let Some(note) = kept.as_ref().ok().and_then(admin_without_elevation) {
         println!("\nNote: {note}.");
     }
-    let elevated_kept = matches!(&kept, Ok(c) if c.elevated);
-    match kept.as_ref().map(how_to_open) {
-        // An elevated daemon waits for the logon task at the next sign-in;
-        // an ordinary one is started on demand by `daifuku open` or a hook.
-        Ok(Some(how)) if options.no_start && elevated_kept => {
-            println!("\nAfter your next sign-in, {how} to open your first fleet.");
-        }
-        Ok(Some(_)) if options.no_start => {
-            println!("\nRun `daifuku open` to start the daemon and your first fleet.");
-        }
-        Ok(Some(how)) => println!("\nTo open your first fleet, {how}."),
-        Ok(None) => {}
-        Err(e) => println!("\nThe config does not read, so the daemon runs on its defaults: {e}"),
+    if let Some(line) = first_fleet_line(&kept, options.no_start, started) {
+        println!("\n{line}");
     }
     Ok(())
+}
+
+/// The line that ends an install, from the config kept, `--no-start` and
+/// whether the daemon started. `None` when there is no fleet to open.
+fn first_fleet_line(
+    kept: &Result<Config, String>,
+    no_start: bool,
+    started: bool,
+) -> Option<String> {
+    let elevated_kept = matches!(kept, Ok(c) if c.elevated);
+    Some(match kept.as_ref().map(how_to_open) {
+        // An elevated daemon waits for the logon task at the next sign-in;
+        // an ordinary one is started on demand by `daifuku open` or a hook.
+        Ok(Some(how)) if no_start && elevated_kept => {
+            format!("After your next sign-in, {how} to open your first fleet.")
+        }
+        // A key does nothing while the daemon that registers it is not running.
+        Ok(Some(_)) if no_start || !started => {
+            "Run `daifuku open` to start the daemon and your first fleet.".to_owned()
+        }
+        Ok(Some(how)) => format!("To open your first fleet, {how}."),
+        Ok(None) => return None,
+        Err(e) => format!("The config does not read, so the daemon runs on its defaults: {e}"),
+    })
 }
 
 /// Refuses to go on as another account than the one signed in, saying to do
@@ -1004,8 +1018,9 @@ fn refuse_another_account(fix: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Runs one step of an install or an uninstall and says what it did.
-fn run(step: &Step) -> anyhow::Result<()> {
+/// Runs one step of an install or an uninstall and says what it did; `false`
+/// when it was to start the daemon and could not.
+fn run(step: &Step) -> anyhow::Result<bool> {
     match step {
         Step::StopDaemon => stop_daemon(),
         Step::Binaries { exe, daemon, to } => {
@@ -1090,10 +1105,13 @@ fn run(step: &Step) -> anyhow::Result<()> {
         // it, so the install carries on.
         Step::StartDaemon { daemon } => match process::start_detached(daemon) {
             Ok(()) => println!("started      daifukud"),
-            Err(e) => println!(
-                "not started  daifukud ({}); the first daifuku command or agent hook starts it",
-                config::io_reason(&e)
-            ),
+            Err(e) => {
+                println!(
+                    "not started  daifukud ({}); the first daifuku command or agent hook starts it",
+                    config::io_reason(&e)
+                );
+                return Ok(false);
+            }
         },
         Step::Hooks {
             agent,
@@ -1197,7 +1215,7 @@ fn run(step: &Step) -> anyhow::Result<()> {
             dir.display()
         ),
     }
-    Ok(())
+    Ok(true)
 }
 
 /// How to open the first fleet in `config`: its key, or the command when it
@@ -3612,6 +3630,50 @@ mod tests {
         assert_eq!(how_to_open(&c).as_deref(), Some("run `daifuku open`"));
         c.fleets.clear();
         assert_eq!(how_to_open(&c), None);
+    }
+
+    #[test]
+    fn an_install_whose_daemon_did_not_start_says_to_run_open() {
+        let open = "Run `daifuku open` to start the daemon and your first fleet.";
+        let press = "To open your first fleet, press ctrl + alt + return.";
+        let ordinary = Ok(Config::default());
+        assert_eq!(
+            first_fleet_line(&ordinary, false, true).as_deref(),
+            Some(press)
+        );
+        // The key does nothing until the daemon that registers it runs.
+        assert_eq!(
+            first_fleet_line(&ordinary, false, false).as_deref(),
+            Some(open)
+        );
+        assert_eq!(
+            first_fleet_line(&ordinary, true, true).as_deref(),
+            Some(open)
+        );
+        let elevated = Ok(Config {
+            elevated: true,
+            ..Config::default()
+        });
+        assert_eq!(
+            first_fleet_line(&elevated, true, true).as_deref(),
+            Some("After your next sign-in, press ctrl + alt + return to open your first fleet.")
+        );
+        assert_eq!(
+            first_fleet_line(&elevated, false, true).as_deref(),
+            Some(press)
+        );
+        let mut none = Config::default();
+        none.fleets.clear();
+        assert_eq!(first_fleet_line(&Ok(none), false, false), None);
+        let broken = Err("expected value at line 1 column 1".to_owned());
+        for started in [true, false] {
+            assert_eq!(
+                first_fleet_line(&broken, false, started).as_deref(),
+                Some(
+                    "The config does not read, so the daemon runs on its defaults: expected value at line 1 column 1"
+                )
+            );
+        }
     }
 
     #[test]
