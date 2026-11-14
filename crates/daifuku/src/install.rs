@@ -138,6 +138,9 @@ pub struct Facts {
     /// Each agent's settings file and what install and uninstall would do
     /// to it.
     pub hooks: Vec<HookFacts>,
+    /// Why the config did not read when `hooks` were found, so no account's
+    /// folder is among them; `None` when it read.
+    pub accounts_unread: Option<String>,
     /// Whether Windows Terminal is installed.
     pub terminal: bool,
     /// The bytes the two binaries take once installed.
@@ -276,7 +279,8 @@ impl Facts {
         );
         let profile = paths::profile_dir();
         let exe = to.join("daifuku.exe").to_string_lossy().into_owned();
-        let hooks = hook_files()
+        let (files, accounts_unread) = hook_files();
+        let hooks = files
             .into_iter()
             .map(
                 |HookFile {
@@ -356,6 +360,7 @@ impl Facts {
             task,
             legacy_task_ours,
             hooks,
+            accounts_unread,
             size,
             app_entry: apps::exists(),
         })
@@ -904,11 +909,27 @@ pub fn uninstall_dry_run(purge: bool) -> anyhow::Result<Plan> {
     for step in uninstall_plan(&facts, purge) {
         plan.steps.extend(step.describe());
     }
-    if !facts.elevated {
-        plan.notes
-            .push("the real `daifuku uninstall` needs an administrator terminal".into());
-    }
+    plan.notes = uninstall_notes(&facts);
     Ok(plan)
+}
+
+/// The notes `uninstall --dry-run` adds under its steps.
+fn uninstall_notes(facts: &Facts) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !facts.elevated {
+        notes.push("the real `daifuku uninstall` needs an administrator terminal".into());
+    }
+    notes.extend(account_hooks_warning(facts));
+    notes
+}
+
+/// What uninstall says when the config did not read as the hooks were
+/// found: the accounts it names were not visited, so their hooks stay. From
+/// the facts, since a purge has deleted the config by the time it is said.
+fn account_hooks_warning(facts: &Facts) -> Option<String> {
+    facts.accounts_unread.as_ref().map(|e| {
+        format!("The config does not read, so hooks in the folders of its accounts stay: {e}")
+    })
 }
 
 pub fn install(options: &Options) -> anyhow::Result<()> {
@@ -1201,8 +1222,8 @@ pub fn uninstall(purge: bool) -> anyhow::Result<()> {
         run(&step)?;
     }
     drop(installing);
-    if let Err(e) = config_on_disk() {
-        println!("\nThe config does not read, so hooks in the folders of its accounts stay: {e}");
+    if let Some(warning) = account_hooks_warning(&facts) {
+        println!("\n{warning}");
     }
     // This program, moved aside because it runs, goes once it has exited.
     let moved = std::env::temp_dir().join(aside_name("daifuku.exe"));
@@ -1412,7 +1433,7 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
         file,
         account,
         instead,
-    } in hook_files()
+    } in hook_files().0
     {
         let variable = folder_variable(agent);
         let read = instead.as_deref().unwrap_or(&file);
@@ -2039,16 +2060,21 @@ struct HookFile {
 }
 
 /// Every agent and the file its hooks live in: the one in the profile, then
-/// one in each account the config names a folder for.
-fn hook_files() -> Vec<HookFile> {
+/// one in each account the config names a folder for. With them, why the
+/// config did not read, when it did not.
+fn hook_files() -> (Vec<HookFile>, Option<String>) {
     // A config that does not read names no accounts.
-    let config = config_on_disk().unwrap_or_default();
-    files_for(
+    let (config, unread) = match config_on_disk() {
+        Ok(config) => (config, None),
+        Err(e) => (Config::default(), Some(e)),
+    };
+    let files = files_for(
         paths::claude_settings(),
         paths::codex_hooks(),
         &config,
         |v| std::env::var_os(v),
-    )
+    );
+    (files, unread)
 }
 
 /// The config in `C:\ProgramData\Daifuku`; none there reads as the defaults.
@@ -2365,6 +2391,7 @@ mod tests {
                     uninstall: Ok(0),
                 },
             ],
+            accounts_unread: None,
             terminal: true,
             size: 3_000_000,
             app_entry: false,
@@ -2858,6 +2885,36 @@ mod tests {
             tail(false).last().map(|s| (s.0, s.1.clone())),
             Some(("keep_folder", mine.display().to_string()))
         );
+    }
+
+    #[test]
+    fn a_config_that_did_not_read_is_told_with_and_without_a_purge() {
+        let mut f = installed();
+        let reason = "expected value at line 1 column 1";
+        f.accounts_unread = Some(reason.into());
+        let warning = format!(
+            "The config does not read, so hooks in the folders of its accounts stay: {reason}"
+        );
+        for purge in [false, true] {
+            // A purge deletes the config before the warning is said.
+            let data = if purge {
+                "remove_folder"
+            } else {
+                "keep_folder"
+            };
+            assert_eq!(names(&uninstall_plan(&f, purge)).last(), Some(&data));
+            assert_eq!(account_hooks_warning(&f), Some(warning.clone()));
+        }
+        assert_eq!(uninstall_notes(&f), std::slice::from_ref(&warning));
+        f.elevated = false;
+        assert_eq!(uninstall_notes(&f)[1..], [warning]);
+    }
+
+    #[test]
+    fn a_config_that_read_leaves_the_uninstall_without_a_warning() {
+        let f = installed();
+        assert_eq!(account_hooks_warning(&f), None);
+        assert!(uninstall_notes(&f).is_empty());
     }
 
     #[test]
