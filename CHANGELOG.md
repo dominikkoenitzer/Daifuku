@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.3, 2026-11-14
 
 - Nothing Daifuku keeps holds a clock time any more. The daemon's log
   lines carry no time, and the log is one `daifukud.log` that starts over
@@ -18,6 +18,13 @@
   the logs, `install.log` and the folders they sit in carry the start of
   that day as their created, written, accessed and changed times, and
   reading them back leaves those times as they are.
+- When the daemon did not start, `daifuku install` now ends by saying to
+  run `daifuku open`, where it used to name a key that only a running
+  daemon listens for.
+- `daifuku uninstall --purge` no longer warns that the config did not
+  read when it read fine. The warning came from the purge deleting the
+  config before it was checked; it now shows only for a config that
+  really does not read, in the dry run as well.
 
 ## 0.4.2, 2026-11-09
 
