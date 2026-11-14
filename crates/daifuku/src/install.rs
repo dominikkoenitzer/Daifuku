@@ -815,23 +815,29 @@ pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
     for step in install_plan(&facts, options) {
         plan.steps.extend(step.describe());
     }
+    plan.notes = install_notes(&facts, options);
+    Ok(plan)
+}
+
+/// The notes `install --dry-run` adds under its steps.
+fn install_notes(facts: &Facts, options: &Options) -> Vec<String> {
+    let mut notes = Vec::new();
     if !facts.elevated {
-        plan.notes
-            .push("the real `daifuku install` needs an administrator terminal".into());
+        notes.push("the real `daifuku install` needs an administrator terminal".into());
     }
     if facts.from != facts.to && facts.daemon.is_none() {
-        plan.notes.push(
+        notes.push(
             "daifukud.exe is missing next to this program, so the install would stop at the copy"
                 .into(),
         );
     }
     if !options.no_hooks {
-        plan.notes.extend(unsigned_accounts(&facts));
+        notes.extend(unsigned_accounts(facts));
         for h in &facts.hooks {
             if let Some(other) = &h.instead
                 && (h.agent.name != CODEX.name || h.agent_installed)
             {
-                plan.notes.push(format!(
+                notes.push(format!(
                     "{} reads {} ({}), which install does not write: copy Daifuku's hooks there from {}",
                     h.agent.name,
                     other.display(),
@@ -842,17 +848,17 @@ pub fn install_dry_run(options: &Options) -> anyhow::Result<Plan> {
         }
     }
     if !facts.terminal {
-        plan.notes.push(
+        notes.push(
             "Windows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)".into(),
         );
     }
     if let Some(note) = facts.config.as_ref().and_then(admin_without_elevation) {
-        plan.notes.push(note);
+        notes.push(note);
     }
-    if let Some(note) = elevation_held_back(&facts) {
-        plan.notes.push(note.into());
+    if let Some(note) = elevation_held_back(facts) {
+        notes.push(note.into());
     }
-    Ok(plan)
+    notes
 }
 
 /// What to say when `config` has fleets of administrator terminals but does
@@ -2891,12 +2897,13 @@ mod tests {
 
     #[test]
     fn a_dry_run_reads_as_lines_and_as_json() {
+        let mut facts = fresh();
+        facts.elevated = false;
         let mut plan = Plan::new("install", false);
-        for step in install_plan(&fresh(), &ALL) {
+        for step in install_plan(&facts, &ALL) {
             plan.steps.extend(step.describe());
         }
-        plan.notes
-            .push("the real `daifuku install` needs an administrator terminal".into());
+        plan.notes = install_notes(&facts, &ALL);
         let lines = plan.lines();
         assert!(lines[0].starts_with("dry run"), "{lines:?}");
         assert!(
@@ -2933,6 +2940,10 @@ mod tests {
             "with your own rights, no logon task"
         );
         assert_eq!(json["notes"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            json["notes"][0],
+            "the real `daifuku install` needs an administrator terminal"
+        );
     }
 
     #[test]
@@ -3053,11 +3064,99 @@ mod tests {
                 ),
             ]
         );
-        let mut plan = Plan::new("install", true);
-        for step in install_plan(&facts, &ALL) {
-            plan.steps.extend(step.describe());
-        }
-        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+        let notes = install_notes(&facts, &ALL);
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn a_copy_with_no_daemon_beside_it_says_the_install_would_stop() {
+        let missing =
+            "daifukud.exe is missing next to this program, so the install would stop at the copy";
+        let mut f = fresh();
+        f.daemon = None;
+        assert_eq!(install_notes(&f, &ALL), [missing]);
+        // Run from the install folder, nothing is copied, so nothing is missing.
+        let mut f = installed();
+        f.daemon = None;
+        assert!(install_notes(&f, &ALL).is_empty());
+        assert!(install_notes(&fresh(), &ALL).is_empty());
+    }
+
+    #[test]
+    fn the_dry_run_names_an_account_its_agent_has_not_signed_in_to() {
+        let mut f = fresh();
+        let file = PathBuf::from(r"E:\work\settings.json");
+        f.hooks.push(HookFacts {
+            agent: &CLAUDE,
+            file: file.clone(),
+            exists: false,
+            agent_installed: false,
+            instead: None,
+            account: Some("work".into()),
+            install: Ok((0, 5)),
+            uninstall: Ok(0),
+        });
+        assert_eq!(
+            install_notes(&f, &ALL),
+            [format!(
+                "{} has not signed in to account `work` yet: run `daifuku install` again once it has, for the hooks in {}",
+                CLAUDE.name,
+                file.display()
+            )]
+        );
+        let no_hooks = Options {
+            no_hooks: true,
+            no_start: false,
+        };
+        assert!(install_notes(&f, &no_hooks).is_empty());
+    }
+
+    #[test]
+    fn the_dry_run_says_to_copy_the_hooks_where_the_agent_reads_them() {
+        let mut f = fresh();
+        f.hooks[0].instead = Some(PathBuf::from(r"E:\elsewhere\settings.json"));
+        f.hooks[1].instead = Some(PathBuf::from(r"E:\elsewhere\hooks.json"));
+        let note = |h: &HookFacts| {
+            format!(
+                "{} reads {} ({}), which install does not write: copy Daifuku's hooks there from {}",
+                h.agent.name,
+                h.instead.as_deref().unwrap().display(),
+                folder_variable(h.agent),
+                h.file.display()
+            )
+        };
+        let both = [note(&f.hooks[0]), note(&f.hooks[1])];
+        assert_eq!(install_notes(&f, &ALL), both);
+        // Codex not installed gets no hooks, so there is nothing to copy.
+        f.hooks[1].agent_installed = false;
+        assert_eq!(install_notes(&f, &ALL), [both[0].clone()]);
+    }
+
+    #[test]
+    fn the_dry_run_says_when_windows_terminal_is_missing() {
+        let mut f = fresh();
+        f.terminal = false;
+        assert_eq!(
+            install_notes(&f, &ALL),
+            [
+                "Windows Terminal is not installed; fleets need it (winget install Microsoft.WindowsTerminal)"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_dry_run_says_an_elevation_from_a_config_the_user_could_write_waits() {
+        let mut f = installed();
+        f.config_open = true;
+        f.config = Some(Config::from_json(r#"{"elevated":true}"#).unwrap());
+        let notes = install_notes(&f, &ALL);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].starts_with("the config asks for \"elevated\": true but could be changed"),
+            "{notes:?}"
+        );
+        f.config_open = false;
+        assert!(install_notes(&f, &ALL).is_empty());
     }
 
     #[test]
