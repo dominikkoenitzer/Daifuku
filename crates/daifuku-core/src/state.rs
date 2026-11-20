@@ -319,10 +319,14 @@ fn compacting(event: &HookEvent) -> Option<String> {
         event
             .trigger
             .clone()
-            .filter(|t| t.len() <= MAX_SESSION_ID)
+            .filter(|t| t.len() <= MAX_TRIGGER)
             .unwrap_or_default()
     })
 }
+
+/// The longest compaction trigger the saved state keeps, in bytes. The
+/// agents send `auto` or `manual`.
+const MAX_TRIGGER: usize = 128;
 
 /// How many ended sessions [`Agents`] remembers to turn away their late
 /// events.
@@ -1181,7 +1185,7 @@ mod tests {
             assert_eq!(mark(&a), None, "{name}");
         }
         // Only a trigger an agent could send is kept.
-        let longest = "m".repeat(MAX_SESSION_ID);
+        let longest = "m".repeat(MAX_TRIGGER);
         a.apply(1, &compacted("PreCompact", &longest));
         assert_eq!(mark(&a), Some(serde_json::json!(longest)));
         a.apply(1, &compacted("PreCompact", &format!("{longest}m")));
