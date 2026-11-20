@@ -251,6 +251,12 @@ struct Session<W> {
     /// missing from a file saved by an older version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     process: Option<u32>,
+    /// The trigger of a compaction under way on its main thread, from the
+    /// `PreCompact` that started it until the main thread's next event; see
+    /// [`compacting`]. Missing while none is, and from a file saved by an
+    /// older version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compacting: Option<String>,
 }
 
 /// What a session last reported about itself, for `daifuku status`. Each
@@ -300,6 +306,22 @@ impl<W> Session<W> {
             AgentState::Waiting
         }
     }
+}
+
+/// What a main-thread `event` leaves as the session's compaction mark: the
+/// trigger of the compaction a `PreCompact` starts, empty when it names none
+/// or one longer than any agent's, and `None` for every other event, since
+/// the next one after a compaction says it is over. A compaction shows as
+/// working, so the saved state keeps the mark for a tool that reads the file
+/// and wants to tell the two apart.
+fn compacting(event: &HookEvent) -> Option<String> {
+    (event.hook_event_name == "PreCompact").then(|| {
+        event
+            .trigger
+            .clone()
+            .filter(|t| t.len() <= MAX_SESSION_ID)
+            .unwrap_or_default()
+    })
 }
 
 /// How many ended sessions [`Agents`] remembers to turn away their late
@@ -422,6 +444,7 @@ impl<W: Ord + Copy> Agents<W> {
                         at: None,
                         detail: Detail::default(),
                         process: None,
+                        compacting: None,
                     });
                 let shown = entry.shown();
                 let thread = event.agent_id.clone().unwrap_or_default();
@@ -457,6 +480,12 @@ impl<W: Ord + Copy> Agents<W> {
                     replaced = self.sessions.len() != count;
                 }
             }
+        }
+        // Only the main thread compacts; a subagent goes on beside it.
+        if event.agent_id.is_none()
+            && let Some(s) = self.sessions.get_mut(&event.session_id)
+        {
+            s.compacting = compacting(event);
         }
         let changed_here = self.window_state(window) != before;
         // A session that reports from a new window (a tab dragged out into a
@@ -1112,6 +1141,59 @@ mod tests {
         // Any other start is a session at its prompt.
         a.apply(1, &started("resume"));
         assert_eq!(a.window_state(1), Some(AgentState::Done));
+    }
+
+    #[test]
+    fn the_saved_state_marks_a_compaction_until_the_main_thread_moves_on() {
+        let mark = |a: &Agents<u64>| {
+            serde_json::to_value(a).unwrap()["sessions"]["s"]
+                .get("compacting")
+                .cloned()
+        };
+        let auto = Some(serde_json::json!("auto"));
+        let mut a = Agents::new();
+        a.apply(1, &ev("s", "UserPromptSubmit"));
+        assert_eq!(mark(&a), None);
+        a.apply(1, &compacted("PreCompact", "auto"));
+        assert_eq!(mark(&a), auto);
+        // A subagent goes on beside it, and the start after it says nothing.
+        a.apply(1, &sub("s", "PreToolUse", "A"));
+        a.apply(1, &sub("s", "SubagentStop", "A"));
+        a.apply(1, &started("compact"));
+        assert_eq!(mark(&a), auto);
+        // A restarted daemon takes it back with the rest.
+        let back: Agents<u64> = serde_json::from_value(serde_json::to_value(&a).unwrap()).unwrap();
+        assert_eq!(mark(&back), auto);
+        a.apply(1, &compacted("PostCompact", "auto"));
+        assert_eq!(mark(&a), None);
+        // A PostCompact that never came: the main thread's next event of any
+        // kind ends it.
+        for next in [
+            ev("s", "PreToolUse"),
+            ev("s", "Stop"),
+            ev("s", "PermissionRequest"),
+            note("s", "idle_prompt"),
+        ] {
+            a.apply(1, &compacted("PreCompact", "manual"));
+            assert_eq!(mark(&a), Some(serde_json::json!("manual")));
+            a.apply(1, &next);
+            let name = &next.hook_event_name;
+            assert_eq!(mark(&a), None, "{name}");
+        }
+        // Only a trigger an agent could send is kept.
+        let longest = "m".repeat(MAX_SESSION_ID);
+        a.apply(1, &compacted("PreCompact", &longest));
+        assert_eq!(mark(&a), Some(serde_json::json!(longest)));
+        a.apply(1, &compacted("PreCompact", &format!("{longest}m")));
+        assert_eq!(mark(&a), Some(serde_json::json!("")));
+        a.apply(1, &ev("s", "PreCompact"));
+        assert_eq!(mark(&a), Some(serde_json::json!("")));
+        // A file without the mark, as an older version saved it, reads.
+        a.apply(1, &ev("s", "Stop"));
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(!json.contains("compacting"), "{json}");
+        let old: Agents<u64> = serde_json::from_str(&json).unwrap();
+        assert_eq!(mark(&old), None);
     }
 
     #[test]
