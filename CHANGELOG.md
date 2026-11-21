@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- While an agent compacts its conversation, the saved state marks that
+  session with `"compacting"` and the trigger its hook sent, `auto` or
+  `manual`, so a program reading the file can tell a compaction from other
+  work. The mark goes with the main thread's next event, whether that is
+  the end of the compaction or anything after it when that end never came.
+  Nothing on screen changes: a compaction still shows as working.
+- When a compaction never ends and no later event comes, the mark stays
+  until the agent's window closes, so a reader should give it a time limit
+  of its own.
+
 ## 0.4.3, 2026-11-14
 
 - Nothing Daifuku keeps holds a clock time any more. The daemon's log
