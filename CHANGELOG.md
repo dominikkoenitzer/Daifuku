@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.4, 2026-11-21
 
 - While an agent compacts its conversation, the saved state marks that
   session with `"compacting"` and the trigger its hook sent, `auto` or
