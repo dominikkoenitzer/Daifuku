@@ -436,9 +436,9 @@ footer p { margin: 0.3rem 0; }
 <h2 id="new-h" class="vh">Details</h2>
 <div class="grid2">
 <div class="card">
-<div class="num">Version 0.4.3</div>
+<div class="num">Version 0.4.4</div>
 <h3>What's new</h3>
-<ul><li>When the daemon could not start, <code>daifuku install</code> now ends by telling you to run <code>daifuku open</code>.</li><li><code>daifuku uninstall --purge</code> no longer warns about a config that reads fine.</li></ul>
+<ul><li>While an agent compacts its conversation, the saved state marks its session with <code>compacting</code>, so a program reading the file can tell a compaction from other work.</li><li>The mark goes with the agent's next event. On screen a compaction still shows as working.</li></ul>
 </div>
 <div class="card">
 <div class="num">Requirements</div>

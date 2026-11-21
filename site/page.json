@@ -143,10 +143,10 @@
     "code": "{\n  \"fleets\": [\n    { \"name\": \"agents\", \"count\": 6, \"monitor\": \"portrait\" },\n    {\n      \"name\": \"site\",\n      \"count\": 4,\n      \"monitor\": \"primary\",\n      \"directory\": \"C:\\\\src\\\\site\",\n      \"hotkey\": \"ctrl + alt + w\"\n    }\n  ]\n}"
   },
   "new": {
-    "version": "0.4.3",
+    "version": "0.4.4",
     "items": [
-      "When the daemon could not start, <code>daifuku install</code> now ends by telling you to run <code>daifuku open</code>.",
-      "<code>daifuku uninstall --purge</code> no longer warns about a config that reads fine."
+      "While an agent compacts its conversation, the saved state marks its session with <code>compacting</code>, so a program reading the file can tell a compaction from other work.",
+      "The mark goes with the agent's next event. On screen a compaction still shows as working."
     ]
   },
   "requirements": [
