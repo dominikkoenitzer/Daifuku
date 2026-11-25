@@ -424,7 +424,7 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: ${{ inputs.tag || github.ref_name }}
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
-          body: "Download and install Daifuku from https://daifuku.punds.ch."
+          body: "Download and install Daifuku from https://portfolio-izanagi.vercel.app/projects/daifuku."
           generate_release_notes: false
           files: |
             dist/*.exe
