@@ -5026,6 +5026,48 @@ mod tests {
     }
 
     #[test]
+    fn the_tasks_and_usage_numbers_are_closed_to_other_users_as_the_state_is() {
+        use daifuku_core::usage::{Limits, Window};
+        let dir =
+            std::env::temp_dir().join(format!("daifuku-private-books-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = setup::user_sid().unwrap();
+        let mut d = daemon();
+        d.queue.file = Some(dir.join("tasks.json"));
+        d.usage.file = Some(dir.join("usage.json"));
+        d.usage_report(&UsageReport {
+            usage: Limits {
+                five_hour: Some(Window {
+                    used: 40,
+                    resets_at: wall_seconds() + 3600,
+                }),
+                seven_day: None,
+            },
+            folder: r"C:\Users\me\.claude".into(),
+            window: None,
+        });
+        d.queue.claim(queue::Claim {
+            backlog: dir.join("BACKLOG.md"),
+            id: "T1".into(),
+            window: 7,
+            session: "s".into(),
+            since: now_stamp(),
+        });
+        d.queue.save(&d.saved_access);
+        let access = setup::canonical_sddl(&setup::private_file_sddl(Some(&sid), false)).unwrap();
+        for file in ["tasks.json", "usage.json"] {
+            let path = dir.join(file);
+            assert_eq!(setup::file_sddl(&path).unwrap(), access, "{file}");
+            let (owner, protected, who) = access_of(&path);
+            assert!(protected, "{file} takes entries from its folder");
+            assert_eq!(who[..2], ["SY", "BA"], "{file}");
+            assert_eq!(who[2..], [owner], "{file}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_peer_in_a_cell_is_kept_with_its_fleet_and_cell_and_read_back_so() {
         let dir = std::env::temp_dir().join(format!("daifuku-cells-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
