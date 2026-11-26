@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A new config links its schema from Daifuku's new address. A config that
+  still links the old one loads as before.
 - Other accounts on the same PC can no longer read the saved state, the
   peers file, the tasks handed out and the usage numbers an elevated daemon
   keeps in `ProgramData\Daifuku`, which name your sessions, your fleets, the

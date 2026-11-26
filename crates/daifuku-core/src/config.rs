@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://get-daifuku.vercel.app/schema.json",
+//!   "$schema": "https://portfolio-izanagi.vercel.app/get/daifuku/schema.json",
 //!   "fleets": [
 //!     { "name": "agents", "count": 6, "monitor": "portrait", "hotkey": "ctrl + alt + return" },
 //!     { "name": "site", "count": 4, "directory": "C:\\src\\site", "hotkey": "ctrl + alt + w" }
@@ -29,7 +29,7 @@ use crate::hotkey::Hotkey;
 use crate::state::AgentState;
 
 /// Daifuku's own address. Every link Daifuku writes or prints starts here.
-pub const SITE: &str = "https://get-daifuku.vercel.app";
+pub const SITE: &str = "https://portfolio-izanagi.vercel.app/get/daifuku";
 
 /// The most terminals one fleet may open. Past this a cell is too small to
 /// read, on any monitor sold today.
@@ -1695,7 +1695,7 @@ mod tests {
     #[test]
     fn the_example_in_the_module_docs_parses() {
         let text = r#"{
-          "$schema": "https://get-daifuku.vercel.app/schema.json",
+          "$schema": "https://portfolio-izanagi.vercel.app/get/daifuku/schema.json",
           "fleets": [
             { "name": "agents", "count": 6, "monitor": "portrait", "hotkey": "ctrl + alt + return" },
             { "name": "mochi", "count": 4, "directory": "C:\\src\\Mochi", "hotkey": "ctrl + alt + m" }
@@ -1704,6 +1704,25 @@ mod tests {
         let c = Config::from_json(text).unwrap();
         assert_eq!(c.fleet("MOCHI").unwrap().count, 4);
         assert_eq!(c.fleet("mochi").unwrap().command.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn a_config_that_links_the_old_schema_address_still_loads() {
+        let text = r#"{
+          "$schema": "https://get-daifuku.vercel.app/schema.json",
+          "fleets": [{ "name": "agents", "count": 3 }]
+        }"#;
+        let c = Config::from_json(text).unwrap();
+        assert_eq!(
+            c.schema.as_deref(),
+            Some("https://get-daifuku.vercel.app/schema.json")
+        );
+        assert_eq!(c.fleet("agents").unwrap().count, 3);
+    }
+
+    #[test]
+    fn the_site_address_is_the_portfolio_route() {
+        assert_eq!(SITE, "https://portfolio-izanagi.vercel.app/get/daifuku");
     }
 
     #[test]

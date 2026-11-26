@@ -3613,7 +3613,10 @@ mod tests {
     fn the_starter_config_is_valid_and_links_the_schema() {
         let text = starter_config();
         let c = Config::from_json(&text).unwrap();
-        assert_eq!(c.schema, Some(format!("{}/schema.json", config::SITE)));
+        assert_eq!(
+            c.schema.as_deref(),
+            Some("https://portfolio-izanagi.vercel.app/get/daifuku/schema.json")
+        );
         assert_eq!(c.fleets.len(), 1);
     }
 

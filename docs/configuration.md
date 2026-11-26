@@ -44,7 +44,7 @@ key and checks its name and type:
 
 ```json
 {
-  "$schema": "https://get-daifuku.vercel.app/schema.json"
+  "$schema": "https://portfolio-izanagi.vercel.app/get/daifuku/schema.json"
 }
 ```
 
