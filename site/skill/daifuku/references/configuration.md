@@ -10,7 +10,7 @@ Unknown keys are errors at the top level and in `fleets[]`, `gaps`, `border`, `b
 - Never take ownership of the folder or give the user's account write access to it. The next install deletes a folder that is not locked to administrators, config included.
 - The daemon re-reads the file within two seconds of each save. `daifuku reload` applies it at once (from an administrator terminal when the daemon runs elevated). `elevated` is the exception: it takes effect only when `daifuku install` runs again, and set in a file the user could write it takes two installs: the first locks the file to administrators and starts no daemon, the second, after the user checked the file, registers the elevated daemon.
 - An invalid file never takes Daifuku down. The daemon keeps the last valid config, or the defaults when it started with an invalid file. `daifuku doctor` prints `ok    config valid` or `FIX   config valid: <the error>`.
-- `daifuku schema` prints the JSON schema. Install writes `"$schema": "https://get-daifuku.vercel.app/schema.json"` into the starter config, so an editor that reads schemas completes and checks every key.
+- `daifuku schema` prints the JSON schema. Install writes `"$schema": "https://portfolio-izanagi.vercel.app/get/daifuku/schema.json"` into the starter config, so an editor that reads schemas completes and checks every key.
 
 To check a draft without the daemon, run `daifuku config validate <path>`; without a path it checks the installed config. It works in any terminal, and `--json` gives machine output. With a bad config saved, the daemon keeps running on the last valid one, and `daifuku doctor` shows the problem on its `config valid` line.
 
@@ -18,7 +18,7 @@ To check a draft without the daemon, run `daifuku config validate <path>`; witho
 
 ```json
 {
-  "$schema": "https://get-daifuku.vercel.app/schema.json",
+  "$schema": "https://portfolio-izanagi.vercel.app/get/daifuku/schema.json",
   "fleets": [
     { "name": "agents", "count": 6, "monitor": "portrait" },
     {
