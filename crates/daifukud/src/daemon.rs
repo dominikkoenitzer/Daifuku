@@ -15,7 +15,7 @@ use daifuku_core::saved::{Saved, SavedFleet, SavedShown, Stamp};
 use daifuku_core::state::{AgentState, Agents};
 use daifuku_render::{BorderConfig, BorderManager, BorderSpec, WindowHandle};
 use daifuku_win::terminal::WINDOW_CLASS;
-use daifuku_win::{access, clock, dpi, job, paths, process, saver, window};
+use daifuku_win::{access, clock, dpi, job, paths, process, saver, setup, window};
 use windows::Win32::UI::Shell::{QUNS_NOT_PRESENT, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PostQuitMessage, SetTimer, TranslateMessage,
@@ -194,6 +194,9 @@ struct Daemon {
     /// The state file versions up to 0.1.3 shared between users, read when
     /// this user's own does not exist yet.
     legacy_state_file: Option<PathBuf>,
+    /// Who may open the state and peers files: see
+    /// [`daifuku_win::setup::private_file_sddl`].
+    saved_access: String,
     /// What the last save held, apart from when it was made, and the
     /// interrupt time it was made at.
     last_saved: (String, u64),
@@ -378,6 +381,7 @@ impl Daemon {
             last_next: None,
             state_file: None,
             legacy_state_file: None,
+            saved_access: setup::private_file_sddl(setup::user_sid().as_deref(), elevated),
             last_saved: (String::new(), 0),
             usage: usage::Book::default(),
             warned: Vec::new(),
@@ -677,7 +681,7 @@ impl Daemon {
             }
         };
         if self.queue.settle(&path, &backlog) {
-            self.queue.save();
+            self.queue.save(&self.saved_access);
         }
         if self
             .queue
@@ -711,7 +715,7 @@ impl Daemon {
             tracing::warn!("handed out no task: too many are out");
             return None;
         }
-        self.queue.save();
+        self.queue.save(&self.saved_access);
         tracing::info!(fleet = %fleet.name, task = %task.id, window = format!("{w:#x}"), "handed out a task");
         Some(hand_out_text(&path, &task))
     }
@@ -789,7 +793,7 @@ impl Daemon {
             queues.push(q);
         }
         if settled {
-            self.queue.save();
+            self.queue.save(&self.saved_access);
         }
         queues
     }
@@ -805,7 +809,7 @@ impl Daemon {
             [] => Response::error(format!("no task `{id}` is handed out")),
             [path] => {
                 self.queue.release(path, id);
-                self.queue.save();
+                self.queue.save(&self.saved_access);
                 self.idle_stale = true;
                 Response::said(format!(
                     "took {id} back; while its backlog lists it open, the next agent to stop gets it"
@@ -963,7 +967,7 @@ impl Daemon {
             })
             .ok()?;
         if self.queue.settle(path, &backlog) {
-            self.queue.save();
+            self.queue.save(&self.saved_access);
         }
         self.queue.next(path, &backlog).map(|t| t.id.clone())
     }
@@ -973,7 +977,7 @@ impl Daemon {
     fn usage_report(&mut self, report: &UsageReport) {
         let window = report.window.and_then(daifuku_win::console::visible_window);
         if self.usage.note(report, window, now_stamp()) {
-            self.usage.save();
+            self.usage.save(&self.saved_access);
             // The first numbers of an account with rules may lift its stop.
             self.idle_stale = true;
             self.watch_limits();
@@ -2021,7 +2025,7 @@ impl Daemon {
             self.note_states();
         }
         if self.queue.windows_gone(alive) {
-            self.queue.save();
+            self.queue.save(&self.saved_access);
         }
         !dead.is_empty()
     }
@@ -2050,7 +2054,7 @@ impl Daemon {
         saved.at = ticks;
         let written = serde_json::to_string(&saved)
             .map_err(std::io::Error::other)
-            .and_then(|text| replace_file(file, &text));
+            .and_then(|text| replace_file(file, &text, &self.saved_access));
         match written {
             Ok(()) => self.last_saved = (key, ticks),
             Err(e) => {
@@ -2232,7 +2236,7 @@ impl Daemon {
         }
         self.labels.remove(&w);
         if self.queue.window_closed(w) {
-            self.queue.save();
+            self.queue.save(&self.saved_access);
         }
         self.residents.retain(|_, r| r.window != w);
         self.left.remove(&w);
@@ -2618,7 +2622,7 @@ impl Daemon {
         };
         let written = serde_json::to_string_pretty(&kept)
             .map_err(std::io::Error::other)
-            .and_then(|text| replace_file(file, &text));
+            .and_then(|text| replace_file(file, &text, &self.saved_access));
         if let Err(e) = written {
             tracing::warn!(path = %file.display(), error = %e, "could not save the peers");
         }
@@ -3583,14 +3587,21 @@ fn state_to_read<'a>(
 }
 
 /// Writes `text` next to `path` and renames it over `path`, so a daemon that
-/// stops half way leaves the last whole save, never one cut short.
-pub(crate) fn replace_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+/// stops half way leaves the last whole save, never one cut short. The new
+/// file is made with the access list `sddl` and keeps it through the rename.
+pub(crate) fn replace_file(path: &std::path::Path, text: &str, sddl: &str) -> std::io::Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".new");
     let new = path.with_file_name(name);
+    // A save cut short left it with the access it was made with, which
+    // creating it again would keep.
+    match std::fs::remove_file(&new) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
     // On the disk before the rename, so a power cut leaves the old file or
     // the new one, never an empty one.
-    let mut f = std::fs::File::create(&new)?;
+    let mut f = setup::create_private_file(&new, sddl)?;
     std::io::Write::write_all(&mut f, text.as_bytes())?;
     f.sync_all()?;
     drop(f);
@@ -4956,7 +4967,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("peers.json");
         std::fs::write(&file, "an older save that was longer than the new one").unwrap();
-        replace_file(&file, "new").unwrap();
+        replace_file(&file, "new", &setup::private_file_sddl(None, false)).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
         let left: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -4964,6 +4975,95 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(left, [std::ffi::OsString::from("peers.json")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The owner of the file at `path`, whether its access list is
+    /// protected, and who each of its entries lets in, read back from disk.
+    fn access_of(path: &std::path::Path) -> (String, bool, Vec<String>) {
+        let sddl = setup::file_sddl(path).unwrap();
+        let (owner, dacl) = sddl.split_once("D:").unwrap();
+        let owner = owner.strip_prefix("O:").unwrap().to_owned();
+        let (flags, aces) = dacl.split_once('(').unwrap_or((dacl, ""));
+        let who = aces
+            .split('(')
+            .map(|ace| {
+                ace.trim_end_matches(')')
+                    .rsplit(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        (owner, flags.contains('P'), who)
+    }
+
+    #[test]
+    fn the_saved_state_and_peers_are_closed_to_other_users() {
+        let dir = std::env::temp_dir().join(format!("daifuku-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = setup::user_sid().unwrap();
+        let mut d = daemon();
+        d.state_file = Some(dir.join("state.json"));
+        d.peers_file = Some(dir.join("peers.json"));
+        // A save cut short before keeps its file, made with the folder's
+        // access, beside the one it was for.
+        std::fs::write(dir.join("state.json.new"), "cut short").unwrap();
+        d.save(true);
+        d.save_peers();
+        let access = setup::canonical_sddl(&setup::private_file_sddl(Some(&sid), false)).unwrap();
+        for file in ["state.json", "peers.json"] {
+            let path = dir.join(file);
+            assert_eq!(setup::file_sddl(&path).unwrap(), access, "{file}");
+            let (owner, protected, who) = access_of(&path);
+            assert!(protected, "{file} takes entries from its folder");
+            assert_eq!(who[..2], ["SY", "BA"], "{file}");
+            assert_eq!(who[2..], [owner], "{file}");
+            assert!(std::fs::read_to_string(&path).is_ok(), "{file}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_tasks_and_usage_numbers_are_closed_to_other_users_as_the_state_is() {
+        use daifuku_core::usage::{Limits, Window};
+        let dir =
+            std::env::temp_dir().join(format!("daifuku-private-books-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = setup::user_sid().unwrap();
+        let mut d = daemon();
+        d.queue.file = Some(dir.join("tasks.json"));
+        d.usage.file = Some(dir.join("usage.json"));
+        d.usage_report(&UsageReport {
+            usage: Limits {
+                five_hour: Some(Window {
+                    used: 40,
+                    resets_at: wall_seconds() + 3600,
+                }),
+                seven_day: None,
+            },
+            folder: r"C:\Users\me\.claude".into(),
+            window: None,
+        });
+        d.queue.claim(queue::Claim {
+            backlog: dir.join("BACKLOG.md"),
+            id: "T1".into(),
+            window: 7,
+            session: "s".into(),
+            since: now_stamp(),
+        });
+        d.queue.save(&d.saved_access);
+        let access = setup::canonical_sddl(&setup::private_file_sddl(Some(&sid), false)).unwrap();
+        for file in ["tasks.json", "usage.json"] {
+            let path = dir.join(file);
+            assert_eq!(setup::file_sddl(&path).unwrap(), access, "{file}");
+            let (owner, protected, who) = access_of(&path);
+            assert!(protected, "{file} takes entries from its folder");
+            assert_eq!(who[..2], ["SY", "BA"], "{file}");
+            assert_eq!(who[2..], [owner], "{file}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5516,7 +5616,7 @@ mod tests {
             session: "s".into(),
             since: now_stamp(),
         });
-        d.queue.save();
+        d.queue.save(&d.saved_access);
 
         let now = wall_seconds();
         let mut clock_times = Vec::new();
@@ -5589,7 +5689,7 @@ mod tests {
             session: "s".into(),
             since: now_stamp(),
         });
-        d.queue.save();
+        d.queue.save(&d.saved_access);
         // A daemon that starts again reads every file back.
         let mut again = daemon();
         point(&mut again);

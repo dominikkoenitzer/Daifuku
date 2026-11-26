@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Other accounts on the same PC can no longer read the saved state, the
+  peers file, the tasks handed out and the usage numbers an elevated daemon
+  keeps in `ProgramData\Daifuku`, which name your sessions, your fleets, the
+  folders `daifuku spawn` opened and what your accounts used. They took the
+  access of that folder, which every user may read. The daemon now writes
+  them with an access list of their own that lets in only you, SYSTEM and
+  Administrators.
+
 ## 0.4.4, 2026-11-21
 
 - While an agent compacts its conversation, the saved state marks that
