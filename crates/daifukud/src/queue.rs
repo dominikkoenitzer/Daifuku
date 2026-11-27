@@ -234,9 +234,22 @@ impl Queue {
                 claims.retain(|c| backlog::id_ok(&c.id));
                 claims.truncate(MAX_CLAIMS);
                 self.claims = claims;
+                self.forget_windows_of_other_starts(daifuku_win::clock::boot_id());
                 self.windows_gone(alive);
             }
             Err(_) => tracing::warn!(path = %file.display(), "ignored an unreadable tasks file"),
+        }
+    }
+
+    /// Lets every claim made in another start of Windows, or in one not
+    /// known, forget its terminal: handles mean nothing across a restart, and
+    /// a new terminal that happens to get the same one must not count as
+    /// holding the task. The claim stays with its session.
+    fn forget_windows_of_other_starts(&mut self, boot_id: u64) {
+        for c in &mut self.claims {
+            if c.since.boot_id == 0 || c.since.boot_id != boot_id {
+                c.window = 0;
+            }
         }
     }
 
@@ -374,6 +387,31 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_from_another_start_of_windows_forgets_its_terminal() {
+        let mut q = Queue::default();
+        let mut now = claim("A1", 7, "s1");
+        now.since = Stamp {
+            boot_id: 42,
+            ticks: 1,
+        };
+        let mut before = claim("A2", 8, "s2");
+        before.since = Stamp {
+            boot_id: 41,
+            ticks: 1,
+        };
+        let unknown = claim("A3", 9, "s3");
+        q.claim(now);
+        q.claim(before);
+        q.claim(unknown);
+        q.forget_windows_of_other_starts(42);
+        let windows: Vec<u64> = q.claims.iter().map(|c| c.window).collect();
+        assert_eq!(windows, [7, 0, 0]);
+        // A new terminal that got handle 8 holds nothing; the session still does.
+        assert!(q.held(8, "other", |_| false).is_none());
+        assert!(q.held(0, "s2", |_| true).is_some());
+    }
+
+    #[test]
     fn a_terminal_or_its_session_holds_its_task() {
         let mut q = Queue::default();
         let ended = |_: &str| false;
@@ -413,7 +451,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("tasks.json");
-        let saved = vec![claim("A1", 7, "s1"), claim("A2", 8, "s2")];
+        // Saved in this start of Windows: the daemon restarted, Windows did not.
+        let this_start = Stamp {
+            boot_id: daifuku_win::clock::boot_id(),
+            ticks: 1,
+        };
+        let saved: Vec<Claim> = [claim("A1", 7, "s1"), claim("A2", 8, "s2")]
+            .into_iter()
+            .map(|c| Claim {
+                since: this_start,
+                ..c
+            })
+            .collect();
         std::fs::write(&file, serde_json::to_string(&saved).unwrap()).unwrap();
         let mut q = Queue {
             file: Some(file),
