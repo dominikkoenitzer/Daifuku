@@ -1117,6 +1117,28 @@ pub fn io_reason(e: &std::io::Error) -> String {
     }
 }
 
+/// `what` followed by why `e` happened, as [`io_reason`] words it.
+#[must_use]
+pub fn failed(what: &str, e: &std::io::Error) -> String {
+    format!("{what}: {}", io_reason(e))
+}
+
+/// `e` and what caused it, joined with ": ", where an I/O error in the chain
+/// is worded by [`io_reason`], without its error number.
+#[must_use]
+pub fn reason_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = Vec::new();
+    let mut next = Some(e);
+    while let Some(err) = next {
+        parts.push(match err.downcast_ref::<std::io::Error>() {
+            Some(io) => io_reason(io),
+            None => err.to_string(),
+        });
+        next = err.source();
+    }
+    parts.join(": ")
+}
+
 /// What is wrong with a file that did not parse, in the words of someone
 /// editing it rather than the parser's, with where it is.
 fn plain_json_error(e: &serde_json::Error) -> String {
@@ -1807,6 +1829,37 @@ mod tests {
         assert!(!reason.contains("os error"), "{reason}");
         let other = std::io::Error::other("the share is offline");
         assert_eq!(io_reason(&other), "the share is offline");
+    }
+
+    #[test]
+    fn a_failure_names_what_failed_and_why_without_the_error_number() {
+        let e = std::io::Error::from_raw_os_error(2);
+        let said = failed("could not remove C:\\x", &e);
+        assert!(said.starts_with("could not remove C:\\x: "), "{said}");
+        assert!(!said.contains("os error"), "{said}");
+    }
+
+    #[test]
+    fn a_chain_of_errors_drops_the_error_number_of_the_io_error_in_it() {
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("could not remove the data folder")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let outer = Outer(std::io::Error::from_raw_os_error(2));
+        let said = reason_chain(&outer);
+        assert!(
+            said.starts_with("could not remove the data folder: "),
+            "{said}"
+        );
+        assert!(!said.contains("os error"), "{said}");
     }
 
     #[test]
