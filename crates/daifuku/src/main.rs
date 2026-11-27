@@ -2196,6 +2196,12 @@ fn tasks_text(fleets: &[daifuku_core::protocol::FleetQueue]) -> String {
         if let Some(why) = &f.stopped {
             let _ = writeln!(out, "  no task goes out now: {why}");
         }
+        for id in &f.repeated {
+            let _ = writeln!(
+                out,
+                "  more than one task has the id {id}: only the first goes out; give each task its own id"
+            );
+        }
         if f.tasks.is_empty() {
             out.push_str("  no open tasks\n");
         }
@@ -2991,6 +2997,7 @@ mod tests {
                 ],
                 next: Some("A2".into()),
                 stopped: Some("5h 80%, stops at 75%".into()),
+                repeated: vec!["A2".into()],
             },
             FleetQueue {
                 fleet: "solo".into(),
@@ -2999,11 +3006,12 @@ mod tests {
                 tasks: Vec::new(),
                 next: None,
                 stopped: None,
+                repeated: Vec::new(),
             },
         ];
         assert_eq!(
             tasks_text(&fleets),
-            "crew: C:\\work\\BACKLOG.md\n  no task goes out now: 5h 80%, stops at 75%\n  A1 Title (open), with crew 1 for 1m 30s\n  next A2 Title (open)\nsolo: C:\\solo\\BACKLOG.md\n  could not read it: The system cannot find the file specified.\n"
+            "crew: C:\\work\\BACKLOG.md\n  no task goes out now: 5h 80%, stops at 75%\n  more than one task has the id A2: only the first goes out; give each task its own id\n  A1 Title (open), with crew 1 for 1m 30s\n  next A2 Title (open)\nsolo: C:\\solo\\BACKLOG.md\n  could not read it: The system cannot find the file specified.\n"
         );
         assert!(tasks_text(&[]).starts_with("no fleet has a backlog"));
     }

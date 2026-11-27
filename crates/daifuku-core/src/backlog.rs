@@ -89,6 +89,21 @@ fn plain(text: &str) -> String {
         .collect()
 }
 
+/// The ids more than one task in `tasks` carries, each once, in the order
+/// they first repeat. Claims are kept by id, so only the first such task is
+/// ever handed out; the others wait for good without a word.
+#[must_use]
+pub fn repeated_ids(tasks: &[Task]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut repeated = Vec::new();
+    for task in tasks {
+        if !seen.insert(task.id.as_str()) && !repeated.contains(&task.id) {
+            repeated.push(task.id.clone());
+        }
+    }
+    repeated
+}
+
 /// An id Daifuku takes: letters, digits, `-` and `_`, at most [`MAX_ID`].
 #[must_use]
 pub fn id_ok(id: &str) -> bool {
@@ -140,6 +155,17 @@ fn first_word(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repeated_id_is_named_once_and_a_unique_list_names_none() {
+        let tasks = parse(
+            "### A1. One | owner: | status: open\n### A2. Two | owner: | status: open\n\
+             ### A1. Again | owner: | status: open\n### A1. Thrice | owner: | status: open\n",
+        );
+        assert_eq!(tasks.len(), 4, "every heading still parses");
+        assert_eq!(repeated_ids(&tasks), ["A1"]);
+        assert!(repeated_ids(&tasks[..2]).is_empty());
+    }
 
     const BACKLOG: &str = "\
 # Backlog

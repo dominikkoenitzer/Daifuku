@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `daifuku task`, its `--json` and `daifuku doctor` name task ids a backlog
+  gives to more than one task. Only the first of them was ever handed out,
+  and nothing said why the others waited.
 - A hotkey of shift and a key that types or edits, such as `shift+a` or
   `shift+tab`, is refused: it would take that key from every program.
   Add ctrl, alt or win.

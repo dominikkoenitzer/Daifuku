@@ -304,6 +304,7 @@ terminal ([configuration](configuration.md)).
 | `fleets[].tasks[].handed_to` | object | Who has it; left out when nobody does. `window` and `label` are the terminal and its label, left out once it closed; `session_id` is the session it went to, and `age_seconds` how long ago, left out when that was before Windows last started. |
 | `fleets[].next` | string | The task that goes out next; left out when there is none. |
 | `fleets[].stopped` | string | Why no task goes out now, as the account's `stop_at` says, such as `5h 80%, stops at 75%`; left out while tasks go out. |
+| `fleets[].repeated` | string array | Task ids the backlog gives to more than one task. Only the first task with each id ever goes out; left out when there are none. |
 
 ### `events`
 

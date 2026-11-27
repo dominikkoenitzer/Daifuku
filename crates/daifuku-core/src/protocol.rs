@@ -347,6 +347,10 @@ pub struct FleetQueue {
     /// Why its agents get no task now, as its account's `stop_at` says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped: Option<String>,
+    /// Task ids the backlog gives to more than one task; only the first of
+    /// each is ever handed out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repeated: Vec<String>,
 }
 
 /// One task of a backlog.

@@ -1433,6 +1433,38 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                 "administrator fleets have an elevated daemon",
                 note.as_deref().unwrap_or_default(),
             );
+            // Claims are kept by id: a second task with the same id is
+            // never handed out, and nothing else would say so.
+            let backlogs: Vec<_> = c
+                .fleets
+                .iter()
+                .filter_map(|f| f.backlog.as_deref())
+                .collect();
+            if !backlogs.is_empty() {
+                let repeated: Vec<String> = backlogs
+                    .iter()
+                    .filter_map(|path| {
+                        let text = std::fs::read(path)
+                            .ok()
+                            .and_then(|b| config::decode(&b).ok())?;
+                        let ids = daifuku_core::backlog::repeated_ids(
+                            &daifuku_core::backlog::parse(&text),
+                        );
+                        if ids.is_empty() {
+                            return None;
+                        }
+                        Some(format!("{}: {}", path.display(), ids.join(", ")))
+                    })
+                    .collect();
+                doctor.check(
+                    repeated.is_empty(),
+                    "backlog task ids are unique",
+                    &format!(
+                        "give each task its own id; only the first of each goes out ({})",
+                        repeated.join("; ")
+                    ),
+                );
+            }
         }
         Some(Err(e)) => doctor.check(false, "config valid", e),
         None => doctor.check(false, "config valid", "no ProgramData folder"),

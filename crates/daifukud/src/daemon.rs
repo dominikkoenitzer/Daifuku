@@ -768,9 +768,11 @@ impl Daemon {
                 tasks: Vec::new(),
                 next: None,
                 stopped: self.stop_reason(&fleet, None),
+                repeated: Vec::new(),
             };
             match queue::read(&path, self.elevated) {
                 Ok(backlog) => {
+                    q.repeated = daifuku_core::backlog::repeated_ids(&backlog.tasks);
                     let key = daifuku_core::config::folder_key(&path);
                     if !read.contains(&key) {
                         settled |= self.queue.settle(&path, &backlog);
