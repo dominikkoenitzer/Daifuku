@@ -1050,8 +1050,12 @@ fn run(step: &Step) -> anyhow::Result<bool> {
             ),
         },
         Step::DataFolder { dir, .. } => {
-            let removed = setup::harden_dir(dir)
-                .with_context(|| format!("could not lock {}", dir.display()))?;
+            let removed = setup::harden_dir(dir).map_err(|e| {
+                anyhow!(config::failed(
+                    &format!("could not lock {}", dir.display()),
+                    &e
+                ))
+            })?;
             if removed {
                 println!(
                     "removed      {} (it was not locked to administrators, so anyone could have written what was in it)",
@@ -1144,12 +1148,18 @@ fn run(step: &Step) -> anyhow::Result<bool> {
                         println!("hooks        added {} to {}", n - updated, file.display());
                     }
                 }
-                Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
+                Err(e) => println!(
+                    "hooks        {} not changed: {}",
+                    agent.name,
+                    config::reason_chain(e.as_ref())
+                ),
             }
         }
         Step::RemoveTask { name } => {
-            let was_there = setup::task_exists(name).context("could not remove the logon task")?;
-            setup::delete_task(name).context("could not remove the logon task")?;
+            let gone =
+                |e: std::io::Error| anyhow!(config::failed("could not remove the logon task", &e));
+            let was_there = setup::task_exists(name).map_err(gone)?;
+            setup::delete_task(name).map_err(gone)?;
             if was_there {
                 println!("removed      logon task");
             }
@@ -1160,7 +1170,11 @@ fn run(step: &Step) -> anyhow::Result<bool> {
                     Ok(0) => {}
                     Ok(1) => println!("removed      1 hook from {}", file.display()),
                     Ok(n) => println!("removed      {n} hooks from {}", file.display()),
-                    Err(e) => println!("hooks        {} not changed: {e:#}", agent.name),
+                    Err(e) => println!(
+                        "hooks        {} not changed: {}",
+                        agent.name,
+                        config::reason_chain(e.as_ref())
+                    ),
                 }
             }
         }
@@ -1206,8 +1220,12 @@ fn run(step: &Step) -> anyhow::Result<bool> {
             ),
         },
         Step::RemoveData { dir, .. } => {
-            std::fs::remove_dir_all(dir)
-                .with_context(|| format!("could not remove {}", dir.display()))?;
+            std::fs::remove_dir_all(dir).map_err(|e| {
+                anyhow!(config::failed(
+                    &format!("could not remove {}", dir.display()),
+                    &e
+                ))
+            })?;
             println!("removed      {}", dir.display());
         }
         Step::KeepData { dir, what } => println!(
@@ -1433,6 +1451,38 @@ pub fn doctor(report: &mut dyn FnMut(Finding)) -> bool {
                 "administrator fleets have an elevated daemon",
                 note.as_deref().unwrap_or_default(),
             );
+            // Claims are kept by id: a second task with the same id is
+            // never handed out, and nothing else would say so.
+            let backlogs: Vec<_> = c
+                .fleets
+                .iter()
+                .filter_map(|f| f.backlog.as_deref())
+                .collect();
+            if !backlogs.is_empty() {
+                let repeated: Vec<String> = backlogs
+                    .iter()
+                    .filter_map(|path| {
+                        let text = std::fs::read(path)
+                            .ok()
+                            .and_then(|b| config::decode(&b).ok())?;
+                        let ids = daifuku_core::backlog::repeated_ids(
+                            &daifuku_core::backlog::parse(&text),
+                        );
+                        if ids.is_empty() {
+                            return None;
+                        }
+                        Some(format!("{}: {}", path.display(), ids.join(", ")))
+                    })
+                    .collect();
+                doctor.check(
+                    repeated.is_empty(),
+                    "backlog task ids are unique",
+                    &format!(
+                        "give each task its own id; only the first of each goes out ({})",
+                        repeated.join("; ")
+                    ),
+                );
+            }
         }
         Some(Err(e)) => doctor.check(false, "config valid", e),
         None => doctor.check(false, "config valid", "no ProgramData folder"),
@@ -3437,6 +3487,32 @@ mod tests {
         again_while_running.unwrap();
         assert!(still_there, "still runs, so it stays");
         assert!(cleared, "{:?}", names_in(&to));
+    }
+
+    /// A data folder with a file held open cannot be removed; the message
+    /// says why in words, without the error number. Stand-in folder only.
+    #[test]
+    fn a_data_folder_held_open_is_refused_without_an_error_number() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = Scratch::new("data-held");
+        let data = dir.0.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("held.txt"), "x").unwrap();
+        let _held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(data.join("held.txt"))
+            .unwrap();
+
+        let e = run(&Step::RemoveData {
+            dir: data.clone(),
+            what: "stand-in",
+        })
+        .unwrap_err();
+
+        let said = format!("{e:#}");
+        assert!(said.starts_with("could not remove "), "{said}");
+        assert!(!said.contains("os error"), "{said}");
     }
 
     /// When the new file cannot be written next to the old one either, the

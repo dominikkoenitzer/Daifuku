@@ -843,6 +843,71 @@ mod tests {
         assert!(!trusted_server(u32::MAX));
     }
 
+    /// A hook that asks for a task holds its instance until the answer comes.
+    /// While some are held, a free instance still takes a hook that only
+    /// reports, inside the 100 ms such a hook waits; with none free it is
+    /// turned away, which is why the daemon makes more instances than the
+    /// largest fleet has terminals.
+    #[test]
+    fn held_instances_leave_a_free_one_for_a_reporting_hook() {
+        let name = private_name();
+        let sddl = Pipe::Hook.sddl(process::current_is_elevated());
+        let count = 5;
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = std::sync::Arc::new(std::sync::Mutex::new(released));
+        let mut servers = Vec::new();
+        for mut instance in instances_at(&name, &sddl, count).unwrap() {
+            let released = std::sync::Arc::clone(&released);
+            servers.push(std::thread::spawn(move || {
+                let mut connection = instance.accept().unwrap();
+                // A reporting hook writes its line; an asking one just waits here.
+                let line = connection
+                    .read_line(Duration::from_millis(300))
+                    .unwrap_or_default();
+                let _ = released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5));
+                line
+            }));
+        }
+        // Four hooks that asked and wait for their answer.
+        let held: Vec<_> = (0..count - 1)
+            .map(|_| {
+                connect(
+                    &name,
+                    FILE_WRITE_DATA.0,
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .unwrap()
+            })
+            .collect();
+        // A hook that only reports still finds the fifth instance in time.
+        send_to(
+            &name,
+            Pipe::Hook,
+            "{\"hook\":1}\n",
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        // With every instance taken, the next one is turned away.
+        assert!(
+            send_to(
+                &name,
+                Pipe::Hook,
+                "{\"hook\":2}\n",
+                Duration::from_millis(100)
+            )
+            .is_err()
+        );
+        drop(held);
+        for _ in 0..count {
+            let _ = release.send(());
+        }
+        let lines: Vec<String> = servers.into_iter().map(|s| s.join().unwrap()).collect();
+        assert!(lines.iter().any(|l| l == "{\"hook\":1}\n"), "{lines:?}");
+    }
+
     #[test]
     fn a_hook_line_gets_through_the_narrow_access_list() {
         let name = private_name();

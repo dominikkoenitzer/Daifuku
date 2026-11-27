@@ -91,6 +91,10 @@ pub struct Queue {
     /// Where the claims are kept across a restart, `None` when they are not,
     /// as for the daemon's other state.
     pub file: Option<PathBuf>,
+    /// Claims, as backlog key and task id, whose task the last read of its
+    /// backlog did not list. One such read may be a file caught halfway
+    /// through a rewrite; a claim goes only when the next read agrees.
+    missing: Vec<(Vec<String>, String)>,
 }
 
 impl Queue {
@@ -102,22 +106,39 @@ impl Queue {
             .filter(move |c| folder_key(&c.backlog) == key)
     }
 
-    /// Lets go of the tasks from `path` its backlog now lists as finished or
-    /// no longer lists. True when any went. A backlog that lists no task at
-    /// all lets go of none: it may be one read halfway through a rewrite.
+    /// Lets go of the tasks from `path` its backlog now lists as finished, or
+    /// has not listed on two reads in a row. True when any went. A backlog
+    /// that lists no task at all lets go of none: it may be one read halfway
+    /// through a rewrite, and so may one that lists only the first tasks.
     pub fn settle(&mut self, path: &Path, backlog: &Backlog) -> bool {
         if backlog.tasks.is_empty() {
             return false;
         }
         let key = folder_key(path);
         let before = self.claims.len();
+        let mut missing_now = Vec::new();
+        let missing_before = std::mem::take(&mut self.missing);
         self.claims.retain(|c| {
-            folder_key(&c.backlog) != key
-                || backlog
-                    .tasks
-                    .iter()
-                    .any(|t| t.id == c.id && !t.is_finished())
+            if folder_key(&c.backlog) != key {
+                return true;
+            }
+            match backlog.tasks.iter().find(|t| t.id == c.id) {
+                Some(task) => !task.is_finished(),
+                None => {
+                    let entry = (key.clone(), c.id.clone());
+                    let again = missing_before.contains(&entry);
+                    if !again {
+                        missing_now.push(entry);
+                    }
+                    !again
+                }
+            }
         });
+        self.missing = missing_before
+            .into_iter()
+            .filter(|(k, _)| *k != key)
+            .chain(missing_now)
+            .collect();
         self.claims.len() != before
     }
 
@@ -213,9 +234,22 @@ impl Queue {
                 claims.retain(|c| backlog::id_ok(&c.id));
                 claims.truncate(MAX_CLAIMS);
                 self.claims = claims;
+                self.forget_windows_of_other_starts(daifuku_win::clock::boot_id());
                 self.windows_gone(alive);
             }
             Err(_) => tracing::warn!(path = %file.display(), "ignored an unreadable tasks file"),
+        }
+    }
+
+    /// Lets every claim made in another start of Windows, or in one not
+    /// known, forget its terminal: handles mean nothing across a restart, and
+    /// a new terminal that happens to get the same one must not count as
+    /// holding the task. The claim stays with its session.
+    fn forget_windows_of_other_starts(&mut self, boot_id: u64) {
+        for c in &mut self.claims {
+            if c.since.boot_id == 0 || c.since.boot_id != boot_id {
+                c.window = 0;
+            }
         }
     }
 
@@ -300,6 +334,11 @@ mod tests {
 ### A1. First | owner: crew-1 | status: running
 ### A2. Second | owner: crew-2 | status: done, merged
 ";
+        // Done goes at once; a task the file no longer lists goes on the
+        // second read that agrees, since one read may be a file cut short.
+        assert!(q.settle(Path::new(FILE), &backlog(now)));
+        let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(left, ["A1", "A3"]);
         assert!(q.settle(Path::new(FILE), &backlog(now)));
         let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(left, ["A1"]);
@@ -318,10 +357,58 @@ mod tests {
             assert_eq!(q.claims.len(), 2, "{cut:?}");
         }
         assert!(q.held(7, "other", |_| false).is_some());
-        // Once the file lists tasks again, a dropped one is let go.
+        // Once the file lists tasks again, a dropped one is let go on the
+        // second read that agrees.
+        assert!(!q.settle(Path::new(FILE), &backlog(&TEXT.replace("A2", "B2"))));
         assert!(q.settle(Path::new(FILE), &backlog(&TEXT.replace("A2", "B2"))));
         let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(left, ["A1"]);
+    }
+
+    #[test]
+    fn a_read_cut_after_some_tasks_keeps_the_claims_of_the_rest() {
+        let mut q = Queue::default();
+        q.claim(claim("A1", 7, "s1"));
+        q.claim(claim("A2", 8, "s2"));
+        let cut = &TEXT[..TEXT.find("### A2").expect("TEXT lists A2")];
+        assert!(
+            !q.settle(Path::new(FILE), &backlog(cut)),
+            "one cut read lets go of nothing"
+        );
+        assert_eq!(q.claims.len(), 2);
+        // The whole file again: A2 is back, and a later cut read starts over.
+        assert!(!q.settle(Path::new(FILE), &backlog(TEXT)));
+        assert!(!q.settle(Path::new(FILE), &backlog(cut)));
+        assert_eq!(q.claims.len(), 2);
+        // Missing on the next read too: now it really went.
+        assert!(q.settle(Path::new(FILE), &backlog(cut)));
+        let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(left, ["A1"]);
+    }
+
+    #[test]
+    fn a_claim_from_another_start_of_windows_forgets_its_terminal() {
+        let mut q = Queue::default();
+        let mut now = claim("A1", 7, "s1");
+        now.since = Stamp {
+            boot_id: 42,
+            ticks: 1,
+        };
+        let mut before = claim("A2", 8, "s2");
+        before.since = Stamp {
+            boot_id: 41,
+            ticks: 1,
+        };
+        let unknown = claim("A3", 9, "s3");
+        q.claim(now);
+        q.claim(before);
+        q.claim(unknown);
+        q.forget_windows_of_other_starts(42);
+        let windows: Vec<u64> = q.claims.iter().map(|c| c.window).collect();
+        assert_eq!(windows, [7, 0, 0]);
+        // A new terminal that got handle 8 holds nothing; the session still does.
+        assert!(q.held(8, "other", |_| false).is_none());
+        assert!(q.held(0, "s2", |_| true).is_some());
     }
 
     #[test]
@@ -364,7 +451,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("tasks.json");
-        let saved = vec![claim("A1", 7, "s1"), claim("A2", 8, "s2")];
+        // Saved in this start of Windows: the daemon restarted, Windows did not.
+        let this_start = Stamp {
+            boot_id: daifuku_win::clock::boot_id(),
+            ticks: 1,
+        };
+        let saved: Vec<Claim> = [claim("A1", 7, "s1"), claim("A2", 8, "s2")]
+            .into_iter()
+            .map(|c| Claim {
+                since: this_start,
+                ..c
+            })
+            .collect();
         std::fs::write(&file, serde_json::to_string(&saved).unwrap()).unwrap();
         let mut q = Queue {
             file: Some(file),

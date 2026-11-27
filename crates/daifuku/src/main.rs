@@ -2154,6 +2154,11 @@ fn usage_line(u: &daifuku_core::protocol::AccountUsage) -> String {
         .into_iter()
         .filter_map(|(name, w)| Some(window(name, &w?)))
         .collect();
+    parts.extend(
+        u.unreported
+            .iter()
+            .map(|name| format!("{name} not reported yet")),
+    );
     if let Some(age) = u.age_seconds {
         parts.push(format!("{} ago", since(age)));
     }
@@ -2190,6 +2195,12 @@ fn tasks_text(fleets: &[daifuku_core::protocol::FleetQueue]) -> String {
         }
         if let Some(why) = &f.stopped {
             let _ = writeln!(out, "  no task goes out now: {why}");
+        }
+        for id in &f.repeated {
+            let _ = writeln!(
+                out,
+                "  more than one task has the id {id}: only the first goes out; give each task its own id"
+            );
         }
         if f.tasks.is_empty() {
             out.push_str("  no open tasks\n");
@@ -2414,6 +2425,7 @@ mod tests {
             }),
             warn: Some(77),
             warning: true,
+            unreported: Vec::new(),
         };
         assert_eq!(
             usage_line(&u),
@@ -2430,6 +2442,11 @@ mod tests {
         assert_eq!(
             usage_line(&u),
             r"C:\Users\me\.claude-work  5h reset since; 2m 5s ago"
+        );
+        u.unreported = vec!["week".into()];
+        assert_eq!(
+            usage_line(&u),
+            r"C:\Users\me\.claude-work  5h reset since; week not reported yet; 2m 5s ago"
         );
     }
 
@@ -2567,6 +2584,8 @@ mod tests {
         assert_eq!(since(7500), "2h 5m");
     }
 
+    // Windows only: os error 5 is access denied only on Windows.
+    #[cfg(windows)]
     #[test]
     fn a_refused_control_pipe_asks_for_an_administrator_terminal() {
         // What the pipe client returns when Windows refuses the open.
@@ -2978,6 +2997,7 @@ mod tests {
                 ],
                 next: Some("A2".into()),
                 stopped: Some("5h 80%, stops at 75%".into()),
+                repeated: vec!["A2".into()],
             },
             FleetQueue {
                 fleet: "solo".into(),
@@ -2986,11 +3006,12 @@ mod tests {
                 tasks: Vec::new(),
                 next: None,
                 stopped: None,
+                repeated: Vec::new(),
             },
         ];
         assert_eq!(
             tasks_text(&fleets),
-            "crew: C:\\work\\BACKLOG.md\n  no task goes out now: 5h 80%, stops at 75%\n  A1 Title (open), with crew 1 for 1m 30s\n  next A2 Title (open)\nsolo: C:\\solo\\BACKLOG.md\n  could not read it: The system cannot find the file specified.\n"
+            "crew: C:\\work\\BACKLOG.md\n  no task goes out now: 5h 80%, stops at 75%\n  more than one task has the id A2: only the first goes out; give each task its own id\n  A1 Title (open), with crew 1 for 1m 30s\n  next A2 Title (open)\nsolo: C:\\solo\\BACKLOG.md\n  could not read it: The system cannot find the file specified.\n"
         );
         assert!(tasks_text(&[]).starts_with("no fleet has a backlog"));
     }
@@ -3354,6 +3375,8 @@ mod tests {
         assert_eq!(e.kind(), clap::error::ErrorKind::DisplayHelp);
     }
 
+    // Windows only: os error 5 is access denied only on Windows.
+    #[cfg(windows)]
     #[test]
     fn a_daemon_that_could_not_be_asked_has_a_code_for_each_reason() {
         let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "not running");

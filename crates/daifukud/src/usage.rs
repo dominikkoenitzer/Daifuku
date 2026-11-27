@@ -148,6 +148,12 @@ impl Book {
                     seven_day: e.limits.seven_day.map(|w| window(w, SEVEN_DAYS, now)),
                     warn: account.and_then(|(_, a)| a.warn),
                     warning: self.warning(config, folder, now),
+                    unreported: account
+                        .map(|(_, a)| e.limits.unreported(&a.stop_at))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
                 }
             })
             .collect()

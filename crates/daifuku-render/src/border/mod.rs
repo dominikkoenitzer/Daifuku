@@ -6,8 +6,12 @@
 //! down. Everything it does not mention is left exactly as it is.
 //!
 //! ```no_run
+//! # // Windows only: BorderManager exists only on Windows.
+//! # #[cfg(windows)]
 //! use daifuku_render::{BorderConfig, BorderManager, BorderSpec, Colour, Rect, WindowHandle};
 //!
+//! # #[cfg(not(windows))] fn main() {}
+//! # #[cfg(windows)]
 //! # fn main() -> daifuku_render::Result<()> {
 //! let borders = BorderManager::new(BorderConfig::default())?;
 //! borders.update(

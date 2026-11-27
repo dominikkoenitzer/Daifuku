@@ -134,12 +134,20 @@ impl Inbox {
     }
 }
 
+/// Hook pipe instances. A hook that asks for a task holds its instance until
+/// the answer (up to about 4.5 s), so every terminal of four full fleets
+/// opened together may be asking at once; the four beyond that serve the
+/// hooks that only report, which wait 100 ms for a free instance and then
+/// give up. Windows allows 254 instances of one pipe.
+const HOOK_INSTANCES: usize = 4 * daifuku_core::config::MAX_FLEET as usize + 4;
+const _: () =
+    assert!(HOOK_INSTANCES > 4 * daifuku_core::config::MAX_FLEET as usize && HOOK_INSTANCES <= 254);
+
 /// Claims both pipe names and starts both threads. Fails if either name is
 /// taken, which means another daemon runs in this session.
 pub fn start(main_thread: u32) -> anyhow::Result<Inbox> {
-    // Four hook instances: several agents finishing a tool call in the same
-    // instant each find a free one instead of queueing on a single pipe.
-    let hooks = instances(Pipe::Hook, 4).map_err(|e| anyhow::anyhow!("hook pipe: {e}"))?;
+    let hooks =
+        instances(Pipe::Hook, HOOK_INSTANCES).map_err(|e| anyhow::anyhow!("hook pipe: {e}"))?;
     let controls = instances(Pipe::Control, 1).map_err(|e| anyhow::anyhow!("control pipe: {e}"))?;
     let (sender, receiver) = channel();
     let (stop_replied, stopped) = sync_channel(1);

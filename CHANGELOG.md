@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `daifuku task`, its `--json` and `daifuku doctor` name task ids a backlog
+  gives to more than one task. Only the first of them was ever handed out,
+  and nothing said why the others waited.
+- A hotkey of shift and a key that types or edits, such as `shift+a` or
+  `shift+tab`, is refused: it would take that key from every program.
+  Add ctrl, alt or win.
+- `daifuku status` says `week not reported yet` (or `5h`) for an account whose
+  `stop_at` rule names a window no status line has reported yet. Such a rule
+  stops nothing until the number arrives, and its silence no longer reads as
+  room to spare. `--json` has it as `usage[].unreported`.
 - A new config links its schema from Daifuku's new address. A config that
   still links the old one loads as before.
 - Other accounts on the same PC can no longer read the saved state, the

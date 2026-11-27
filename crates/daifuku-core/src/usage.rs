@@ -240,6 +240,25 @@ impl Limits {
     }
 }
 
+impl Limits {
+    /// The windows, `5h` or `week`, that a `stop_at` rule names (or a rule
+    /// for both does) but no report has given yet. Such a rule stops nothing
+    /// until the number arrives, so this is what tells it apart from room.
+    #[must_use]
+    pub fn unreported(&self, rules: &[StopAt]) -> Vec<&'static str> {
+        [
+            (LimitWindow::FiveHour, "5h", self.five_hour),
+            (LimitWindow::SevenDay, "week", self.seven_day),
+        ]
+        .into_iter()
+        .filter(|(kind, _, w)| {
+            w.is_none() && rules.iter().any(|r| r.window.is_none_or(|k| k == *kind))
+        })
+        .map(|(_, name, _)| name)
+        .collect()
+    }
+}
+
 /// `3d 4h`, `2h 14m`, `9m`: how long until a window resets, to the minute.
 #[must_use]
 pub fn span(seconds: u64) -> String {
@@ -362,6 +381,36 @@ mod tests {
             resets_at: Some(f64::INFINITY),
         };
         assert_eq!(raw.window(), None);
+    }
+
+    #[test]
+    fn a_rule_for_a_window_not_reported_yet_is_named() {
+        let rule = |window| StopAt {
+            share: 90,
+            window,
+            days: None,
+            hours: None,
+            last_minutes: None,
+        };
+        let only_5h = Limits {
+            five_hour: Some(Window {
+                used: 10,
+                resets_at: 2_000_000_000,
+            }),
+            seven_day: None,
+        };
+        assert_eq!(
+            only_5h.unreported(&[rule(Some(LimitWindow::SevenDay))]),
+            ["week"]
+        );
+        assert_eq!(only_5h.unreported(&[rule(None)]), ["week"]);
+        assert!(
+            only_5h
+                .unreported(&[rule(Some(LimitWindow::FiveHour))])
+                .is_empty()
+        );
+        assert!(only_5h.unreported(&[]).is_empty());
+        assert_eq!(Limits::default().unreported(&[rule(None)]), ["5h", "week"]);
     }
 
     #[test]

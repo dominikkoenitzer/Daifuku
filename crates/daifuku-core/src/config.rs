@@ -1117,6 +1117,28 @@ pub fn io_reason(e: &std::io::Error) -> String {
     }
 }
 
+/// `what` followed by why `e` happened, as [`io_reason`] words it.
+#[must_use]
+pub fn failed(what: &str, e: &std::io::Error) -> String {
+    format!("{what}: {}", io_reason(e))
+}
+
+/// `e` and what caused it, joined with ": ", where an I/O error in the chain
+/// is worded by [`io_reason`], without its error number.
+#[must_use]
+pub fn reason_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = Vec::new();
+    let mut next = Some(e);
+    while let Some(err) = next {
+        parts.push(match err.downcast_ref::<std::io::Error>() {
+            Some(io) => io_reason(io),
+            None => err.to_string(),
+        });
+        next = err.source();
+    }
+    parts.join(": ")
+}
+
 /// What is wrong with a file that did not parse, in the words of someone
 /// editing it rather than the parser's, with where it is.
 fn plain_json_error(e: &serde_json::Error) -> String {
@@ -1810,6 +1832,37 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_names_what_failed_and_why_without_the_error_number() {
+        let e = std::io::Error::from_raw_os_error(2);
+        let said = failed("could not remove C:\\x", &e);
+        assert!(said.starts_with("could not remove C:\\x: "), "{said}");
+        assert!(!said.contains("os error"), "{said}");
+    }
+
+    #[test]
+    fn a_chain_of_errors_drops_the_error_number_of_the_io_error_in_it() {
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("could not remove the data folder")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let outer = Outer(std::io::Error::from_raw_os_error(2));
+        let said = reason_chain(&outer);
+        assert!(
+            said.starts_with("could not remove the data folder: "),
+            "{said}"
+        );
+        assert!(!said.contains("os error"), "{said}");
+    }
+
+    #[test]
     fn a_number_out_of_range_names_the_range() {
         let cases = [
             (
@@ -2414,6 +2467,8 @@ mod tests {
         assert_eq!(Config::from_json(&text).unwrap(), Config::default());
     }
 
+    // Windows only: account folders are C:\ paths, not absolute off Windows.
+    #[cfg(windows)]
     #[test]
     fn a_fleet_signs_in_with_the_account_it_names() {
         let c = Config::from_json(
@@ -2456,6 +2511,8 @@ mod tests {
         );
     }
 
+    // Windows only: C:\ paths and case-insensitive folders are Windows rules.
+    #[cfg(windows)]
     #[test]
     fn accounts_need_a_name_a_folder_and_full_paths() {
         for (text, name) in [
@@ -2489,6 +2546,8 @@ mod tests {
         }
     }
 
+    // Windows only: folder names ignore case only on Windows.
+    #[cfg(windows)]
     #[test]
     fn an_account_is_found_by_its_folder_in_any_case() {
         let c = Config::from_json(
@@ -2512,12 +2571,16 @@ mod tests {
         }
     }
 
+    // Windows only, as the tests that call it: off Windows it is never used.
+    #[cfg(windows)]
     fn rules(json: &str) -> Result<Config, ConfigError> {
         Config::from_json(&format!(
             r#"{{"accounts":{{"work":{{"claude":"C:\\w","stop_at":{json}}}}}}}"#
         ))
     }
 
+    // Windows only: its fixtures name C:\ account folders.
+    #[cfg(windows)]
     #[test]
     fn stop_rules_parse_and_bad_ones_name_their_problem() {
         let c = rules(
@@ -2606,6 +2669,8 @@ mod tests {
         assert!(!rule.holds(w, 1_000_000, at(0, 9)), "a reset window");
     }
 
+    // Windows only: C:\ paths are not absolute off Windows.
+    #[cfg(windows)]
     #[test]
     fn a_backlog_is_a_full_path() {
         let c =

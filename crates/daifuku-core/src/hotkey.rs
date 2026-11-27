@@ -44,6 +44,12 @@ pub enum HotkeyError {
     /// No modifier at all: a bare key would be taken from every program.
     #[error("a hotkey needs at least one of ctrl, alt, shift or win")]
     NoModifier,
+    /// Shift alone on a key that types: it would take that character from
+    /// every program, as a bare key would.
+    #[error(
+        "shift alone on `{0}` would take what it types from every program; add ctrl, alt or win"
+    )]
+    ShiftOnly(String),
 }
 
 impl FromStr for Hotkey {
@@ -72,6 +78,9 @@ impl FromStr for Hotkey {
         if modifiers == 0 {
             return Err(HotkeyError::NoModifier);
         }
+        if modifiers == MOD_SHIFT && types(vk) {
+            return Err(HotkeyError::ShiftOnly(key_name(vk)));
+        }
         Ok(Self { modifiers, vk })
     }
 }
@@ -92,6 +101,25 @@ impl fmt::Display for Hotkey {
         }
         f.write_str(&key_name(self.vk))
     }
+}
+
+/// Whether shift on this key is ordinary typing or editing in every program:
+/// a letter, a digit, space or punctuation types a character, and shift with
+/// backspace, tab, return, the arrows, home, end, page up and down, insert
+/// or delete selects, moves back a field, breaks a line or edits.
+const fn types(vk: u16) -> bool {
+    matches!(
+        vk,
+        0x08 | 0x09
+            | 0x0D
+            | 0x20..=0x28
+            | 0x2D
+            | 0x2E
+            | 0x30..=0x39
+            | 0x41..=0x5A
+            | 0xBA..=0xC0
+            | 0xDB..=0xDE
+    )
 }
 
 fn modifier(name: &str) -> Option<u32> {
