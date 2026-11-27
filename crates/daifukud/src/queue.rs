@@ -91,6 +91,10 @@ pub struct Queue {
     /// Where the claims are kept across a restart, `None` when they are not,
     /// as for the daemon's other state.
     pub file: Option<PathBuf>,
+    /// Claims, as backlog key and task id, whose task the last read of its
+    /// backlog did not list. One such read may be a file caught halfway
+    /// through a rewrite; a claim goes only when the next read agrees.
+    missing: Vec<(Vec<String>, String)>,
 }
 
 impl Queue {
@@ -102,22 +106,39 @@ impl Queue {
             .filter(move |c| folder_key(&c.backlog) == key)
     }
 
-    /// Lets go of the tasks from `path` its backlog now lists as finished or
-    /// no longer lists. True when any went. A backlog that lists no task at
-    /// all lets go of none: it may be one read halfway through a rewrite.
+    /// Lets go of the tasks from `path` its backlog now lists as finished, or
+    /// has not listed on two reads in a row. True when any went. A backlog
+    /// that lists no task at all lets go of none: it may be one read halfway
+    /// through a rewrite, and so may one that lists only the first tasks.
     pub fn settle(&mut self, path: &Path, backlog: &Backlog) -> bool {
         if backlog.tasks.is_empty() {
             return false;
         }
         let key = folder_key(path);
         let before = self.claims.len();
+        let mut missing_now = Vec::new();
+        let missing_before = std::mem::take(&mut self.missing);
         self.claims.retain(|c| {
-            folder_key(&c.backlog) != key
-                || backlog
-                    .tasks
-                    .iter()
-                    .any(|t| t.id == c.id && !t.is_finished())
+            if folder_key(&c.backlog) != key {
+                return true;
+            }
+            match backlog.tasks.iter().find(|t| t.id == c.id) {
+                Some(task) => !task.is_finished(),
+                None => {
+                    let entry = (key.clone(), c.id.clone());
+                    let again = missing_before.contains(&entry);
+                    if !again {
+                        missing_now.push(entry);
+                    }
+                    !again
+                }
+            }
         });
+        self.missing = missing_before
+            .into_iter()
+            .filter(|(k, _)| *k != key)
+            .chain(missing_now)
+            .collect();
         self.claims.len() != before
     }
 
@@ -300,6 +321,11 @@ mod tests {
 ### A1. First | owner: crew-1 | status: running
 ### A2. Second | owner: crew-2 | status: done, merged
 ";
+        // Done goes at once; a task the file no longer lists goes on the
+        // second read that agrees, since one read may be a file cut short.
+        assert!(q.settle(Path::new(FILE), &backlog(now)));
+        let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(left, ["A1", "A3"]);
         assert!(q.settle(Path::new(FILE), &backlog(now)));
         let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(left, ["A1"]);
@@ -318,8 +344,31 @@ mod tests {
             assert_eq!(q.claims.len(), 2, "{cut:?}");
         }
         assert!(q.held(7, "other", |_| false).is_some());
-        // Once the file lists tasks again, a dropped one is let go.
+        // Once the file lists tasks again, a dropped one is let go on the
+        // second read that agrees.
+        assert!(!q.settle(Path::new(FILE), &backlog(&TEXT.replace("A2", "B2"))));
         assert!(q.settle(Path::new(FILE), &backlog(&TEXT.replace("A2", "B2"))));
+        let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(left, ["A1"]);
+    }
+
+    #[test]
+    fn a_read_cut_after_some_tasks_keeps_the_claims_of_the_rest() {
+        let mut q = Queue::default();
+        q.claim(claim("A1", 7, "s1"));
+        q.claim(claim("A2", 8, "s2"));
+        let cut = &TEXT[..TEXT.find("### A2").expect("TEXT lists A2")];
+        assert!(
+            !q.settle(Path::new(FILE), &backlog(cut)),
+            "one cut read lets go of nothing"
+        );
+        assert_eq!(q.claims.len(), 2);
+        // The whole file again: A2 is back, and a later cut read starts over.
+        assert!(!q.settle(Path::new(FILE), &backlog(TEXT)));
+        assert!(!q.settle(Path::new(FILE), &backlog(cut)));
+        assert_eq!(q.claims.len(), 2);
+        // Missing on the next read too: now it really went.
+        assert!(q.settle(Path::new(FILE), &backlog(cut)));
         let left: Vec<&str> = q.claims.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(left, ["A1"]);
     }

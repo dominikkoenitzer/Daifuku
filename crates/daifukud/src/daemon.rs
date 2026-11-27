@@ -753,6 +753,9 @@ impl Daemon {
             .collect();
         let now = now_stamp();
         let mut settled = false;
+        // A backlog two fleets share is settled once a listing: its two
+        // reads come microseconds apart and may catch the same rewrite.
+        let mut read: Vec<Vec<String>> = Vec::new();
         let mut queues = Vec::new();
         for fleet in fleets {
             let Some(path) = fleet.backlog.clone() else {
@@ -768,7 +771,11 @@ impl Daemon {
             };
             match queue::read(&path, self.elevated) {
                 Ok(backlog) => {
-                    settled |= self.queue.settle(&path, &backlog);
+                    let key = daifuku_core::config::folder_key(&path);
+                    if !read.contains(&key) {
+                        settled |= self.queue.settle(&path, &backlog);
+                        read.push(key);
+                    }
                     q.next = self.queue.next(&path, &backlog).map(|t| t.id.clone());
                     for task in &backlog.tasks {
                         let claim = self.queue.claims_in(&path).find(|c| c.id == task.id);
@@ -5906,6 +5913,45 @@ mod tests {
         };
         assert_eq!((last, events.len()), (2, 1));
         assert_eq!(events[0].seq, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_fleets_on_one_backlog_settle_it_once_a_listing() {
+        let dir = std::env::temp_dir().join(format!("daifuku-shared-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let backlog = dir.join("BACKLOG.md");
+        std::fs::write(
+            &backlog,
+            "### A1. Write the guide | owner: | status: open\n",
+        )
+        .unwrap();
+        let mut d = daemon();
+        d.config.fleets[0].backlog = Some(backlog.clone());
+        let mut docs = d.config.fleets[0].clone();
+        docs.name = "docs".into();
+        d.config.fleets.push(docs);
+        d.queue.claim(queue::Claim {
+            backlog: backlog.clone(),
+            id: "A2".into(),
+            window: 1,
+            session: "s1".into(),
+            since: Stamp::default(),
+        });
+        // Both fleets read the backlog in one listing; A2 is missing from both
+        // reads, which is one moment, not two reads in a row.
+        let _ = d.queues();
+        assert_eq!(
+            d.queue.claims_in(&backlog).count(),
+            1,
+            "kept after one listing"
+        );
+        let _ = d.queues();
+        assert_eq!(
+            d.queue.claims_in(&backlog).count(),
+            0,
+            "let go after the second"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
