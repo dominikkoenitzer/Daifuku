@@ -155,6 +155,7 @@ runs.
 | `...pace` | integer | How far use is ahead of an even spread over the window, in percentage points, negative to spare; left out once it has reset. |
 | `usage[].warn` | integer | The account's `warn`; left out when it has none. |
 | `usage[].warning` | boolean | Whether a window has reached `warn`. |
+| `usage[].unreported` | string array | Windows a `stop_at` rule names that no status line has reported yet, `5h` or `week`. Such a rule stops nothing until the number arrives; left out when there are none. |
 
 Every field is there even when the daemon is an older version that leaves
 one out: `elevated` is then `false`, and `hotkeys`, `peers`, `terminals`

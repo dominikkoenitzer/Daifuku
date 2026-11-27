@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `daifuku status` says `week not reported yet` (or `5h`) for an account whose
+  `stop_at` rule names a window no status line has reported yet. Such a rule
+  stops nothing until the number arrives, and its silence no longer reads as
+  room to spare. `--json` has it as `usage[].unreported`.
 - A new config links its schema from Daifuku's new address. A config that
   still links the old one loads as before.
 - Other accounts on the same PC can no longer read the saved state, the

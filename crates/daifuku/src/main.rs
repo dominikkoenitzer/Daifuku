@@ -2154,6 +2154,11 @@ fn usage_line(u: &daifuku_core::protocol::AccountUsage) -> String {
         .into_iter()
         .filter_map(|(name, w)| Some(window(name, &w?)))
         .collect();
+    parts.extend(
+        u.unreported
+            .iter()
+            .map(|name| format!("{name} not reported yet")),
+    );
     if let Some(age) = u.age_seconds {
         parts.push(format!("{} ago", since(age)));
     }
@@ -2414,6 +2419,7 @@ mod tests {
             }),
             warn: Some(77),
             warning: true,
+            unreported: Vec::new(),
         };
         assert_eq!(
             usage_line(&u),
@@ -2430,6 +2436,11 @@ mod tests {
         assert_eq!(
             usage_line(&u),
             r"C:\Users\me\.claude-work  5h reset since; 2m 5s ago"
+        );
+        u.unreported = vec!["week".into()];
+        assert_eq!(
+            usage_line(&u),
+            r"C:\Users\me\.claude-work  5h reset since; week not reported yet; 2m 5s ago"
         );
     }
 

@@ -306,6 +306,10 @@ pub struct AccountUsage {
     /// terminals show it.
     #[serde(default)]
     pub warning: bool,
+    /// Windows a `stop_at` rule names that no report has given yet, `5h` or
+    /// `week`; see [`crate::usage::Limits::unreported`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreported: Vec<String>,
 }
 
 /// One window of an account's limits.
@@ -854,6 +858,7 @@ mod tests {
                 seven_day: None,
                 warn: Some(77),
                 warning: true,
+                unreported: vec!["week".into()],
             }],
         };
         for r in [
