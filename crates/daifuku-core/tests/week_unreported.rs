@@ -1,6 +1,4 @@
-// Failing-first test for Daifuku: a stop_at rule for a window no report has given yet must be visible,
-// not silent. Fails today: there is no way to ask, so `daifuku status` shows nothing for the week and a
-// week rule looks satisfied. (It fails to compile until Limits::unreported exists.)
+// A stop_at rule for a window no report has given yet is named, not taken as met.
 use daifuku_core::config::{LimitWindow, StopAt};
 use daifuku_core::usage::{Limits, Window};
 

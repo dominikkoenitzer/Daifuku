@@ -1,6 +1,4 @@
-// Failing-first test for Daifuku: a stray quote already in PATH must not swallow the folder install adds.
-// Fails today: add() appends after an open quote, so the folder becomes part of the quoted entry: contains()
-// never finds it, every install appends another copy, and uninstall cannot take it out again.
+// A stray quote already in PATH does not swallow the folder install adds.
 use daifuku_core::path_list::{add, contains, remove};
 
 const DIR: &str = r"C:\Users\me\AppData\Local\Daifuku";

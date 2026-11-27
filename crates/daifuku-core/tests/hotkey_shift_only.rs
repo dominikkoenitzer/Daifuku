@@ -1,6 +1,4 @@
-// Failing-first test for Daifuku: shift alone on a typing key is a bare key in disguise.
-// `shift + a` registered with RegisterHotKey takes every capital A from every program, which is the very
-// thing NoModifier exists to prevent. Fails today: shift counts as the one modifier required.
+// Shift alone on a typing key is refused; with another modifier or another key it parses.
 use daifuku_core::hotkey::Hotkey;
 
 #[test]
