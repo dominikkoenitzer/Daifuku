@@ -23,6 +23,11 @@ pub fn add(value: &str, dir: &str) -> Option<String> {
         return None;
     }
     let mut out = value.to_owned();
+    // A quote left open by someone else would take the new folder into its
+    // entry, where neither `cmd` nor `contains` sees it as a folder of its own.
+    if out.matches('"').count() % 2 == 1 {
+        out.push('"');
+    }
     if !out.is_empty() && !out.ends_with(';') {
         out.push(';');
     }
