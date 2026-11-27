@@ -2414,6 +2414,8 @@ mod tests {
         assert_eq!(Config::from_json(&text).unwrap(), Config::default());
     }
 
+    // Windows only: account folders are C:\ paths, not absolute off Windows.
+    #[cfg(windows)]
     #[test]
     fn a_fleet_signs_in_with_the_account_it_names() {
         let c = Config::from_json(
@@ -2456,6 +2458,8 @@ mod tests {
         );
     }
 
+    // Windows only: C:\ paths and case-insensitive folders are Windows rules.
+    #[cfg(windows)]
     #[test]
     fn accounts_need_a_name_a_folder_and_full_paths() {
         for (text, name) in [
@@ -2489,6 +2493,8 @@ mod tests {
         }
     }
 
+    // Windows only: folder names ignore case only on Windows.
+    #[cfg(windows)]
     #[test]
     fn an_account_is_found_by_its_folder_in_any_case() {
         let c = Config::from_json(
@@ -2518,6 +2524,8 @@ mod tests {
         ))
     }
 
+    // Windows only: its fixtures name C:\ account folders.
+    #[cfg(windows)]
     #[test]
     fn stop_rules_parse_and_bad_ones_name_their_problem() {
         let c = rules(
@@ -2606,6 +2614,8 @@ mod tests {
         assert!(!rule.holds(w, 1_000_000, at(0, 9)), "a reset window");
     }
 
+    // Windows only: C:\ paths are not absolute off Windows.
+    #[cfg(windows)]
     #[test]
     fn a_backlog_is_a_full_path() {
         let c =

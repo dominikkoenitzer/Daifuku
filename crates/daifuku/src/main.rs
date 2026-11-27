@@ -2567,6 +2567,8 @@ mod tests {
         assert_eq!(since(7500), "2h 5m");
     }
 
+    // Windows only: os error 5 is access denied only on Windows.
+    #[cfg(windows)]
     #[test]
     fn a_refused_control_pipe_asks_for_an_administrator_terminal() {
         // What the pipe client returns when Windows refuses the open.
@@ -3354,6 +3356,8 @@ mod tests {
         assert_eq!(e.kind(), clap::error::ErrorKind::DisplayHelp);
     }
 
+    // Windows only: os error 5 is access denied only on Windows.
+    #[cfg(windows)]
     #[test]
     fn a_daemon_that_could_not_be_asked_has_a_code_for_each_reason() {
         let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "not running");
