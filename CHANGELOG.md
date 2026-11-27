@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A hotkey of shift and a key that types or edits, such as `shift+a` or
+  `shift+tab`, is refused: it would take that key from every program.
+  Add ctrl, alt or win.
 - `daifuku status` says `week not reported yet` (or `5h`) for an account whose
   `stop_at` rule names a window no status line has reported yet. Such a rule
   stops nothing until the number arrives, and its silence no longer reads as
