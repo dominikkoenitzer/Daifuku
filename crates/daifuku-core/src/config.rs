@@ -2571,6 +2571,8 @@ mod tests {
         }
     }
 
+    // Windows only, as the tests that call it: off Windows it is never used.
+    #[cfg(windows)]
     fn rules(json: &str) -> Result<Config, ConfigError> {
         Config::from_json(&format!(
             r#"{{"accounts":{{"work":{{"claude":"C:\\w","stop_at":{json}}}}}}}"#
