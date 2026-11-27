@@ -414,6 +414,8 @@ A window no rule holds for has no stop.
 | `hours` | Local hours it holds in, from the first up to the second, 0 to 24: `9-17`, or `22-6` past midnight. Left out, all day. |
 | `last_minutes` | It holds only this many minutes before the window resets, 1 to 10080. |
 
+`days` and `hours` are read for the moment it is now: `"days": "fri", "hours": "22-6"` holds on Friday from 22:00 to midnight and early on Friday morning, not on Saturday morning, so a Friday night written as `22-6` needs `sat` in `days` as well. That also makes it hold on Saturday from 22:00 to midnight; to cover Friday night alone, write two rules: `fri` with `22-24` and `sat` with `0-6`.
+
 Here the 5-hour window may be used up to 90% in its last hour, up to 75%
 in office hours on weekdays, and up to 95% otherwise, as may the week. The
 numbers come from the status line above, so with rules but no numbers
